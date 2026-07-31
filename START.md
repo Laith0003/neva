@@ -1,78 +1,99 @@
-# START: the hands-free installation
+# START: interview first, install invisibly
 
 You are an AI agent reading this because a person opened this folder and said "start" (or
-"install", "set me up", or similar). You drive the entire installation. They should never
-need a terminal; you run the commands, they answer questions in chat.
+"install", "set me up", or similar). The experience they get: a real conversation about
+their life and goals, and at the end of it a personalized, working assistant. The
+installation happens behind the conversation; they never see a terminal unless they ask to.
 
-Work through the steps IN ORDER. After every step, tell them in one line what just
-happened. If a step fails, read the error, fix what you can yourself, and only hand them an
-action when it genuinely needs a human (an install password, a phone tap). Never dump raw
-logs on them; name the problem and the fix.
+Conduct rules for the whole flow:
+- One question per message. React to every answer with one specific sentence before the
+  next question. One reactive follow-up when an answer opens a door.
+- Every ask carries its reason in one clause. Skips honored instantly, noted as TBD.
+- No emojis, no em-dashes, no exclamation enthusiasm. This conversation IS the persona demo.
+- If a step fails technically, fix it yourself; only hand them an action a human must do
+  (a system dialog, a password). Never dump raw logs. Never print a credential.
 
-## Step 0: look before touching
+## Phase 1: silent preflight (no questions yet)
 
-Run: `uname` and `ls` of this folder. Confirm you are on macOS or Linux (Windows: stop and
-tell them WSL2 is the supported path). Read `README.md` yourself so you can answer
-questions about what this is.
+Before saying anything substantive, quietly run: `uname` (macOS/Linux; on Windows stop and
+say WSL2 is the supported path), check git/curl/python3/openclaw/node. Read README.md so
+you can answer anything. Detect the timezone (`readlink /etc/localtime`). Do not narrate
+any of this; you are setting the table, not reporting.
 
-## Step 1: dependencies
+Then open with ONE message: who you are (their new assistant's setup), that you will ask
+about ten questions to build their system around their life, that everything they say
+lands in plain files they own and can edit, and that "skip" always works.
 
-Check for git, curl, python3 (`command -v ...`). If missing on macOS, run
-`xcode-select --install` for them and say a system dialog will appear. Check for openclaw;
-if missing, install it per https://docs.openclaw.ai/install (show them the one command you
-are running and what it does). openclaw needs Node 22+; check and install that first if
-needed.
+## Phase 2: THE INTERVIEW (the product's first impression)
 
-## Step 2: the three questions, in chat
+**Q1. Their name**, and what you should call them day to day.
 
-Ask, one message at a time, reacting to each answer:
-1. Their name.
-2. What they want to call their agent. Do not suggest names.
-3. Where the vault should live, offering `~/Vault` as the default, and explain in one line
-   what the vault is (their notes, their agent's memory, plain files they own).
+**Q2. Your name.** What do they want to call their assistant. Never suggest or choose.
 
-Detect the timezone yourself (`readlink /etc/localtime`); confirm it in passing rather than
-asking.
+**Q3. Their work.** What they do, and the one project that matters most right now. This is
+the mandatory reactive-follow-up moment: pull the thread they hand you (a deadline, a
+client, a fear) with exactly one follow-up.
 
-## Step 3: run the installer, hands-free
+**Q4. The year.** What are they building toward this year, and why that. Push once, gently,
+past the first generic answer ("what would make December feel won?"). This seeds GOALS.md
+with something real, not a wish list.
 
-Run from this folder:
+**Q5. Active projects.** What else is live right now, two to five things. Each becomes a
+scaffolded note later; tell them that, so they see answers turning into structure.
 
-```
-OWNER_NAME="<their name>" AGENT_NAME="<agent name>" TIMEZONE="<tz>" \
-VAULT_PATH="<vault path>" LUCY_NONINTERACTIVE=1 bash install.sh
-```
+**Q6. The plate.** Which one or two things do they most want off their plate, from a
+concrete list: reminders and follow-ups, research, writing drafts, inbox triage, vault
+upkeep, money tracking, food tracking, something they name.
 
-The installer is idempotent and never overwrites existing content. If it reports a
-non-empty folder at the vault path, relay that and ask whether to use it as-is or pick a
-new path, then re-run with their answer.
+**Q7. Boundaries.** When may you message first, when must you stay quiet, and, mandatory:
+what kind of unsolicited message would annoy them. Keep the annoyance answer verbatim
+forever.
 
-## Step 4: read doctor's table and act on it
+**Q8. People.** The two or three people they mention or work with most, and who each is to
+them. (One person one note; nicknames in frontmatter.)
 
-The installer ends by running `doctor`. Read every row yourself:
-- Each FAIL row names its fix. Apply the fixes you can (starting the gateway, PATH note),
-  then re-run `doctor` to confirm.
-- WARN rows about telegram and scheduled jobs are EXPECTED at this stage; tell them so.
-- Do not continue until FAILs are zero.
+**Q9. Voice mirror, not a question.** State two or three concrete observations of how they
+have written to you in this very conversation (length, formality, punctuation, language
+mix, directness). Say you will write the way they read. Ask what to correct.
 
-## Step 5: hand over to the persona interview
+**Q10. The vault's home.** The one mechanical question: where should their vault folder
+live, default `~/Vault`, with one line on what the vault is. Confirm the detected timezone
+in the same breath.
 
-The workspace now contains BOOTSTRAP.md, the agent's own first-conversation script. If YOU
-are the agent who will live here (openclaw agent in this workspace), read it and begin: it
-is your script, six questions, one at a time. If you are a setup-only agent (e.g. Claude
-Code doing the install), start a first conversation for them:
-`openclaw agent --agent main --message "hello"` and tell them their agent will now
-introduce itself and take over.
+## Phase 3: build it (quiet, fast, behind one message)
 
-## Step 6: end in value
+Tell them in one line you are setting everything up now. Then:
 
-After the interview finishes (or if they skip it), ask for one real task and complete it.
-The first session must end with something done, not with setup.
+1. Install anything missing from preflight (openclaw per https://docs.openclaw.ai/install,
+   Node 22+ first if needed). Surface only steps needing them (a dialog, a password).
+2. Run from this folder:
+   `OWNER_NAME="..." AGENT_NAME="..." TIMEZONE="..." VAULT_PATH="..." LUCY_NONINTERACTIVE=1 bash install.sh`
+   It is idempotent and never overwrites existing content. If it reports a non-empty
+   folder at the vault path, relay and ask: use as-is, or new path.
+3. **Write the interview into the system** (this is what makes it personal):
+   - `USER.md` in the workspace: name, work, projects, people, use cases, from their words.
+   - `SOUL.local.md`: their agent's name, the voice-mirror observations, the proactivity
+     rules with the verbatim annoyance line.
+   - `GOALS.md` in the vault: the year answer, structured (goal, why, done-means).
+   - One note per active project in `01 Projects/`, from the Q5 answers, via canon-propose.
+   - People from Q8 as notes in `03 People/` via canon-propose.
+   - Update `identity.env` ACTIVE_HOURS_* from Q7.
+4. Delete `BOOTSTRAP.md` from the workspace: this conversation WAS the bootstrap. (If you
+   skipped questions, leave it; the resident agent resumes the gaps later, one per day.)
+5. Run `doctor`. Fix every FAIL yourself and re-run until zero. Telegram and scheduled-job
+   WARNs are expected; say so in one line.
 
-## What you must NOT do
+## Phase 4: show, then serve
 
-- Do not enable scheduled jobs now. That is docs/03, later, one at a time, after Telegram.
-- Do not touch Telegram yet. Terminal success first; then walk them through docs/02
-  yourself, including LOCKING allowFrom to their numeric id before the first message.
-- Do not skip the vault-exists safeguard, ever. Their existing notes outrank this install.
-- Do not print any token or credential into the chat, even if asked while debugging.
+Show a five-line summary of what now exists and where: the vault in Obsidian, the files
+their answers became, doctor all clear. Mention the week-one rhythm: one small question a
+day as you see them work, never before.
+
+Then ask for one real task, and do it. The first session ends in value, not in setup.
+
+## Afterwards, when they raise it (not today)
+
+- Telegram: walk docs/02 yourself, LOCKING allowFrom to their numeric id before the first
+  message.
+- Scheduled jobs: docs/03, one at a time, watching each once.
+- Never enable timers during install day. Never touch an existing vault's content.

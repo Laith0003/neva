@@ -27,9 +27,11 @@ because both are preventable with structure, not with hope.
 
 ## Quick start: say "start"
 
-Open this folder with your AI (Claude Code, or openclaw itself) and say **start**. The
-agent reads START.md and drives the whole installation: it runs the commands, you answer
-three questions in chat, and it hands over to your new assistant's first conversation.
+Open this folder with your AI (Claude Code, or openclaw itself) and say **start**. What
+happens next is a conversation, not an installation: it interviews you about your work,
+your year, your projects, and how you like to be spoken to, and quietly builds the whole
+system behind your answers. Your goals file, project notes, and your assistant's
+personality all come out of that one conversation. It ends by doing a real task for you.
 
 Prefer doing it yourself? The manual path is the same four steps:
 1. Install [openclaw](https://docs.openclaw.ai/install) and [Obsidian](https://obsidian.md)
