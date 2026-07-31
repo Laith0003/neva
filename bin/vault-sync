@@ -1,0 +1,77 @@
+#!/bin/bash
+# Node side of the git brain sync. Commits any node-authored canon writes, pulls owner edits
+# (union-merge so it never deadlocks), pushes. The always-on half: runs 24/7 via timer.
+# The bare origin repo lives wherever `git remote` points (by convention
+# $HOME/.local/state/lucy/vault.git on the node); this script never hardcodes it.
+#
+# GATE RECOVERY (added 2026-07-31): if the origin canon gate rejects the push, the old
+# behavior was to exit 1 and retry the identical rejected push every 2 minutes forever:
+# that wedged the sync SILENTLY for five days (2026-07-26 to 07-31, ~3600 failures).
+# Now a rejection quarantines the unpushed commits on a branch, restores main to the
+# pushable origin state, pushes the quarantine branch (hook only guards main), and tells
+# the owner exactly which commits are parked. Nothing is ever deleted; recovery is
+# `git cherry-pick` from the quarantine branch through canon-propose.
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+STATE_DIR="$HOME/.local/state/lucy"
+mkdir -p "$STATE_DIR"
+SYNC_LOG="$STATE_DIR/vault-git-sync.log"
+cd "$VAULT_PATH" || exit 0
+git config --global --add safe.directory "$VAULT_PATH" 2>/dev/null
+if [ -n "$(git status --short)" ]; then
+  git add -A
+  git -c user.email="agent@node" -c user.name="${AGENT_NAME} (node)" commit -q -m "node sync $(date +%F\ %T)"
+fi
+BEFORE=$(git rev-parse HEAD 2>/dev/null)
+git pull --no-rebase --no-edit -q origin main 2>>"$SYNC_LOG"
+AFTER=$(git rev-parse HEAD 2>/dev/null)
+# #28 vault diff report: record exactly what each pull changed, not just "up to date".
+if [ -n "$BEFORE" ] && [ "$BEFORE" != "$AFTER" ]; then
+  {
+    echo "=== pull $(date +%F\ %T): ${BEFORE:0:8} -> ${AFTER:0:8} ==="
+    git diff --stat "$BEFORE" "$AFTER"
+  } >> "$STATE_DIR/vault-diff.log"
+fi
+
+PUSH_ERR=$(git push origin main 2>&1)
+PUSH_RC=$?
+echo "$PUSH_ERR" | tail -2 >> "$SYNC_LOG"
+
+if [ "$PUSH_RC" -ne 0 ] && echo "$PUSH_ERR" | grep -q "CANON GATE"; then
+  QB="quarantine/$(date +%Y%m%d-%H%M%S)"
+  STUCK=$(git log --format="%h %s" origin/main..HEAD 2>/dev/null)
+  N=$(echo "$STUCK" | grep -c . || true)
+  {
+    echo "=== $(date '+%F %T') CANON GATE rejection: quarantining $N commit(s) to $QB ==="
+    echo "$STUCK"
+  } >> "$SYNC_LOG"
+
+  git branch "$QB" HEAD 2>>"$SYNC_LOG"
+  git reset --hard origin/main 2>>"$SYNC_LOG"
+  git push -q origin "$QB" 2>>"$SYNC_LOG"
+
+  TOKEN=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.openclaw/openclaw.json")))["channels"]["telegram"]["botToken"])' 2>/dev/null)
+  if [ -n "$TOKEN" ]; then
+    curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+      --data-urlencode "chat_id=${OWNER_CHAT_ID}" \
+      --data-urlencode "text=The canon gate rejected a write. I parked ${N} commit(s) on branch ${QB} and the sync is running again. Commits:
+${STUCK}
+To recover: I will pass them through canon-propose." >/dev/null 2>&1
+  fi
+  echo "$(date '+%F %T') quarantine done, main restored to origin, owner notified" >> "$SYNC_LOG"
+fi
+
+# Alert on non-gate failure or growing backlog (added 2026-07-30). Never again silent.
+if ! git diff --quiet origin/main HEAD 2>/dev/null; then
+  BEHIND=$(git log --oneline origin/main..HEAD 2>/dev/null | wc -l | tr -d " ")
+  if [ "${BEHIND:-0}" -gt 3 ]; then
+    STATE="$STATE_DIR/vault-sync-alert.state"
+    NOW=$(date +%s); LAST=$(cat "$STATE" 2>/dev/null || echo 0)
+    if [ $(( NOW - LAST )) -gt 21600 ]; then
+      echo "$NOW" > "$STATE"
+      TOKEN=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.openclaw/openclaw.json")))["channels"]["telegram"]["botToken"])' 2>/dev/null)
+      [ -n "$TOKEN" ] && curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${OWNER_CHAT_ID}" \
+        --data-urlencode "text=The vault is not syncing. ${BEHIND} commits are stuck on the node. This needs fixing." >/dev/null 2>&1
+    fi
+  fi
+fi

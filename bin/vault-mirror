@@ -1,0 +1,17 @@
+#!/bin/bash
+# Mirror vault canon into the agent's memory index as REAL files.
+# memory-core skips symlinks (dist: "isSymbolicLink) return null"), so a copy is required.
+# Source of truth stays the vault (git-synced). This mirror is derived + disposable.
+# Rule order matters in rsync: directory excludes MUST precede --include="*/".
+set -euo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+SRC="$VAULT_PATH"
+DST="$WORKSPACE_PATH/memory/vault"
+mkdir -p "$DST"
+rsync -a --delete --prune-empty-dirs \
+  --exclude="Attachments/" --exclude="Templates/" --exclude="07 Archive/" \
+  --exclude=".obsidian/" --exclude=".git/" --exclude=".trash/" \
+  --include="*/" --include="*.md" --exclude="*" \
+  "$SRC/" "$DST/"
+N=$(find "$DST" -name "*.md" | wc -l)
+echo "vault mirror: $N md files"

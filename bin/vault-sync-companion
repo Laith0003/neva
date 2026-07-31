@@ -1,0 +1,22 @@
+#!/bin/bash
+# Owner-machine (Mac) side of the git brain sync. Replaces the old one-way rsync jobs.
+# Bidirectional git sync with the node origin. Runs only when the machine is awake
+# (launchd). When asleep, it just catches up next run.
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+cd "$VAULT_PATH" || exit 0
+# Optional dedicated deploy key for the node origin; otherwise the user's normal
+# ssh config for the remote host applies.
+if [ -n "${SYNC_SSH_KEY:-}" ]; then
+  export GIT_SSH_COMMAND="ssh -i $SYNC_SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+fi
+LOG="$HOME/Library/Logs/vault-git-sync.log"
+{
+  date '+%F %T sync start'
+  if [ -n "$(git status --short)" ]; then
+    git add -A
+    git -c user.email="owner@local" -c user.name="${OWNER_NAME} (Mac)" commit -q -m "mac edits $(date +%F\ %T)"
+  fi
+  git pull --no-rebase --no-edit -q origin main 2>&1 | tail -1
+  git push -q origin main 2>&1 | tail -1
+  date '+%F %T sync done'
+} >> "$LOG" 2>&1

@@ -1,0 +1,5 @@
+[Unit]
+Description=Refresh the memory-search mirror of the vault
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/bin/vault-mirror

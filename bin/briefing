@@ -1,0 +1,29 @@
+#!/bin/bash
+# Morning briefing. The agent's brain reads overnight sources and composes ONE calm digest,
+# which this script sends to the owner's Telegram. Unlike a monitoring sweep (silent unless
+# needed), the briefing always lands once a day.
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+STATE="$HOME/.local/state/lucy"; mkdir -p "$STATE"
+
+read -r -d '' PROMPT <<'PROMPT_EOF' || true
+This is the morning briefing, running automatically. Work silently, skipping any source that is missing or errors, then output ONE message for the owner (it goes straight to their Telegram).
+Read overnight and today, using only sources that exist on this system: WhatsApp if the wacli tool is installed (run `wacli chats list --limit 20`, weight close family and key work contacts highest; ignore muted groups), email if the himalaya tool is installed (run `himalaya envelope list --folder INBOX 2>/dev/null | head -15`), the vault daily note at __VAULT__/Daily Briefing.md if present, and goals at __VAULT__/GOALS.md if present.
+Compose the morning picture: open with a warm one-line greeting calibrated to the hour. Then, tight and specific: what came in overnight that matters and from whom, what is on for today, and the one or two things that actually need attention. No filler, no emoji, no dashes. If it was a quiet night, say so in a line. Output only the message text.
+PROMPT_EOF
+PROMPT="${PROMPT//__VAULT__/$VAULT_PATH}"
+
+set -a; . "$STATE/claude.env" 2>/dev/null; set +a
+OUT="$(IS_SANDBOX=1 timeout 220 openclaw agent --local --json --session-key agent:main:briefing -m "$PROMPT" 2>/dev/null | python3 -c "import sys,json
+try:
+ d=json.load(sys.stdin); p=d.get('payloads') or []
+ print((p[0].get('text','') if p else '').strip())
+except Exception: print('')")"
+
+MSG="$(printf '%s' "$OUT" | sed -e 's/ *-- */, /g' -e 's/—/, /g')"
+if [ -n "$MSG" ]; then
+  TOKEN="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['channels']['telegram']['botToken'])" 2>/dev/null)"
+  [ -n "$TOKEN" ] && curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${OWNER_CHAT_ID}" --data-urlencode "text=${MSG}" >/dev/null
+fi
+echo "$(date '+%F %T') briefing sent (${#MSG} chars)" >> "$STATE/briefing.log"

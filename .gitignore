@@ -1,0 +1,5 @@
+identity.env
+*.local.md
+*.err.log
+.DS_Store
+OLD_VAULT/
