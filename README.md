@@ -25,13 +25,18 @@ because both are preventable with structure, not with hope.
 - **A vault that is yours.** Plain markdown in Obsidian. One person one note, enforced.
   hledger for money, a food log the agent can total, reviews it drafts when you go quiet.
 
-## Quick start (10 minutes to a working agent)
+## Quick start: say "start"
 
+Open this folder with your AI (Claude Code, or openclaw itself) and say **start**. The
+agent reads START.md and drives the whole installation: it runs the commands, you answer
+three questions in chat, and it hands over to your new assistant's first conversation.
+
+Prefer doing it yourself? The manual path is the same four steps:
 1. Install [openclaw](https://docs.openclaw.ai/install) and [Obsidian](https://obsidian.md)
 2. `./install.sh` and answer three questions
 3. Fix anything `doctor` marks FAIL (each row names its fix)
 4. Talk to your agent in the terminal; its first conversation sets it up
-5. Then, and only then: [docs/02-telegram.md](docs/02-telegram.md)
+Then, and only then: [docs/02-telegram.md](docs/02-telegram.md)
 
 macOS and Linux. Windows via WSL2 only.
 
