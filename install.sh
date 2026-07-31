@@ -22,7 +22,15 @@ say()  { printf "%s\n" "$*"; }
 ask()  { # ask VAR "question" "default"
   local var="$1" q="$2" def="${3:-}" cur
   cur="${!var:-}"
-  if [ -n "$cur" ]; then return 0; fi     # already answered (re-run)
+  if [ -n "$cur" ]; then return 0; fi     # already answered (env pre-seed or re-run)
+  # hands-free mode: an agent collects answers in chat and passes them as env vars.
+  # If a required answer is missing here, fail with its name instead of hanging on read.
+  if [ "${LUCY_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+    if [ -n "$def" ]; then eval "$var=\"\$def\""; return 0; fi
+    echo "non-interactive install: missing required answer $var ($q)" >&2
+    echo "fix: export $var=... and re-run, or run interactively" >&2
+    exit 64
+  fi
   if [ -n "$def" ]; then
     printf "%s [%s]: " "$q" "$def"
   else
