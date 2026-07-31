@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""canon-propose: the agent's GATED writer for CANON (vault ground truth).
+
+Usage:  canon-propose <kind> "<title>" [--mode new|update|append]   (body on stdin)
+  kind = client | person | money | project | knowledge | personal
+
+What it does (the write contract, in code):
+  1. Classify -> route to the right canonical folder.
+  2. Stamp frontmatter (type tag first, date, status) + heading if missing.
+  3. Dedup (one-fact-one-home): if a near-named note already exists, treat as an UPDATE,
+     never a parallel copy.
+  4. Risk gate: a NEW non-money note applies directly (low blast radius, git-revertable).
+     Money, updates/appends to existing canon, and deletes require the owner's Telegram tap.
+  5. Apply = write to the vault working copy + git commit + push -> syncs to Obsidian
+     AND auto-ingests into the agent's searchable memory (via vault-watch).
+  6. vault-lint runs after; if the write introduces a broken link/collision it is flagged.
+
+Safety: target path is hard-constrained to the allowlisted canon folders; traversal refused.
+"""
+import sys, os, re, json, subprocess, time, datetime, difflib, uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from config import load
+CFG = load()
+
+VAULT = CFG["VAULT_PATH"]
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "lucy")
+QDIR = os.path.join(STATE_DIR, "queue")
+OWNER_CHAT = CFG["OWNER_CHAT_ID"]
+OPENCLAW_CONFIG = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+# Optional: base URL of a dashboard /api/tap endpoint for one-tap approve buttons.
+# Without it, proposals still stage + notify; approval happens via the queue file.
+TAP_BASE = CFG.get("TAP_BASE_URL", "")
+
+# kind -> (folder, type-tag, always-gate?)
+ROUTE = {
+    "client":    ("02 Clients/Active", "client",    False),
+    "person":    ("03 People",         "person",    False),
+    "money":     ("05 Money",          "money",     True),   # money always gated (fabrication risk)
+    "project":   ("01 Projects",       "project",   False),
+    "knowledge": ("04 Knowledge",      "knowledge", False),
+    "personal":  ("10 Personal",       "personal",  False),
+}
+ALLOWED_FOLDERS = [v[0] for v in ROUTE.values()]
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def safe_title(s):
+    return re.sub(r'[/\\:*?"<>|]', "", s).strip()[:80]
+
+
+def git(*args, check=False):
+    env = dict(os.environ, HOME=os.path.expanduser("~"))
+    return subprocess.run(["git", "-C", VAULT, "-c", "safe.directory=*"] + list(args),
+                          env=env, capture_output=True, text=True)
+
+
+def find_existing(folder, title):
+    """Dedup: exact or high-similarity title in the target folder -> the existing file."""
+    d = os.path.join(VAULT, folder)
+    if not os.path.isdir(d):
+        return None
+    t = slug(title)
+    best = None
+    for f in os.listdir(d):
+        if not f.endswith(".md"):
+            continue
+        base = slug(f[:-3])
+        if base == t:
+            return f
+        if difflib.SequenceMatcher(None, base, t).ratio() > 0.86:
+            best = f
+    return best
+
+
+def ensure_frontmatter(content, type_tag, title):
+    if content.lstrip().startswith("---"):
+        return content
+    fm = ("---\n"
+          f"tags: [{type_tag}, {slug(title)}]\n"
+          f"date: {datetime.date.today().isoformat()}\n"
+          "status: active\n"
+          "---\n\n"
+          f"# {title}\n\n")
+    return fm + content.lstrip("\n")
+
+
+def lint_check():
+    """Run vault-lint; return the broken-links section (empty = clean)."""
+    sk = os.path.join(VAULT, "Skills", "vault-lint.sh")
+    if not os.path.exists(sk):
+        return ""
+    out = subprocess.run(["bash", sk], cwd=VAULT, capture_output=True, text=True).stdout
+    m = re.search(r"BROKEN WIKILINKS.*?\n(.*?)\n=== 2", out, re.S)
+    return (m.group(1).strip() if m else "")
+
+
+def apply_write(relpath, content):
+    """Write to canon + commit + push. Path is re-validated here (defence in depth)."""
+    rp = os.path.normpath(relpath)
+    if rp.startswith("..") or not any(rp.startswith(a) for a in ALLOWED_FOLDERS):
+        return False, f"refused: path not in canon allowlist: {rp}"
+    full = os.path.realpath(os.path.join(VAULT, rp))
+    if not full.startswith(os.path.realpath(VAULT) + "/"):
+        return False, "refused: path traversal"
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    open(full, "w").write(content)
+    git("add", rp)
+    git("commit", "-q", "-m", f"canon: {rp}")
+    push = git("push", "-q", "origin", "main")
+    broken = lint_check()
+    note = (" | LINT: broken links introduced:\n" + broken) if broken else " | lint clean"
+    return True, f"committed {rp}{note}"
+
+
+def tg_token():
+    try:
+        return json.load(open(OPENCLAW_CONFIG))["channels"]["telegram"]["botToken"]
+    except Exception:
+        return None
+
+
+def stage_and_tap(relpath, content, mode, reason):
+    """Stage a canon-write proposal + send the owner a Telegram tap (approve/cancel)."""
+    import hmac, hashlib
+    os.makedirs(QDIR, exist_ok=True)
+    tid = "canon-" + str(uuid.uuid4())[:12]
+    task = {"id": tid, "kind": "canon-write", "relpath": relpath, "content": content,
+            "mode": mode, "status": "tap",
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    json.dump(task, open(os.path.join(QDIR, tid + ".json"), "w"), indent=2, ensure_ascii=False)
+    token = tg_token()
+    reply_markup = None
+    try:
+        if not TAP_BASE:
+            raise ValueError("TAP_BASE_URL not configured")
+        secret = open(os.path.join(STATE_DIR, "tap-secret")).read().strip()
+        ts = int(time.time())
+        def sig(a):
+            return hmac.new(secret.encode(), f"{tid}:{a}:{ts}".encode(), hashlib.sha256).hexdigest()
+        base = TAP_BASE.rstrip("/") + "/api/tap"
+        reply_markup = {"inline_keyboard": [[
+            {"text": "Approve write", "url": f"{base}?id={tid}&action=approve&ts={ts}&sig={sig('approve')}"},
+            {"text": "Cancel", "url": f"{base}?id={tid}&action=cancel&ts={ts}&sig={sig('cancel')}"}]]}
+    except Exception:
+        pass
+    preview = content[:500]
+    msg = (f"<b>Canon write proposal</b> ({reason})\n<code>{relpath}</code>\n\n"
+           f"<pre>{preview}</pre>\n\nApprove to commit it to your brain.")
+    if token:
+        import urllib.request, urllib.parse
+        data = {"chat_id": OWNER_CHAT, "text": msg, "parse_mode": "HTML"}
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                urllib.parse.urlencode(data).encode()), timeout=15)
+        except Exception:
+            pass
+    return tid
+
+
+def main():
+    args = [a for a in sys.argv[1:]]
+    mode = "new"
+    if "--mode" in args:
+        i = args.index("--mode"); mode = args[i + 1]; del args[i:i + 2]
+    if len(args) < 2:
+        print("usage: canon-propose <client|person|money|project|knowledge|personal> \"<title>\" [--mode new|update|append]  (body on stdin)", file=sys.stderr)
+        sys.exit(2)
+    kind, title = args[0].lower(), safe_title(args[1])
+    if kind not in ROUTE:
+        print(f"unknown kind: {kind}", file=sys.stderr); sys.exit(2)
+    if sys.stdin.isatty():
+        print("provide the note body on stdin", file=sys.stderr); sys.exit(2)
+    body = sys.stdin.read()
+
+    folder, type_tag, always_gate = ROUTE[kind]
+    existing = find_existing(folder, title)
+    if existing:
+        relpath = f"{folder}/{existing}"
+        mode = "update" if mode == "new" else mode
+    else:
+        relpath = f"{folder}/{title}.md"
+
+    content = ensure_frontmatter(body, type_tag, title)
+
+    # Risk gate: money OR touching existing canon OR explicit update/append -> the owner taps.
+    risky = always_gate or bool(existing) or mode in ("update", "append")
+    if risky:
+        reason = "money" if always_gate else ("updates existing note" if existing else mode)
+        tid = stage_and_tap(relpath, content, mode, reason)
+        print(f"GATED: proposal {tid} sent to the owner for approval ({reason}) -> {relpath}")
+    else:
+        ok, detail = apply_write(relpath, content)
+        print(("APPLIED: " if ok else "FAILED: ") + detail)
+
+
+if __name__ == "__main__":
+    main()

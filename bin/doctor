@@ -1,0 +1,140 @@
+#!/bin/bash
+# doctor: name what is broken and exactly how to fix it. Run any time; read-only.
+# Exit 0 = all ok. Exit 1 = at least one FAIL.
+set -u
+
+BOLD=$(tput bold 2>/dev/null || true); RESET=$(tput sgr0 2>/dev/null || true)
+FAILS=0
+
+row() { # status name fix
+  local st="$1" name="$2" fix="${3:-}"
+  case "$st" in
+    ok)   printf "  ok    %-34s\n" "$name" ;;
+    warn) printf "  WARN  %-34s %s\n" "$name" "$fix" ;;
+    fail) printf "  FAIL  %-34s %s\n" "$name" "$fix"; FAILS=$((FAILS+1)) ;;
+  esac
+}
+
+echo "${BOLD}doctor${RESET}"
+
+# 1. config
+CONFIG="$HOME/.config/lucy/identity.env"
+if [ -f "$CONFIG" ]; then
+  PERMS=$(stat -f "%Lp" "$CONFIG" 2>/dev/null || stat -c "%a" "$CONFIG" 2>/dev/null)
+  if [ "$PERMS" = "600" ] || [ "$PERMS" = "400" ]; then
+    row ok "identity config"
+    # shellcheck disable=SC1090
+    . "$CONFIG" 2>/dev/null
+  else
+    row fail "identity config perms" "chmod 600 '$CONFIG'"
+  fi
+else
+  row fail "identity config" "run install.sh to create it"
+fi
+
+# 2. required keys
+for KEY in OWNER_NAME AGENT_NAME OWNER_CHAT_ID TIMEZONE VAULT_PATH WORKSPACE_PATH; do
+  if [ -z "${!KEY:-}" ]; then
+    row fail "config key $KEY" "edit $CONFIG or re-run install.sh"
+  fi
+done
+[ -n "${OWNER_NAME:-}" ] && row ok "required config keys"
+
+# 3. vault
+VP="${VAULT_PATH:-}"; VP="${VP/#\$HOME/$HOME}"
+if [ -n "$VP" ] && [ -d "$VP" ]; then
+  row ok "vault at $VP"
+  [ -d "$VP/03 People" ] || row warn "vault folders" "expected '03 People' etc; open the vault in Obsidian once"
+else
+  row fail "vault" "folder missing: $VP; run install.sh or fix VAULT_PATH"
+fi
+
+# 4. openclaw
+if command -v openclaw >/dev/null 2>&1; then
+  row ok "openclaw installed ($(openclaw --version 2>/dev/null | head -c 24))"
+else
+  row fail "openclaw" "install it: https://docs.openclaw.ai/install"
+fi
+
+# 5. gateway reachable and loopback-only
+if command -v openclaw >/dev/null 2>&1; then
+  PORT=18789
+  if curl -s --max-time 5 "http://127.0.0.1:$PORT" -o /dev/null 2>/dev/null; then
+    row ok "gateway on 127.0.0.1:$PORT"
+  else
+    row warn "gateway" "not responding on 127.0.0.1:$PORT; start it (openclaw gateway) or check its service"
+  fi
+  # exposed to the world is a FAIL, not a warn: this is the documented #1 self-hosting disaster
+  LISTEN=$( (command -v ss >/dev/null && ss -tln 2>/dev/null || netstat -an 2>/dev/null) | grep -E "[.:]$PORT[[:space:]]" | grep -vE "127\.0\.0\.1|::1|localhost" | head -1)
+  if [ -n "$LISTEN" ]; then
+    row fail "gateway EXPOSED beyond loopback" "bind it to 127.0.0.1 only; see docs/09-security.md"
+  else
+    row ok "gateway loopback-only"
+  fi
+fi
+
+# 6. telegram token valid (only if configured; never printed)
+OC="$HOME/.openclaw/openclaw.json"
+if [ -f "$OC" ]; then
+  TOKEN=$(python3 -c 'import json,sys
+try: print(json.load(open("'"$OC"'"))["channels"]["telegram"]["botToken"])
+except Exception: print("")' 2>/dev/null)
+  if [ -n "$TOKEN" ]; then
+    CODE=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "https://api.telegram.org/bot${TOKEN}/getMe" 2>/dev/null)
+    case "$CODE" in
+      200) row ok "telegram token (getMe 200)" ;;
+      401) row fail "telegram token" "getMe returned 401: regenerate the token with @BotFather and update openclaw.json" ;;
+      *)   row warn "telegram token" "getMe returned $CODE: check network, then docs/02-telegram.md" ;;
+    esac
+    ALLOW=$(python3 -c 'import json
+c=json.load(open("'"$OC"'"))
+print(c.get("channels",{}).get("telegram",{}).get("allowFrom") or "")' 2>/dev/null)
+    if [ -n "$ALLOW" ]; then row ok "telegram allowFrom locked"; else
+      row fail "telegram allowFrom UNSET" "anyone who finds the bot can talk to it; set channels.telegram.allowFrom to your numeric id; docs/02-telegram.md"
+    fi
+  else
+    row warn "telegram" "no bot token yet; fine before docs/02-telegram.md"
+  fi
+else
+  row warn "openclaw config" "no $OC yet; run openclaw once"
+fi
+
+# 7. tools on PATH
+MISSING=""
+for T in canon canon-propose canon-lint cadence vault-sync doctor; do
+  command -v "$T" >/dev/null 2>&1 || MISSING="$MISSING $T"
+done
+if [ -z "$MISSING" ]; then row ok "core tools on PATH"; else
+  row fail "tools missing:$MISSING" "run install.sh; ensure ~/.local/bin is in PATH"
+fi
+
+# 8. scheduled jobs loaded
+case "$(uname)" in
+  Darwin)
+    N=$(launchctl list 2>/dev/null | grep -c "com.lucy." || true)
+    if [ "${N:-0}" -ge 1 ]; then row ok "scheduled jobs loaded ($N)"; else
+      row warn "scheduled jobs" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
+    fi ;;
+  Linux)
+    N=$(systemctl --user list-timers --all 2>/dev/null | grep -c "lucy-" || true)
+    if [ "${N:-0}" -ge 1 ]; then row ok "scheduled timers loaded ($N)"; else
+      row warn "scheduled timers" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
+    fi ;;
+esac
+
+# 9. optional integrations, presence only
+for PAIR in "hledger:money ledger" "syncthing:vault sync" "rg:vault search"; do
+  BIN="${PAIR%%:*}"; LABEL="${PAIR#*:}"
+  if command -v "$BIN" >/dev/null 2>&1; then row ok "$LABEL ($BIN)"; else
+    row warn "$LABEL" "$BIN not installed; optional, see docs/08-integrations.md"
+  fi
+done
+
+echo
+if [ "$FAILS" -eq 0 ]; then
+  echo "${BOLD}all clear${RESET}"
+  exit 0
+else
+  echo "${BOLD}$FAILS failure(s) above, each with its fix${RESET}"
+  exit 1
+fi

@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""canon-index: write a LIVE table of contents of the vault into the workspace, so
+the agent always knows what canon exists and looks it up with `canon` instead of denying it.
+Regenerated (not pinned): titles reflect the current vault. Run on vault sync + bootstrap."""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from config import load
+CFG = load()
+
+VAULT=CFG["VAULT_PATH"]; DIRS=["01 Projects","02 Clients","03 People","04 Knowledge","05 Money","10 Personal","Maps"]
+OUT=os.path.join(CFG["WORKSPACE_PATH"], "CANON-INDEX.md")
+lines=["# CANON INDEX (live map of what you can look up)","",
+"Every note below EXISTS in the owner's vault. For any of these, run `canon \"<name>\"` to read","the current content - never say you dont have it, look it up.",""]
+for d in DIRS:
+    base=os.path.join(VAULT,d); names=[]
+    for root,_,files in os.walk(base):
+        for f in files:
+            if f.endswith(".md"): names.append(f[:-3])
+    if names:
+        lines.append(f"## {d} ({len(names)})")
+        lines.append(", ".join(sorted(set(names))))
+        lines.append("")
+open(OUT,"w",encoding="utf-8").write("\n".join(lines))
+print("canon index written to", OUT)

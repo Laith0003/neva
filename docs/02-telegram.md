@@ -1,0 +1,25 @@
+# Telegram: your agent in your pocket
+
+Do this only after first-run success in the terminal.
+
+## Create the bot (2 minutes)
+1. In Telegram, open a chat with @BotFather. Confirm the handle is EXACTLY @BotFather.
+2. Send `/newbot`. Follow the two prompts (a display name, then a username ending in `bot`).
+3. BotFather replies with a token like `1234567890:AA...`. Treat it like a password.
+
+## Wire it, locked down from the first minute
+1. Put the token in `~/.openclaw/openclaw.json` under `channels.telegram.botToken`.
+   Never commit this file anywhere.
+2. Get your numeric id: message @userinfobot, it replies with your id.
+3. Set `channels.telegram.allowFrom: [<your numeric id>]`. THIS IS NOT OPTIONAL: without it
+   anyone who finds your bot can talk to your agent and your vault.
+4. Restart the gateway. Message your bot. It should reply, and doctor should show
+   `telegram token (getMe 200)` and `telegram allowFrom locked`.
+
+## Errors, by exact message
+| You see | It means | Fix |
+|---|---|---|
+| getMe returned 401 | token wrong or revoked | regenerate with BotFather, update the config |
+| bot never replies but doctor is green | gateway not restarted after config change | restart it |
+| replies to a friend who found the bot | allowFrom not set | set it now, step 3 above |
+| duplicate replies on long questions | polling watchdog shorter than slow turns | raise `channels.telegram.pollingStallThresholdMs` (docs/07) |
