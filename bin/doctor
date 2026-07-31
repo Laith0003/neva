@@ -99,13 +99,19 @@ else
   row warn "openclaw config" "no $OC yet; run openclaw once"
 fi
 
-# 7. tools on PATH
-MISSING=""
+# 7. tools installed and reachable: distinguish "not installed" from "not on PATH"
+MISSING=""; UNPATHED=""
 for T in canon canon-propose canon-lint cadence vault-sync doctor; do
-  command -v "$T" >/dev/null 2>&1 || MISSING="$MISSING $T"
+  if command -v "$T" >/dev/null 2>&1; then :
+  elif [ -x "$HOME/.local/bin/$T" ]; then UNPATHED="$UNPATHED $T"
+  else MISSING="$MISSING $T"; fi
 done
-if [ -z "$MISSING" ]; then row ok "core tools on PATH"; else
-  row fail "tools missing:$MISSING" "run install.sh; ensure ~/.local/bin is in PATH"
+if [ -n "$MISSING" ]; then
+  row fail "tools missing:$MISSING" "run install.sh"
+elif [ -n "$UNPATHED" ]; then
+  row warn "tools installed, not on PATH" "add to your shell rc: export PATH=\"\$HOME/.local/bin:\$PATH\""
+else
+  row ok "core tools on PATH"
 fi
 
 # 8. scheduled jobs loaded
