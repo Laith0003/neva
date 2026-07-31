@@ -1,4 +1,6 @@
-# An assistant that never makes things up
+# Lucy
+
+**An assistant that never makes things up.**
 
 Your own AI on Telegram, running on your machine, with a memory you can open in Obsidian.
 It answers questions about your world from YOUR notes, cites the file it read, and says
