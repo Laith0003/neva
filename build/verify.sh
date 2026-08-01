@@ -70,7 +70,7 @@ POOR_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 head_ "1. install, hands-free, in a fresh HOME"
 export HOME="$SANDBOX/home"; mkdir -p "$HOME"
 OUT=$(OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
-      VAULT_PATH="$HOME/MyVault" NEVA_NONINTERACTIVE=1 \
+      VAULT_PATH="$HOME/MyVault" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
       PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" 2>&1)
 if [ $? -eq 0 ]; then ok "installer completes non-interactively"; else bad "installer" "exit non-zero"; fi
 [ -f "$HOME/.config/neva/identity.env" ] && ok "identity file written" || bad "identity file" "missing"
@@ -192,7 +192,7 @@ TOUT
 chmod +x "$SANDBOX/fakebin2/timeout"
 BHOME="$SANDBOX/briefing-honesty"; mkdir -p "$BHOME"
 HOME="$BHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
-  VAULT_PATH="$BHOME/MyVault" NEVA_NONINTERACTIVE=1 \
+  VAULT_PATH="$BHOME/MyVault" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
   PATH="$SANDBOX/fakebin2:$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
 sed -i.bak 's/OWNER_CHAT_ID=""/OWNER_CHAT_ID="1"/' "$BHOME/.config/neva/identity.env"
 mkdir -p "$BHOME/.openclaw"
@@ -295,7 +295,7 @@ GNUONLY=$(grep -rlE '(^|[^a-zA-Z_.])timeout [0-9]|find .*-printf' "$REPO/bin" 2>
 # genuinely quiet night.
 NTHOME="$SANDBOX/no-timeout"; mkdir -p "$NTHOME"
 HOME="$NTHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
-  VAULT_PATH="$NTHOME/MyVault" NEVA_NONINTERACTIVE=1 \
+  VAULT_PATH="$NTHOME/MyVault" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
   PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
 env -i HOME="$NTHOME" PATH="$POOR_PATH" "$NTHOME/.local/neva/bin/briefing" >/tmp/neva-briefing-stderr.$$ 2>&1
 BLOG=$(cat "$NTHOME/.local/state/neva/briefing.log" 2>/dev/null)
@@ -309,7 +309,7 @@ rm -f /tmp/neva-briefing-stderr.$$
 
 head_ "14. a SECOND install over an already-Neva vault is truly idempotent"
 OUT2=$(OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
-      VAULT_PATH="$HOME/MyVault" NEVA_NONINTERACTIVE=1 \
+      VAULT_PATH="$HOME/MyVault" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
       PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" 2>&1)
 [ $? -eq 0 ] && ok "second install exits clean" || bad "second install" "non-zero exit"
 [ -f "$HOME/MyVault/03 People/Jane Doe.md" ] && ok "content from the first install survives a second install" \
@@ -331,7 +331,7 @@ head_ "16. VAULT_PATH containing spaces works end to end"
 SPHOME="$SANDBOX/space-test"; mkdir -p "$SPHOME"
 SPVAULT="$SPHOME/My Vault With Spaces"
 HOME="$SPHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
-  VAULT_PATH="$SPVAULT" NEVA_NONINTERACTIVE=1 \
+  VAULT_PATH="$SPVAULT" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
   PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
 [ -d "$SPVAULT/03 People" ] && ok "vault scaffolds correctly at a path containing spaces" \
   || bad "spaced-path install" "no vault structure created at '$SPVAULT'"
@@ -357,6 +357,101 @@ elif echo "$UOUT" | grep -qiE "non-interactive|NEVA_NONINTERACTIVE|--yes|fix:"; 
   ok "upgrade.sh explains itself when it cannot prompt"
 else
   bad "upgrade.sh fails silently when non-interactive" "rc=$URC with no actionable message (got: ${UOUT:-<empty>}); unlike install.sh, upgrade.sh has no NEVA_NONINTERACTIVE-equivalent"
+fi
+
+head_ "18. doctor's exit code cannot be clobbered by the per-job recent-failures loop (CRITICAL regression, 2026-08-01)"
+# Found live: bin/doctor's scheduled-jobs loop (section 8) used to reassign the SAME name
+# `row()` bumps for every FAIL row (and the final exit-code check reads) into a per-job
+# scratch count on every loop iteration. Proven on a live install in both directions: zero
+# FAIL rows on screen produced a non-zero exit, and a genuine CRITICAL FAIL row on screen
+# produced exit 0. This exercises the exact clobber path without loading any real
+# launchd/systemd job (NEVA_DOCTOR_LOADED_TEST overrides doctor's own "what is loaded" probe).
+DOCHOME="$SANDBOX/doctor-exitcode"; mkdir -p "$DOCHOME"
+HOME="$DOCHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$DOCHOME/MyVault" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
+# openclaw is absent from POOR_PATH -> doctor's own early "openclaw" check produces a real
+# FAIL row well before the scheduled-jobs loop below ever runs.
+HBDIR="$DOCHOME/.local/state/neva/heartbeat"; mkdir -p "$HBDIR"
+# a job whose own recent-failures count is a clean 0 (an "ok" row in the loop) - the exact
+# iteration whose old, buggy assignment overwrote the real running total instead of
+# accumulating it.
+printf '%s 0 1\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HBDIR/vault-sync.status"
+D2=$(HOME="$DOCHOME" PATH="$POOR_PATH" NEVA_DOCTOR_LOADED_TEST="vault-sync" "$DOCHOME/.local/neva/bin/doctor" 2>&1); D2RC=$?
+D2FAILROWS=$(echo "$D2" | grep -c "^  FAIL")
+if [ "$D2FAILROWS" -eq 0 ]; then
+  bad "doctor exit code regression check" "expected at least one real FAIL row (openclaw missing) to set up this proof; got none - not exercising the right path. Output: $D2"
+elif [ "$D2RC" -eq 0 ]; then
+  bad "doctor exit code lies" "$D2FAILROWS FAIL row(s) on screen but exit code is 0: a per-job loop variable clobbered the real failure count"
+else
+  ok "doctor exit code matches what is on screen ($D2FAILROWS FAIL row(s), rc=$D2RC)"
+fi
+# negative control: reproduce the OLD buggy variable name in a throwaway copy of doctor and
+# prove THIS check is capable of catching it - not just structurally green.
+BUGGY_DOCTOR="$SANDBOX/doctor-buggy"
+python3 -c "
+import sys
+src = open('$DOCHOME/.local/neva/bin/doctor').read()
+assert 'JOB_RECENT_FAILS' in src, 'fixed doctor no longer contains the scoped variable name'
+open('$BUGGY_DOCTOR', 'w').write(src.replace('JOB_RECENT_FAILS', 'FAILS'))
+"
+chmod +x "$BUGGY_DOCTOR"
+D3=$(HOME="$DOCHOME" PATH="$POOR_PATH" NEVA_DOCTOR_LOADED_TEST="vault-sync" "$BUGGY_DOCTOR" 2>&1); D3RC=$?
+D3FAILROWS=$(echo "$D3" | grep -c "^  FAIL")
+if [ "$D3FAILROWS" -gt 0 ] && [ "$D3RC" -eq 0 ]; then
+  ok "negative control: the old buggy pattern really does produce a false-green exit code (this check can fail)"
+else
+  bad "negative control" "could not reproduce the old clobber bug in an isolated copy (rows=$D3FAILROWS rc=$D3RC) - this check may not be testing what it claims"
+fi
+
+head_ "19. install.sh refuses to write into a foreign, already-populated workspace without consent (CRITICAL, 2026-08-01)"
+# Found reading install.sh as a buyer about to run it: it used to write AGENTS.base.md,
+# SOUL.base.md, and (on a fresh interview) BOOTSTRAP.md into WORKSPACE_PATH unconditionally.
+# Our stated buyer already uses Claude/Obsidian, so a live ~/.openclaw/workspace with their
+# OWN AGENTS.md/SOUL.md is a common starting state, not an edge case - and BOOTSTRAP.md
+# changes what that running agent does on its very next turn.
+FWHOME="$SANDBOX/foreign-workspace"; mkdir -p "$FWHOME"
+FOREIGN_WS="$FWHOME/.openclaw/workspace"; mkdir -p "$FOREIGN_WS"
+echo "# Someone else's real, running agent config. Neva did not write this file." > "$FOREIGN_WS/AGENTS.md"
+echo "some other note" > "$FOREIGN_WS/notes.txt"
+FWOUT=$(HOME="$FWHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$FWHOME/MyVault" WORKSPACE_PATH="$FOREIGN_WS" \
+  NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" 2>&1); FWRC=$?
+if [ -f "$FOREIGN_WS/AGENTS.base.md" ] || [ -f "$FOREIGN_WS/BOOTSTRAP.md" ]; then
+  bad "install.sh wrote into a foreign workspace without consent" "AGENTS.base.md and/or BOOTSTRAP.md landed in $FOREIGN_WS even though it had a pre-existing AGENTS.md install.sh did not write; a buyer's already-running agent would have been altered unannounced"
+elif [ "$FWRC" -eq 0 ]; then
+  bad "install.sh exited 0 without writing AND without refusing" "expected a non-zero exit naming the fix when a foreign workspace is detected non-interactively; got rc=0. Output: $FWOUT"
+elif echo "$FWOUT" | grep -qi "did not create\|WORKSPACE_CONFIRM"; then
+  ok "install.sh refuses to write into a foreign workspace non-interactively, and names the fix"
+else
+  bad "install.sh refused for the wrong reason" "exited non-zero (rc=$FWRC) but did not explain the foreign-workspace refusal. Output: $FWOUT"
+fi
+# negative control: the SAME command against an empty/fresh workspace must install normally -
+# proves the guard is not simply refusing everything
+FWHOME2="$SANDBOX/foreign-workspace-empty"; mkdir -p "$FWHOME2"
+EMPTY_WS="$FWHOME2/.openclaw/workspace"
+HOME="$FWHOME2" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$FWHOME2/MyVault" WORKSPACE_PATH="$EMPTY_WS" \
+  NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
+[ -f "$EMPTY_WS/AGENTS.base.md" ] && ok "negative control: an empty/fresh workspace still installs normally (the guard only blocks genuinely foreign, non-empty ones)" \
+  || bad "negative control" "install.sh failed to populate a normal, empty workspace - the guard is over-triggering"
+
+head_ "19b. general workspace consent does not imply BOOTSTRAP consent when a live agent config is present"
+FWHOME3="$SANDBOX/foreign-workspace-consented"; mkdir -p "$FWHOME3"
+FOREIGN_WS3="$FWHOME3/.openclaw/workspace"; mkdir -p "$FOREIGN_WS3"
+echo "# real agent config" > "$FOREIGN_WS3/AGENTS.md"
+FW3OUT=$(HOME="$FWHOME3" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$FWHOME3/MyVault" WORKSPACE_PATH="$FOREIGN_WS3" \
+  WORKSPACE_CONFIRM=yes NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" 2>&1)
+if [ -f "$FOREIGN_WS3/AGENTS.base.md" ] && [ ! -f "$FOREIGN_WS3/BOOTSTRAP.md" ]; then
+  ok "base layers write with general consent, but BOOTSTRAP.md stays out of a workspace with a live agent's own config unless separately confirmed"
+elif [ -f "$FOREIGN_WS3/BOOTSTRAP.md" ]; then
+  bad "BOOTSTRAP.md written without its own consent" "workspace had AGENTS.md (a running agent's config); general WORKSPACE_CONFIRM=yes must not double as consent to redirect that agent's next turn"
+else
+  bad "general consent did not take effect" "AGENTS.base.md missing even after WORKSPACE_CONFIRM=yes; check output: $FW3OUT"
 fi
 
 printf "\n%s\n" "-----------------------------------------"

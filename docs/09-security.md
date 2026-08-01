@@ -20,8 +20,10 @@ picture, not just the reassuring half.
 - OpenClaw ships its own security posture check (`openclaw security audit`). Run it after
   install and after every update; it inspects your actual running config, not a document that
   goes stale. Loopback-only binding is necessary but is not sufficient by itself the moment you
-  add a reverse proxy or any remote access path: set `gateway.auth` (a shared secret) before
-  you do, and let the audit tell you if you forgot.
+  add a reverse proxy or any remote access path: set a gateway auth secret before you do
+  (`gateway.auth` is an object - `openclaw config set gateway.auth.mode token` then
+  `openclaw config set gateway.auth.token "$(openssl rand -hex 16)"`, not a plain string;
+  see docs/tier2/hardening-checklist.md step 1), and let the audit tell you if you forgot.
 
 ## Why "closed by default" is not the same as "safe"
 OpenClaw is real, actively-developed, and has had a genuinely large number of security reports

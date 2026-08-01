@@ -5,7 +5,7 @@ you spend an hour, know what that proof covers and what it does not.
 
 ## What is proven (and will not silently break)
 
-- **macOS fresh install.** From "bare homebrew" to talking to the agent, tested in a 33-check
+- **macOS fresh install.** From "bare homebrew" to talking to the agent, tested in a 38-check
   sandbox that installs the product from scratch, locks down permissions, and runs every
   documented step in sequence. This path is stable.
 - **The interview is real.** Your first conversation actually configures the system. You
@@ -20,12 +20,15 @@ you spend an hour, know what that proof covers and what it does not.
 
 ## What is not proven (and might be rough)
 
-- **Linux, end-to-end.** Linux is supported in theory and in the code. The install script
-  runs on Linux. The services use systemd (which is standard on modern Linux). But the full
-  flow, from fresh install through the first week of use, has never been run on Linux by
-  anyone in a real session. If you are on Linux, you are testing it for the first time.
-  Expect smaller mismatches: file paths, permissions, timers not firing on first boot.
-  Report them.
+- **Linux, end-to-end: genuinely untested, not just "less tested."** `install.sh` has a
+  non-Darwin branch and 14 systemd unit/timer templates exist under `services/systemd/`, both
+  written to the same contract as the macOS path - but neither has ever actually executed.
+  Not the full flow, not a partial run, not once, by anyone, on a real Linux machine. Everything
+  Linux-specific in this repo is reviewed and believed correct, not proven. If you are on
+  Linux, you are the first real run it has ever had. Expect the class of bug that only shows
+  up live: file paths, permissions, `systemctl --user` needing `loginctl enable-linger` to
+  survive an SSH logout, timers not firing on first boot. Report all of it, including things
+  that work - a confirmed-working Linux install is itself useful information nobody has yet.
 - **Non-ASCII vault content.** Arabic notes exist in the test vault; searches for Arabic
   text work in the harness. But a real vault with Arabic names, money-tracking in Arabic,
   and mixed-language journal entries has never been lived in. If this is you, test it hard

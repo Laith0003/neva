@@ -17,9 +17,16 @@ jobs enabled and firing (see docs/03-scheduled-jobs.md).
 proxy requests.
 
 **Steps:**
-Generate a 32-character random string (or use: `openssl rand -hex 16`).
-Run: `openclaw config set gateway.auth "<string>"` (exact string, no hyphens, no encoding).
-Verify: `python3 -c "import json; c=json.load(open('$HOME/.openclaw/openclaw.json')); print(c.get('gateway',{}).get('auth'))"` returns your string.
+`gateway.auth` is an object, not a plain string - `openclaw config set gateway.auth "<string>"`
+fails with `Invalid input: expected object, received string` (verified against a real
+install, 2026-08-01). Set the two fields the schema actually wants instead:
+```
+openclaw config set gateway.auth.mode token
+openclaw config set gateway.auth.token "$(openssl rand -hex 16)"
+```
+Then restart the gateway - both commands print "Restart the gateway to apply."
+Verify: `openclaw security audit --json` no longer lists `gateway.loopback_no_auth`, and
+`python3 -c "import json; c=json.load(open('$HOME/.openclaw/openclaw.json')); print(c.get('gateway',{}).get('auth'))"` shows `{"mode": "token", "token": "..."}`.
 
 **Why:** The gateway will accept authenticated requests from a proxy. Without this, anyone
 who knows the VPS IP can connect directly to the loopback gateway (if they have shell access,
@@ -195,8 +202,12 @@ any window where it was exposed. The allowlist provides defense-in-depth only.
 
 **Steps:**
 Run: `openclaw security audit --json` and read the output. Look for any findings with
-severity "critical" or "high". If you find any, run `openclaw security audit --fix` and
-re-run the check.
+severity "critical" or "high". `openclaw security audit --fix` only applies remediations that
+do not require a decision from you (mostly file-permission fixes) - it will report "Fixes: no
+changes applied" and leave `gateway.loopback_no_auth` (the finding almost every install
+starts with) untouched, because setting a real auth secret is exactly the kind of decision it
+will not make silently. If step 1 above is done, that finding is already gone; for anything
+else `--fix` reports as unfixed, apply the specific remediation text it prints, then re-run.
 
 Also run: `doctor`. It should return exit 0 with "all clear". Every row should say "ok".
 
