@@ -8,6 +8,13 @@ It answers questions about your world from YOUR notes, cites the file it read, a
 sessions before long-context drift makes it sloppy, and messages you when something needs a
 human.
 
+> **First public release, and testers are the point.** The macOS path is proven: 38 checks
+> install it from scratch in a stripped sandbox and assert the outcomes you would actually
+> notice, and each check is proven able to fail. Linux has never been run end to end, not once,
+> so on Linux you are the first. Read [docs/00-testing-this.md](docs/00-testing-this.md) before
+> you spend an hour, and tell us what broke: that is worth more to this project right now than
+> a star.
+
 Most self-hosted assistants die two deaths: they hallucinate about your life, or they rot
 (sessions bloat, syncs wedge silently, gateways end up exposed). This template exists
 because both are preventable with structure, not with hope.
