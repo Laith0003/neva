@@ -18,7 +18,7 @@
 #   3. PROMISES: asserts what the README claims to a buyer, not that exit codes are 0
 #   4. NEGATIVE controls: proves each check can actually fail
 #
-# 2026-08-01 QA pass (Nouran). Six more blockers found BY THIS HARNESS STILL PASSING GREEN
+# 2026-08-01 adversarial QA pass. Six more blockers found BY THIS HARNESS STILL PASSING GREEN
 # while broken, all from the same root cause the header above already names: this box
 # shares assumptions with the source machine.
 #   - cadence's staleness check uses `find -printf`, a GNU-only flag. On real BSD find
@@ -253,7 +253,15 @@ if python3 "$REPO/build/leak-scan.py" "$REPO" >/dev/null 2>&1; then ok "leak sca
 else bad "leak scan" "personal identifiers present; run build/leak-scan.py"; fi
 # negative control: the scanner must actually be capable of finding a leak
 NEGLEAK=$(mktemp -d /tmp/neva-leak-negctrl-XXXXXX)
-echo "reach the owner at laith.aljunaidy.laith@personal.example" > "$NEGLEAK/plant.md"
+# The plant must be catchable by TIER 2 ALONE. Tier 1 is a gitignored personal denylist
+# that CI and every contributor will not have, so a tier-1 plant would make this control
+# silently untestable exactly where it matters most. A documentation-domain address is also
+# wrong here: RFC 2606 reserves those and the scanner correctly ignores them.
+# Assembled at runtime, never written whole. Now that leak-scan scans build/ (it used to
+# skip it, which is how two real leaks hid), a literal test address in this file would be
+# flagged as a finding in the repo itself. The plant must exist only in the sandbox.
+PLANT_USER="real.person"; PLANT_HOST="gmail"; PLANT_TLD="com"
+echo "reach the owner at ${PLANT_USER}@${PLANT_HOST}.${PLANT_TLD}" > "$NEGLEAK/plant.md"
 if python3 "$REPO/build/leak-scan.py" "$NEGLEAK" >/dev/null 2>&1; then
   bad "negative control" "leak-scan did not flag a planted identifier"
 else

@@ -46,7 +46,7 @@ else
 fi
 
 # live stats straight from the official session store
-STATS=$(timeout 60 openclaw sessions list --json 2>/dev/null \
+STATS=$(neva_timeout 60 openclaw sessions list --json 2>/dev/null \
   | SESSION_KEY="$SESSION_KEY" python3 -c '
 import json, os, sys, time
 key = os.environ["SESSION_KEY"]
@@ -88,7 +88,7 @@ LAST=$(cat "$STATE" 2>/dev/null || echo 0)
 echo "$NOW" > "$STATE"
 
 echo "$(date '+%F %T') $REASON -> rotating session" >> "$LOG"
-timeout 90 openclaw agent --agent main --session-key "$SESSION_KEY" -m "/new" --json >> "$LOG" 2>&1
+neva_timeout 90 openclaw agent --agent main --session-key "$SESSION_KEY" -m "/new" --json >> "$LOG" 2>&1
 
 TOKEN=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.openclaw/openclaw.json")))["channels"]["telegram"]["botToken"])' 2>/dev/null)
 if [ -n "$TOKEN" ]; then

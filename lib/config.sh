@@ -50,3 +50,35 @@ FOOD_DIR="${FOOD_DIR/#\$HOME/$HOME}"
 # OWNER_CHAT_ID is intentionally allowed to be empty until Telegram is set up. Tools that
 # actually send must check it themselves rather than posting to a placeholder id.
 neva_can_send() { [ -n "${OWNER_CHAT_ID:-}" ]; }
+
+# PORTABILITY FIX (2026-08-01): `timeout` is a GNU coreutils command. Stock macOS ships
+# neither `timeout` nor `gtimeout` on a plain PATH (only present if the buyer separately
+# installed homebrew coreutils, and even then usually prefixed `gtimeout` unless they added
+# gnubin to PATH). Every caller in this template that ran `timeout N cmd` directly was
+# silently non-functional on a real stock Mac: bash reports "command not found" (rc=127),
+# which several call sites already handle honestly as a failure (see bin/briefing), but the
+# underlying feature (openclaw calls, hledger calls, security audits) never actually ran.
+# `neva_timeout SECONDS cmd [args...]` uses a real `timeout`/`gtimeout` if either is on PATH
+# (fast path, most common case), and otherwise falls back to a background+poll+kill loop -
+# the exact technique build/verify.sh's own check 17 already uses to bound upgrade.sh, proven
+# to work on a stock Mac (no GNU coreutils) by that same harness passing green.
+neva_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"; return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"; return $?
+  fi
+  "$@" &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$secs" ]; then
+      kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  wait "$pid"
+}

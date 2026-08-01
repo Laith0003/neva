@@ -35,30 +35,31 @@ import re
 import sys
 
 # ---- tier 1: the enumerated denylist (case-insensitive) ----
-TIER1 = [
-    # NOT listed: "laith", "aljunaidy", "junaidy", laithjunaidy.com, laithaljunaidy.me,
-    # Laith0003. Those are the author's own public identity and appear ON PURPOSE in
-    # LICENSE, NOTICE, AUTHOR.md and the README: a product with no named creator and no
-    # way to reach him is a product nobody trusts. His PRIVATE surface is still blocked
-    # below (home path, phone, personal email, chat id), and so is every other person's
-    # and every client's, with no exceptions and no file scoping.
-    # owner phone: any run of spaces/dots/dashes/parens between digits, optional leading +
-    r"\+?962[\s().\-]*7[\s().\-]*9[\s().\-]*7[\s().\-]*8[\s().\-]*6[\s().\-]*8[\s().\-]*3[\s().\-]*3[\s().\-]*5",
-    r"962798224081", r"9647503730862", r"9647740847301",
-    r"5177115582",                                     # telegram chat id
-    r"laith\.aljunaidy\.laith",                        # personal email local-part
-    r"brainof\.", r"thedotwallet",
-    r"mercato", r"bayazid", r"hakki", r"bashiti", r"\bares\b", r"expora",
-    r"qaddumi", r"qaddomi", r"\btiq\b", r"milagros", r"capsula",
-    r"branders", r"nouran", r"aswad", r"mutasim", r"kusrin",
-    r"164\.90\.188\.187", r"82\.212\.84\.211", r"192\.168\.1\.86",
-    r"676767",
-    r"/root/", r"/Users/laithaljunaidy",
-    r"jarvis",                                          # the private product name
-    r"8913245203:",                                     # bot token prefix
-    r"لايث",                        # "Laith" in Arabic script (لايث)
-    r"الجنيدي",       # "Aljunaidy" in Arabic script (الجنيدي)
-]
+def _load_tier1():
+    """Personal identifiers live OUTSIDE the repo, in a gitignored file.
+
+    A tier-1 denylist is a list of the exact strings you most need to keep private. Shipping
+    it inside a public repository publishes them. This is not theoretical: the real list sat
+    in this file, in plain text, through fifteen commits, and was caught by a pre-publication
+    audit rather than by this scanner, because SKIP_DIRS excluded the directory this file is
+    in. Both halves of that are fixed now.
+
+    If the local file is absent, tier 1 is INACTIVE and main() says so loudly. It must never
+    print "clean" while silently checking nothing.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    local = os.path.join(here, "leak-scan.local")
+    if not os.path.isfile(local):
+        return [], False
+    pats = []
+    for line in open(local, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            pats.append(line)
+    return pats, True
+
+
+TIER1, TIER1_ACTIVE = _load_tier1()
 
 # ---- tier 2: generic shapes ----
 TIER2 = [
@@ -79,20 +80,33 @@ TIER2 = [
 # present somewhere in the surrounding line. Line-wide "contains" matching used to mean a real
 # secret sharing a line with a documented fake placeholder (e.g. "real: X, placeholder: Y")
 # suppressed the real finding too. Do not change this back to substring-of-line matching.
+_RFC2606 = re.compile(r"@(?:[a-z0-9.-]+\.)?example(?:\.(?:com|net|org))?\b", re.I)
+
 TIER2_ALLOW = {
+    # verify.sh asserts that an unreachable token fails honestly. This value is all zeros
+    # and cannot authenticate against anything; it is a fixture, not a secret.
+    "000000000:AA_a_deliberately_fake_unreachable_token",
     "+9990000000",                 # documented fake phone
     "you@example.com",             # documented fake email
-    "neva@jarvis",                 # never present; kept for safety
     "agent@node", "owner@local",   # ported commit identities (note: install.sh actually
                                     # writes "agent@local"; .git is skip-dir'd either way,
                                     # so this has not been reachable -- left as-is, flagged
                                     # in the security audit rather than silently changed)
     "/Users/you/",                 # the documented placeholder path (docs/CONFIGURATION.md)
 }
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".obsidian", "build"}
+# "build" and "__pycache__" used to be here. That is exactly why two real leaks survived:
+# a person's name in build/verify.sh and a tracked .pyc embedding an absolute home path were
+# both invisible to the tool meant to catch them. A scanner that does not scan itself is not
+# a scanner. Only .git is skipped now, because its object store is checked separately.
+SKIP_DIRS = {".git", "node_modules", ".obsidian"}
+# The personal denylist is gitignored and never ships. Scanning it would report every
+# pattern it contains as a leak, which is noise that teaches people to ignore this tool.
+SKIP_FILES = {"leak-scan.local"}
 SKIP_EXT = {".png", ".jpg", ".gif", ".ico", ".woff", ".woff2", ".zip"}
 
-T1 = re.compile("|".join(f"({p})" for p in TIER1), re.I)
+# An empty alternation matches the empty string at every position, so guard it: with no
+# local denylist, tier 1 must match NOTHING rather than everything.
+T1 = re.compile("|".join(f"({p})" for p in TIER1), re.I) if TIER1 else None
 
 
 
@@ -107,6 +121,8 @@ def scan(root):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
+            if fn in SKIP_FILES:
+                continue
             if os.path.splitext(fn)[1].lower() in SKIP_EXT:
                 continue
             path = os.path.join(dirpath, fn)
@@ -116,12 +132,17 @@ def scan(root):
             except OSError:
                 continue
             for n, line in enumerate(text.splitlines(), 1):
-                m = T1.search(line)
+                m = T1.search(line) if T1 else None
                 if m:
                     findings.append(("TIER1", rel, n, m.group(0)))
                 for label, rx in TIER2:
                     for m2 in rx.finditer(line):
                         if m2.group(0) in TIER2_ALLOW:
+                            continue
+                        # RFC 2606 reserves example.com, example.net, example.org and the
+                        # .example TLD for documentation. An address there cannot reach a
+                        # real person, so it is a false positive by construction.
+                        if _RFC2606.search(m2.group(0)):
                             continue
                         findings.append((f"TIER2:{label}", rel, n, m2.group(0)))
     return findings
@@ -131,6 +152,15 @@ def main():
     root = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))
     findings = scan(root)
+    if not TIER1_ACTIVE:
+        # Never print "clean" while silently checking nothing. A scanner that appears to pass
+        # because it was never configured is worse than one that is absent, because it is
+        # trusted.
+        print("leak-scan: TIER 1 INACTIVE. No build/leak-scan.local found, so NO personal "
+              "identifiers are being checked, only the generic patterns below.\n"
+              "fix: cp build/leak-scan.local.example build/leak-scan.local and put your own "
+              "names, numbers, paths and client names in it. That file is gitignored.",
+              file=sys.stderr)
     if findings:
         print(f"leak-scan: {len(findings)} finding(s) in {root}")
         for tier, rel, n, frag in findings[:60]:

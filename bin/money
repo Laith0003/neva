@@ -57,11 +57,11 @@ HLARGS=(); for f in "${FILES[@]}"; do HLARGS+=(-f "$f"); done
 
 case "$CMD" in
   balance|bal)
-    timeout 10 hledger "${HLARGS[@]}" balance -O csv "$@" ;;
+    neva_timeout 10 hledger "${HLARGS[@]}" balance -O csv "$@" ;;
   register|reg)
-    timeout 10 hledger "${HLARGS[@]}" register -O csv "$@" ;;
+    neva_timeout 10 hledger "${HLARGS[@]}" register -O csv "$@" ;;
   print)
-    timeout 10 hledger "${HLARGS[@]}" print "$@" ;;
+    neva_timeout 10 hledger "${HLARGS[@]}" print "$@" ;;
   check)
     # currency-shaped: a symbol glued to a digit, or a number glued to a 3-letter code.
     # Deliberately narrow (not "any number") to avoid drowning the buyer in false positives

@@ -123,6 +123,52 @@ OWNER_EMAIL="${OWNER_EMAIL:-}"
 OWNER_PHONE="${OWNER_PHONE:-}"
 WORKSPACE_PATH="${WORKSPACE_PATH:-$HOME/.openclaw/workspace}"
 
+# FOREIGN WORKSPACE GUARD (2026-08-01): install.sh used to write AGENTS.base.md, SOUL.base.md,
+# BOOTSTRAP.md and skills/* into WORKSPACE_PATH unconditionally ("base layers always update",
+# no existence check at all). Our stated buyer is someone already using Claude/Obsidian, so a
+# large share of buyers already have a live ~/.openclaw/workspace: a running agent they
+# actually use, with its own AGENTS.md/SOUL.md. Installing with defaults dropped our files
+# into it unannounced. Base-layer files don't collide by name (lucky, not a guarantee), but
+# BOOTSTRAP.md changes what that OTHER agent does on its very next turn - with zero consent.
+# This resolves BEFORE the identity file is written below, so if the buyer picks a different
+# path here, identity.env is written with the FINAL path, not the stale default (mirrors the
+# vault non-empty-folder handling in section 3, which already resolves VAULT_PATH before
+# anything downstream reads it).
+WORKSPACE_OURS=1
+if [ -d "$WORKSPACE_PATH" ] && [ -n "$(ls -A "$WORKSPACE_PATH" 2>/dev/null)" ]; then
+  # ours if stamped by a prior run of THIS guard, or (legacy, pre-stamp installs) if both our
+  # own base-layer files are already present - a signal nothing but this installer writes
+  if [ ! -f "$WORKSPACE_PATH/.neva-workspace" ] \
+     && ! { [ -f "$WORKSPACE_PATH/AGENTS.base.md" ] && [ -f "$WORKSPACE_PATH/SOUL.base.md" ]; }; then
+    WORKSPACE_OURS=0
+  fi
+fi
+if [ "$WORKSPACE_OURS" = "0" ]; then
+  say "A workspace already exists at $WORKSPACE_PATH that Neva did not create."
+  say "What is there now:"
+  ls -A "$WORKSPACE_PATH" 2>/dev/null | sed 's/^/  - /'
+  say "What Neva would add: AGENTS.base.md, SOUL.base.md, skills/*"
+  if [ ! -f "$WORKSPACE_PATH/USER.md" ] && [ ! -f "$WORKSPACE_PATH/BOOTSTRAP.md" ]; then
+    say "  and, separately, BOOTSTRAP.md: it changes what this workspace's own agent does on"
+    say "  its NEXT conversation turn. You get asked about that one specifically, below."
+  fi
+  ask WORKSPACE_CONFIRM "Type a different path to use instead, or type 'yes' to add Neva's files into $WORKSPACE_PATH as it is" ""
+  case "$WORKSPACE_CONFIRM" in
+    /*|\~*)
+      WORKSPACE_PATH="${WORKSPACE_CONFIRM/#\~/$HOME}"
+      say "using $WORKSPACE_PATH instead"
+      ;;
+    y|Y|yes|YES|Yes)
+      say "using the existing workspace at $WORKSPACE_PATH, as instructed"
+      ;;
+    *)
+      say "not writing into $WORKSPACE_PATH."
+      say "fix: re-run install.sh with WORKSPACE_PATH=/a/different/empty/path, or answer 'yes' to use it as-is"
+      exit 64
+      ;;
+  esac
+fi
+
 # TOCTOU fix (2026-08-01): `cat > "$CONFIG"` used to create this file under the caller's
 # default umask (typically 022, world-readable) and only chmod 600 it AFTER the identity
 # and chat-id were already written to disk. Between those two steps the file held a live
@@ -159,12 +205,35 @@ for F in AGENTS.base.md SOUL.base.md; do
 done
 # BOOTSTRAP only if the interview never ran (its self-deletion is the marker)
 if [ ! -f "$WORKSPACE_PATH/USER.md" ] && [ ! -f "$WORKSPACE_PATH/BOOTSTRAP.md" ]; then
-  cp "$REPO/workspace/BOOTSTRAP.md" "$WORKSPACE_PATH/BOOTSTRAP.md"
-  say "BOOTSTRAP interview seeded: your agent's first conversation will be the setup"
+  WRITE_BOOTSTRAP=1
+  # LIVE-AGENT GATE (2026-08-01): AGENTS.md/SOUL.md (the real files an agent reads, not our
+  # *.base.md layers) mean somebody else's assistant is already configured here.
+  # BOOTSTRAP.md changes what THAT agent does on its next turn - the general "use this
+  # workspace anyway" consent above is about writing files, not about redirecting a running
+  # agent's next conversation, so this gets its own, separate, defaults-to-no question.
+  if [ -f "$WORKSPACE_PATH/AGENTS.md" ] || [ -f "$WORKSPACE_PATH/SOUL.md" ]; then
+    say "This workspace has AGENTS.md/SOUL.md: a running agent's own config."
+    ask BOOTSTRAP_CONFIRM "Seed Neva's BOOTSTRAP interview here too? It changes what that agent does on its NEXT turn (yes/no)" "no"
+    case "$BOOTSTRAP_CONFIRM" in
+      y|Y|yes|YES|Yes) : ;;
+      *)
+        WRITE_BOOTSTRAP=0
+        say "BOOTSTRAP.md NOT written: workspace already has a running agent's config."
+        say "fix: seed it by hand when ready: cp '$REPO/workspace/BOOTSTRAP.md' '$WORKSPACE_PATH/'"
+        ;;
+    esac
+  fi
+  if [ "$WRITE_BOOTSTRAP" = "1" ]; then
+    cp "$REPO/workspace/BOOTSTRAP.md" "$WORKSPACE_PATH/BOOTSTRAP.md"
+    say "BOOTSTRAP interview seeded: your agent's first conversation will be the setup"
+  fi
 fi
 if [ -d "$REPO/workspace/skills" ]; then
   cp -R "$REPO/workspace/skills/." "$WORKSPACE_PATH/skills/" 2>/dev/null || true
 fi
+# marks this workspace as Neva's for future re-runs, so the foreign-workspace guard above
+# does not re-ask every time once the buyer has already made this choice once
+date +%F > "$WORKSPACE_PATH/.neva-workspace"
 
 # ---------- 6. render service templates (not enabled) ----------
 RENDERED="$PREFIX/services"
