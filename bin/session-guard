@@ -18,7 +18,7 @@
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
-STATE_DIR="$HOME/.local/state/lucy"
+STATE_DIR="$HOME/.local/state/neva"
 mkdir -p "$STATE_DIR"
 STATE="$STATE_DIR/session-guard.state"
 LOG="$STATE_DIR/session-guard.log"
@@ -31,7 +31,7 @@ MAX_AGE_HOURS=24
 
 # PARTIAL PLATFORM GAP (2026-08-01): the stall-streak branch below depends on
 # `journalctl -u openclaw-gateway`, i.e. systemd/journald, which does not exist on macOS
-# (this guard is still scheduled there: services/launchd/com.lucy.session-guard.plist.tmpl).
+# (this guard is still scheduled there: services/launchd/com.neva.session-guard.plist.tmpl).
 # Unlike lane-guard, session-guard also has a platform-independent branch (token/age bloat via
 # `openclaw sessions list --json`), so this does not bail out entirely; it just says plainly,
 # once per run, that the stall-detection half cannot see anything here, instead of silently

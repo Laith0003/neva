@@ -3,7 +3,7 @@
 #
 # What it does, in order:
 #   1. checks your platform and dependencies (nothing installed without telling you)
-#   2. copies the tools to ~/.local/lucy and links them into ~/.local/bin (no sudo, ever)
+#   2. copies the tools to ~/.local/neva and links them into ~/.local/bin (no sudo, ever)
 #   3. sets up your vault folder (or leaves your existing one completely alone)
 #   4. interviews you for the identity file (only what it cannot detect)
 #   5. seeds the agent workspace (BOOTSTRAP interview, base persona layers)
@@ -12,11 +12,11 @@
 #   7. runs doctor so you end with a table of what works and what to do next
 set -u
 REPO="$(cd "$(dirname "$0")" && pwd)"
-PREFIX="$HOME/.local/lucy"
+PREFIX="$HOME/.local/neva"
 BIN="$HOME/.local/bin"
-CONFIG_DIR="$HOME/.config/lucy"
+CONFIG_DIR="$HOME/.config/neva"
 CONFIG="$CONFIG_DIR/identity.env"
-STATE="$HOME/.local/state/lucy"
+STATE="$HOME/.local/state/neva"
 
 say()  { printf "%s\n" "$*"; }
 ask()  { # ask VAR "question" "default"
@@ -25,7 +25,7 @@ ask()  { # ask VAR "question" "default"
   if [ -n "$cur" ]; then return 0; fi     # already answered (env pre-seed or re-run)
   # hands-free mode: an agent collects answers in chat and passes them as env vars.
   # If a required answer is missing here, fail with its name instead of hanging on read.
-  if [ "${LUCY_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+  if [ "${NEVA_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
     if [ -n "$def" ]; then eval "$var=\"\$def\""; return 0; fi
     echo "non-interactive install: missing required answer $var ($q)" >&2
     echo "fix: export $var=... and re-run, or run interactively" >&2
@@ -80,7 +80,7 @@ esac
 ask VAULT_PATH "Where should your vault live" "$HOME/Vault"
 VAULT_PATH="${VAULT_PATH/#\~/$HOME}"
 if [ -d "$VAULT_PATH" ] && [ -n "$(ls -A "$VAULT_PATH" 2>/dev/null)" ]; then
-  if [ -f "$VAULT_PATH/.lucy-template" ]; then
+  if [ -f "$VAULT_PATH/.neva-template" ]; then
     say "vault exists at $VAULT_PATH (ours), leaving it alone"
   else
     say "A non-empty folder already exists at $VAULT_PATH."
@@ -96,7 +96,7 @@ fi
 if [ ! -d "$VAULT_PATH" ] || [ -z "$(ls -A "$VAULT_PATH" 2>/dev/null)" ]; then
   mkdir -p "$VAULT_PATH"
   cp -R "$REPO/vault/." "$VAULT_PATH/"
-  date +%F > "$VAULT_PATH/.lucy-template"
+  date +%F > "$VAULT_PATH/.neva-template"
   say "vault created at $VAULT_PATH"
 fi
 # vault-sync needs a repo; without one it fails every 2 minutes into a log nobody reads
@@ -222,27 +222,27 @@ CADENCE_STATUS="off"
 # `launchctl load` / `systemctl --user enable --now`; they still register against the real
 # session, using whatever sandbox paths were rendered, and nothing about a scratch $HOME tells
 # a test harness it needs to unload them afterward. A real buyer's real install should load for
-# real; a test/CI run of this script should not. LUCY_SKIP_SCHEDULE_ENABLE=1 is the explicit,
+# real; a test/CI run of this script should not. NEVA_SKIP_SCHEDULE_ENABLE=1 is the explicit,
 # opt-in way to exercise the render+ask logic below without touching the host scheduler.
-if [ "${LUCY_SKIP_SCHEDULE_ENABLE:-0}" = "1" ]; then
-  say "cadence timer is OFF: LUCY_SKIP_SCHEDULE_ENABLE=1 (test/CI mode, real launchd/systemd not touched)"
+if [ "${NEVA_SKIP_SCHEDULE_ENABLE:-0}" = "1" ]; then
+  say "cadence timer is OFF: NEVA_SKIP_SCHEDULE_ENABLE=1 (test/CI mode, real launchd/systemd not touched)"
 else
 case "$ENABLE_CADENCE" in
   y|Y|yes|YES|Yes)
     if [ "$OS" = "Darwin" ]; then
       LA="$HOME/Library/LaunchAgents"
       mkdir -p "$LA"
-      cp "$RENDERED/com.lucy.cadence.plist" "$LA/com.lucy.cadence.plist"
-      launchctl unload "$LA/com.lucy.cadence.plist" >/dev/null 2>&1
-      if launchctl load -w "$LA/com.lucy.cadence.plist" 2>/dev/null; then
+      cp "$RENDERED/com.neva.cadence.plist" "$LA/com.neva.cadence.plist"
+      launchctl unload "$LA/com.neva.cadence.plist" >/dev/null 2>&1
+      if launchctl load -w "$LA/com.neva.cadence.plist" 2>/dev/null; then
         CADENCE_STATUS="on"
       fi
     else
       UD="$HOME/.config/systemd/user"
       mkdir -p "$UD"
-      cp "$RENDERED/lucy-cadence.service" "$RENDERED/lucy-cadence.timer" "$UD/"
+      cp "$RENDERED/neva-cadence.service" "$RENDERED/neva-cadence.timer" "$UD/"
       if systemctl --user daemon-reload >/dev/null 2>&1 \
-         && systemctl --user enable --now lucy-cadence.timer >/dev/null 2>&1; then
+         && systemctl --user enable --now neva-cadence.timer >/dev/null 2>&1; then
         CADENCE_STATUS="on"
       fi
     fi

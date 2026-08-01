@@ -2,7 +2,7 @@
 # Node side of the git brain sync. Commits any node-authored canon writes, pulls owner edits
 # (union-merge so it never deadlocks), pushes. The always-on half: runs 24/7 via timer.
 # The bare origin repo lives wherever `git remote` points (by convention
-# $HOME/.local/state/lucy/vault.git on the node); this script never hardcodes it.
+# $HOME/.local/state/neva/vault.git on the node); this script never hardcodes it.
 #
 # GATE RECOVERY (added 2026-07-31): if the origin canon gate rejects the push, the old
 # behavior was to exit 1 and retry the identical rejected push every 2 minutes forever:
@@ -20,7 +20,7 @@
 # Now any unhandled push failure is a hard non-zero exit.
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
-STATE_DIR="$HOME/.local/state/lucy"
+STATE_DIR="$HOME/.local/state/neva"
 mkdir -p "$STATE_DIR"
 SYNC_LOG="$STATE_DIR/vault-git-sync.log"
 # a missing vault directory used to exit 0 here: silent success on the one condition that

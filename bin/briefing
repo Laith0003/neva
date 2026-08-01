@@ -4,7 +4,7 @@
 # needed), the briefing always lands once a day.
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
-STATE="$HOME/.local/state/lucy"; mkdir -p "$STATE"
+STATE="$HOME/.local/state/neva"; mkdir -p "$STATE"
 
 read -r -d '' PROMPT <<'PROMPT_EOF' || true
 This is the morning briefing, running automatically. Work silently, skipping any source that is missing or errors, then output ONE message for the owner (it goes straight to their Telegram).

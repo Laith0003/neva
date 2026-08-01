@@ -77,7 +77,7 @@ TIER2 = [
 TIER2_ALLOW = {
     "+9990000000",                 # documented fake phone
     "you@example.com",             # documented fake email
-    "lucy@jarvis",                 # never present; kept for safety
+    "neva@jarvis",                 # never present; kept for safety
     "agent@node", "owner@local",   # ported commit identities (note: install.sh actually
                                     # writes "agent@local"; .git is skip-dir'd either way,
                                     # so this has not been reachable -- left as-is, flagged

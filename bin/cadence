@@ -14,7 +14,7 @@ set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 VAULT="$VAULT_PATH"
-STATE_DIR="$HOME/.local/state/lucy"
+STATE_DIR="$HOME/.local/state/neva"
 mkdir -p "$STATE_DIR"
 STATE="$STATE_DIR/cadence.state"
 LOG="$STATE_DIR/cadence.log"

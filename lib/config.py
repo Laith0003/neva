@@ -10,7 +10,7 @@ import stat
 import sys
 
 CONFIG_PATH = os.environ.get(
-    "LUCY_CONFIG", os.path.expanduser("~/.config/lucy/identity.env"))
+    "NEVA_CONFIG", os.path.expanduser("~/.config/neva/identity.env"))
 LINE = re.compile(r'^([A-Z_]+)="([^"]*)"\s*$')
 # OWNER_CHAT_ID is deliberately NOT required: it is empty until Telegram setup, and a
 # placeholder string there would satisfy every non-empty check while sending to nowhere.

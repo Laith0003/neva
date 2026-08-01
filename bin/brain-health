@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..
 from config import load
 
 CFG = load()
-STATE = os.path.join(os.path.expanduser("~"), ".local", "state", "lucy")
+STATE = os.path.join(os.path.expanduser("~"), ".local", "state", "neva")
 COMMITS = os.path.join(STATE, "commitments.json")
 BACKUPS = os.path.join(STATE, "brain-backups")
 OUT = os.path.join(STATE, "brain-health.md")
