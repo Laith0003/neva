@@ -1,13 +1,7 @@
 Neva
 Copyright 2026 Laith Aljunaidy
 
-Licensed under the Functional Source License, Version 1.1, ALv2 Future License.
-See LICENSE.md.
+Licensed under the Apache License, Version 2.0. See LICENSE.
 
-In plain terms: use it, change it, run it for yourself or inside your company, free, forever.
-The one thing you may not do is sell it, or sell a product that substitutes for it, without a
-separate agreement. Two years after each version is published, that version becomes Apache-2.0
-and even that restriction lifts.
-
-"Neva" is a trademark of Laith Aljunaidy. The licence covers the CODE, not the NAME.
-See TRADEMARK.md.
+"Neva" is a trademark of Laith Aljunaidy. The Apache-2.0 licence covers the CODE, not
+the NAME. See TRADEMARK.md before using the name on anything you distribute.

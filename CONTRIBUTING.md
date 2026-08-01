@@ -7,8 +7,7 @@ fixing it.
 
 Use `git commit -s`. That appends a `Signed-off-by:` line, which is your agreement to the
 Developer Certificate of Origin (DCO) at https://developercertificate.org: that you wrote
-the change, or have the right to submit it, and that it may ship under this project's licence,
-including the commercial terms the author sells under.
+the change, or have the right to submit it, and that it may ship under Apache-2.0.
 
 That single line is the whole legal process. There is no CLA and no form. It exists so the
 project can be sold, given away, or relicensed later without having to track down every

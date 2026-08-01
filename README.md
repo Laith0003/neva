@@ -8,6 +8,11 @@ It answers questions about your world from YOUR notes, cites the file it read, a
 sessions before long-context drift makes it sloppy, and messages you when something needs a
 human.
 
+> **Two ways to run this.** The simple one needs only Claude Code and Obsidian: it already has a
+> model and already reads this folder, so nothing installs and nothing can be misconfigured. The
+> upgrade adds openclaw so the same assistant answers on Telegram while your laptop is shut. Start
+> simple; the upgrade is there when you want it.
+>
 > **First public release, and testers are the point.** The macOS path is proven: 38 checks
 > install it from scratch in a stripped sandbox and assert the outcomes you would actually
 > notice, and each check is proven able to fail. Linux has never been run end to end, not once,
@@ -76,16 +81,7 @@ plainly what the defaults protect against and what they cannot.
 
 ## Licence
 
-[Functional Source License 1.1](LICENSE.md), with Apache-2.0 as the future licence.
-
-Use it, change it, run it for yourself or inside your company, free, forever. Self-host it for
-your team. Fork it and publish your fork. The single restriction: you may not sell it, or sell
-something that substitutes for it, without a separate agreement. Two years after a version is
-published, that version becomes Apache-2.0 and the restriction lifts on it entirely.
-
-This is source-available rather than OSI open source, and that is a deliberate trade: it costs
-some goodwill and some directory listings, and it keeps the thing from being resold out from
-under the person who built it.
+Apache-2.0. Fork it, change it, run it, sell it. See [LICENSE](LICENSE).
 
 The name is separate: the licence covers the code, not the word "Neva". See
 [TRADEMARK.md](TRADEMARK.md). A fork may do anything except present itself as this one.

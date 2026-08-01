@@ -1,0 +1,58 @@
+{
+  "collapse-filter": true,
+  "search": "",
+  "showTags": false,
+  "showAttachments": false,
+  "showOrphans": true,
+  "hideUnresolved": false,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "path:\"03 People/\"",
+      "color": {
+        "a": 1,
+        "rgb": 13067008
+      }
+    },
+    {
+      "query": "path:\"01 Projects/\" OR path:\"02 Clients/\"",
+      "color": {
+        "a": 1,
+        "rgb": 621046
+      }
+    },
+    {
+      "query": "path:\"05 Money/\"",
+      "color": {
+        "a": 1,
+        "rgb": 430910
+      }
+    },
+    {
+      "query": "path:\"04 Knowledge/\"",
+      "color": {
+        "a": 1,
+        "rgb": 35464
+      }
+    },
+    {
+      "query": "path:\"08 Journal/\" OR path:\"09 Reviews/\" OR path:\"10 Personal/\" OR path:\"Food/\"",
+      "color": {
+        "a": 1,
+        "rgb": 8214767
+      }
+    }
+  ],
+  "collapse-display": true,
+  "showArrow": false,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1.2,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": true,
+  "centerStrength": 0.15,
+  "repelStrength": 8,
+  "linkStrength": 1,
+  "linkDistance": 200,
+  "scale": 1,
+  "close": true
+}

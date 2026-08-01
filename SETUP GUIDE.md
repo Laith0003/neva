@@ -11,28 +11,21 @@ says honestly what is proven and what is not.
 
 ### STEP 0: what you need first
 
-- A **Mac**. Linux is included but has never been run end to end, so on Linux you are the first.
-- **Node 22 or newer**: `node --version`
-- **An AI coding agent** in this folder: Claude Code, or the Claude desktop app with this folder
-  as its project. Install: https://code.claude.com/docs/en/quickstart
-- **openclaw**: https://docs.openclaw.ai/install
+Two things, and you may already have both:
+
+- **Claude Code**, or the Claude desktop app with this folder open as its project.
+  https://code.claude.com/docs/en/quickstart
 - **Obsidian**, to read your own notes: https://obsidian.md
 
----
+That is the whole list. Claude Code is already signed in and already reads this folder, so
+your assistant has a model and its instructions from the first minute. Nothing to install, no
+key to paste, no server to run.
 
-### STEP 1: give it a brain
-
-This is the step people miss, and without it everything installs fine and then cannot answer
-anything.
-
-Your assistant needs a model: either a Claude subscription you log into, or an API key.
-
-> Read [docs/01a-model.md](docs/01a-model.md) and do what it says. Two minutes if you have a
-> Claude subscription.
+On a Mac this is well tested. On Linux you would be the first to try it.
 
 ---
 
-### STEP 2: say "start"
+### STEP 1: say "start"
 
 Open this folder with your agent and tell it:
 
@@ -49,7 +42,7 @@ You never touch a terminal unless you want to.
 
 ---
 
-### STEP 3: check it is honest
+### STEP 2: check it is honest
 
 Ask it something that is in your notes, and something that is not.
 
@@ -59,22 +52,30 @@ prevent, and we want to hear about it.
 
 ---
 
-### STEP 4: Telegram, when you want it on your phone
+### STEP 3, optional: put it on your phone and keep it running
+
+Everything above works inside Claude Code, which means it stops when you close the window.
+
+If you want the same assistant on Telegram, answering while your laptop is shut, that is the
+upgrade: it needs [openclaw](https://docs.openclaw.ai/install), Node 22 or newer, and its own
+model login, which is [docs/01a-model.md](docs/01a-model.md).
 
 > [docs/02-telegram.md](docs/02-telegram.md)
 
-Do this only after step 3 works. It walks you through making your own bot and locking it to
-your account so nobody else can talk to your assistant.
+Do this only once step 2 works. It is a different piece of software with its own setup, and
+it is where most people get stuck, so there is no reason to face it before you know you want
+what it gives you.
 
 ---
 
-### STEP 5: the background jobs, one at a time
+### STEP 4, optional: the background jobs, one at a time
 
 > [docs/03-scheduled-jobs.md](docs/03-scheduled-jobs.md)
 
-These are what keep it from rotting: they watch its health, rotate its session before long
-conversations make it sloppy, and keep your notes synced. Turn them on one at a time and watch
-each one run once. Never all at once, and never on the day you install.
+Part of the same optional upgrade, and only relevant once step 3 is done. They watch its health,
+rotate its session before long conversations make it sloppy, and keep your notes synced. Turn
+them on one at a time and watch each run once. Never all at once, and never on the day you
+install.
 
 ---
 
