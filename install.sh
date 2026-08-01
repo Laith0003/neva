@@ -278,11 +278,22 @@ fi
 # The README promises a review nudge when your notes go stale. Rendering the timer template
 # is not the same as it running (this was the actual defect: install used to render-only and
 # leave every job off, so the promise was OFF for every buyer by default, with nothing telling
-# them so). Enable just the one flagship timer, with consent, same as every other interview
+# them so). Offer the one flagship timer, with consent, same as every other interview
 # question; the higher-blast-radius guards (lane-guard restarts the gateway, session-guard
 # rotates your live session, vault-sync pushes to git) stay opt-in one-at-a-time on purpose,
 # per docs/03-scheduled-jobs.md: enabling everything at once is a documented way these break.
-ask ENABLE_CADENCE "Turn on the review-nudge timer now (checks once a day, nudges in Telegram only if Reviews/Journal/Strategy have gone stale)" "yes"
+#
+# DEFAULT-TO-YES FIX (2026-08-01, CRITICAL): the default answer here used to be "yes". ask()
+# uses the default VERBATIM, with no prompt at all, whenever NEVA_NONINTERACTIVE=1 or stdin
+# is not a tty (the documented hands-free path: START.md's own example command, and every
+# agent-driven install). That means every non-interactive install silently loaded a real
+# launchd/systemd job - README says "you turn them on, one at a time" and START.md Phase 6
+# says "never during install day"; the code did the opposite of both, invisibly, by default.
+# The plist also carries RunAtLoad=true, so the job did not just get registered, it fired
+# immediately. Default is now "no": a plain Enter, or any non-interactive install, leaves
+# this off like everything else in docs/03-scheduled-jobs.md. Turning it on is still one
+# question away for anyone who wants it now, interactively.
+ask ENABLE_CADENCE "Turn on the review-nudge timer now (checks once a day, nudges in Telegram only if Reviews/Journal/Strategy have gone stale)" "no"
 CADENCE_STATUS="off"
 # TEST-HARNESS SAFETY VALVE (2026-08-01, added after this loaded a real job into the real
 # logged-in account's launchd session TWICE in one afternoon while testing this exact feature
@@ -319,6 +330,7 @@ case "$ENABLE_CADENCE" in
 esac
 if [ "$CADENCE_STATUS" = "on" ]; then
   say "cadence timer is ON: it will nudge you in Telegram when Reviews/Journal/Strategy go stale"
+  say "to turn it off later: docs/03-scheduled-jobs.md (launchctl unload alone is not reliable; use bootout)"
 else
   say "cadence timer is OFF: the 'drafts reviews when you go quiet' feature will not run"
   say "fix: enable it any time -> docs/03-scheduled-jobs.md (or answer yes on the next install.sh re-run)"

@@ -49,7 +49,12 @@ personality all come from that one conversation. It ends by doing a real task fo
 4. Talk to your agent in the terminal; its first conversation is the interview
 Then, and only then: [docs/02-telegram.md](docs/02-telegram.md)
 
-macOS and Linux. Windows via WSL2 only.
+**macOS: proven.** Tested end to end in a real install (see `build/verify.sh`, 38 checks).
+**Linux: untested.** The install script has a Linux branch, and 14 systemd unit/timer
+templates exist for it, but neither has ever been run - not once, by anyone, on a real Linux
+machine. If you install on Linux, you are the first. Read
+[docs/00-testing-this.md](docs/00-testing-this.md) before you start, and report what breaks.
+**Windows:** WSL2 only, and inherits the Linux caveat above (WSL2 is Linux).
 
 ## The honest part
 

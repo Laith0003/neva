@@ -108,7 +108,17 @@ print(f"{crit} {warn} {len(findings)}")
         CRIT=$(echo "$AUDIT_COUNTS" | awk '{print $1}')
         WARNC=$(echo "$AUDIT_COUNTS" | awk '{print $2}')
         if [ "${CRIT:-0}" -gt 0 ]; then
-          row fail "openclaw security audit: $CRIT high/critical finding(s)" "run: openclaw security audit --fix   (then re-run: openclaw security audit --json | jq '.findings[]')"
+          # BROKEN-FIX CORRECTION (2026-08-01): `security audit --fix` does not, and cannot
+          # safely, resolve the single finding almost every buyer hits on day one
+          # (gateway.loopback_no_auth: no gateway auth secret configured). Verified against a
+          # real openclaw install: `--fix` reports "Fixes: no changes applied" and the
+          # critical finding is unchanged, because choosing to enable auth and generate a
+          # secret is a decision `--fix`'s "safe remediations only" contract correctly refuses
+          # to make for you. The real fix (also verified end to end: critical findings go from
+          # 1 to 0) sets the two fields the schema actually requires - gateway.auth is an
+          # OBJECT, so `openclaw config set gateway.auth "<string>"` fails with "expected
+          # object, received string" (the OLD prescription here, also wrong, also verified).
+          row fail "openclaw security audit: $CRIT high/critical finding(s)" "run: openclaw config set gateway.auth.mode token && openclaw config set gateway.auth.token \"\$(openssl rand -hex 16)\"   then restart the gateway, then re-run: openclaw security audit --json"
         elif [ "${WARNC:-0}" -gt 0 ]; then
           row warn "openclaw security audit: $WARNC medium/warning finding(s)" "run: openclaw security audit   for detail"
         else
@@ -231,11 +241,21 @@ fi
 hb_epoch() { # hb_epoch ISO8601Z -> epoch seconds, or empty on parse failure
   date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null
 }
-case "$(uname)" in
-  Darwin) LOADED=$(launchctl list 2>/dev/null | awk '{print $3}' | grep "^com\.neva\." | sed 's/^com\.neva\.//' | sort -u) ;;
-  Linux)  LOADED=$(systemctl --user list-timers --all 2>/dev/null | grep -o "neva-[a-zA-Z-]*\.timer" | sed -e 's/^neva-//' -e 's/\.timer$//' | sort -u) ;;
-  *)      LOADED="" ;;
-esac
+# TEST HOOK (2026-08-01): overridable so build/verify.sh can exercise this whole branch
+# (including the FAIL-counter regression check below it) without loading a real launchd or
+# systemd job onto the host. Loading a throwaway job into the REAL logged-in account's
+# session just to test doctor is exactly the mistake install.sh's NEVA_SKIP_SCHEDULE_ENABLE
+# exists to prevent during a real install; doctor testing itself must not repeat it. Unset
+# in any real run - only set by the test harness.
+if [ -n "${NEVA_DOCTOR_LOADED_TEST:-}" ]; then
+  LOADED="$NEVA_DOCTOR_LOADED_TEST"
+else
+  case "$(uname)" in
+    Darwin) LOADED=$(launchctl list 2>/dev/null | awk '{print $3}' | grep "^com\.neva\." | sed 's/^com\.neva\.//' | sort -u) ;;
+    Linux)  LOADED=$(systemctl --user list-timers --all 2>/dev/null | grep -o "neva-[a-zA-Z-]*\.timer" | sed -e 's/^neva-//' -e 's/\.timer$//' | sort -u) ;;
+    *)      LOADED="" ;;
+  esac
+fi
 if [ -z "$LOADED" ]; then
   row warn "scheduled jobs" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
   INERT="$INERT\n    - no scheduled jobs are running (guards, cadence, sync): docs/03"
@@ -262,11 +282,20 @@ else
     fi
     AGE_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
     RUNS=$(wc -l < "$ST" 2>/dev/null | tr -d ' ')
-    FAILS=$(tail -n 5 "$ST" | awk '$2 != 0' | grep -c .)
+    # VARIABLE-CLOBBER FIX (2026-08-01, CRITICAL): this used to assign into $FAILS - the same
+    # global name `row()` increments for every FAIL row and the final exit-code check at the
+    # bottom of the script reads. Every pass through this per-job loop silently overwrote the
+    # running FAIL-row total with this one job's "how many of its last 5 runs failed" count
+    # instead. Proven on a live install in both directions: zero FAIL rows on screen produced
+    # "1 failure(s)" and a non-zero exit, and a genuine CRITICAL FAIL row on screen produced NO
+    # footer line at all and exit 0 - the exact opposite of "doctor fails loudly", the README's
+    # own headline claim about this tool. JOB_RECENT_FAILS is scoped to this loop only and
+    # never touches the real counter.
+    JOB_RECENT_FAILS=$(tail -n 5 "$ST" | awk '$2 != 0' | grep -c .)
     if [ "$AGE_MIN" -gt "$MAXMIN" ]; then
       row fail "$JOB has not fired in ${AGE_MIN}m (expected every ~${MAXMIN}m)" "check $HOME/.local/state/neva/${JOB}.err.log; on Linux confirm the timer is still active: systemctl --user list-timers neva-${JOB}.timer"
-    elif [ "${FAILS:-0}" -ge 3 ]; then
-      row fail "$JOB failing repeatedly ($FAILS of its last 5 runs, last exit $LAST_RC)" "tail $ST and $HOME/.local/state/neva/${JOB}.err.log"
+    elif [ "${JOB_RECENT_FAILS:-0}" -ge 3 ]; then
+      row fail "$JOB failing repeatedly ($JOB_RECENT_FAILS of its last 5 runs, last exit $LAST_RC)" "tail $ST and $HOME/.local/state/neva/${JOB}.err.log"
     elif [ "$LAST_RC" != "0" ]; then
       row warn "$JOB last run exited $LAST_RC" "tail $HOME/.local/state/neva/${JOB}.err.log"
     else
