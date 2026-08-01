@@ -81,6 +81,31 @@ else
   row fail "openclaw" "install it: https://docs.openclaw.ai/install"
 fi
 
+# 4a. openclaw has ANY runtime config at all yet. This MUST print, and be readable, before
+# every check below that prescribes an `openclaw config set ...` fix (4b, and the telegram
+# section further down) - it is the prerequisite those fixes silently assume.
+#
+# ORDERING BUG (2026-08-01, CRITICAL, found live): this row used to exist only much further
+# down (inside the telegram block), which meant a buyer reading top to bottom saw 4b's FAIL
+# ("run: openclaw config set gateway.auth.mode token") BEFORE ever being told no config
+# existed yet. START.md says "fix every FAIL yourself, re-run until zero" - in order. Verified
+# live: running 4b's exact prescribed command against a profile that never ran `openclaw
+# setup`/`onboard` writes gateway.auth WITHOUT gateway.mode, and the gateway then refuses to
+# boot: "Gateway start blocked: existing config is missing gateway.mode." Neither `gateway.mode`
+# nor `openclaw onboard` (the strings needed to recover) appear in any doc we ship; a tester
+# only got unstuck by reading openclaw's own runtime error, not anything from us. This row now
+# prints first, as its own FAIL (not a WARN - a WARN can be skipped by "fix every FAIL" and
+# this prerequisite is not optional), and 4b's own fix text is also made self-sufficient below
+# so the single copied line is safe even if someone reads these out of order anyway.
+OC="$HOME/.openclaw/openclaw.json"
+OC_EXISTS=0
+if [ -f "$OC" ]; then
+  OC_EXISTS=1
+  row ok "openclaw runtime config exists"
+else
+  row fail "openclaw has no runtime config yet" "run: openclaw setup   (creates gateway.mode and a real baseline config; do this BEFORE any 'openclaw config set ...' fix shown below, or that command can write a half-config the gateway refuses to boot)"
+fi
+
 # 4b. openclaw's own security posture. This deliberately does NOT hardcode a "minimum safe
 # version": a hardcoded number goes stale the day the next CVE lands and gives false
 # confidence forever after. openclaw ships its own maintained audit
@@ -118,7 +143,16 @@ print(f"{crit} {warn} {len(findings)}")
           # 1 to 0) sets the two fields the schema actually requires - gateway.auth is an
           # OBJECT, so `openclaw config set gateway.auth "<string>"` fails with "expected
           # object, received string" (the OLD prescription here, also wrong, also verified).
-          row fail "openclaw security audit: $CRIT high/critical finding(s)" "run: openclaw config set gateway.auth.mode token && openclaw config set gateway.auth.token \"\$(openssl rand -hex 16)\"   then restart the gateway, then re-run: openclaw security audit --json"
+          #
+          # SELF-SUFFICIENT FIX TEXT (2026-08-01): this line is written to be safe to copy and
+          # run in isolation, even if 4a above was missed or read out of order (belt-and-
+          # suspenders on top of the reorder itself - see 4a's comment for the full incident).
+          AUTHFIX="openclaw config set gateway.auth.mode token && openclaw config set gateway.auth.token \"\$(openssl rand -hex 16)\"   then restart the gateway, then re-run: openclaw security audit --json"
+          if [ "$OC_EXISTS" = "1" ]; then
+            row fail "openclaw security audit: $CRIT high/critical finding(s)" "run: $AUTHFIX"
+          else
+            row fail "openclaw security audit: $CRIT high/critical finding(s)" "first: openclaw setup   (see the row above - config does not exist yet), then: $AUTHFIX"
+          fi
         elif [ "${WARNC:-0}" -gt 0 ]; then
           row warn "openclaw security audit: $WARNC medium/warning finding(s)" "run: openclaw security audit   for detail"
         else
@@ -135,6 +169,53 @@ print(f"{crit} {warn} {len(findings)}")
     row ok "openclaw update status: ${UPDATE_STATUS:0:60}"
   else
     row warn "openclaw update status" "could not check; run \`openclaw update status\` yourself"
+  fi
+fi
+
+# 4c. model auth: is there an actually usable model route to talk to. `install.sh` writes
+# MODEL_BACKEND into identity.env and NOTHING in this codebase reads it - it is exactly the
+# class of phantom setting docs/10-configuration.md's own HEARTBEAT_MS section warns about,
+# just a different variable. The real mechanism is openclaw's own model config (`openclaw
+# models set`, `openclaw configure`, or the onboarding wizard). Found live (2026-08-01): a
+# fresh gateway boots CLEANLY on openclaw's own default route with no key configured at all
+# ("[gateway] agent model: openai/gpt-5.5", zero auth), and doctor had NO row for this - it
+# reported "config is healthy" and blamed Telegram/timers, neither of which a terminal chat
+# needs. This is the actual reason a blind buyer got a green doctor and then could not get a
+# single reply out of the assistant. `openclaw models status --json` is the same primitive
+# `openclaw models status` documents as "show model/provider auth health before running
+# agents" - `auth.missingProvidersInUse` is empty on a healthy, working setup and lists the
+# unauthenticated provider(s) otherwise, regardless of whether openclaw.json exists yet.
+if command -v openclaw >/dev/null 2>&1; then
+  MODEL_JSON=$(doctor_timeout 20 openclaw models status --json 2>/dev/null)
+  if [ -n "$MODEL_JSON" ]; then
+    MODEL_RESULT=$(printf '%s' "$MODEL_JSON" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("parse-error"); sys.exit()
+missing = d.get("auth", {}).get("missingProvidersInUse") or []
+default = d.get("resolvedDefault") or d.get("defaultModel") or "unknown"
+print(("MISSING:" + ",".join(missing) + ":" + default) if missing else ("OK:" + default))
+' 2>/dev/null)
+    case "$MODEL_RESULT" in
+      parse-error|"")
+        row warn "model auth" "\`openclaw models status --json\` produced no output or could not be parsed; run \`openclaw models status\` yourself and read it" ;;
+      MISSING:*)
+        MR="${MODEL_RESULT#MISSING:}"; MISSING_PROVIDERS="${MR%:*}"; DEFAULT_MODEL="${MR##*:}"
+        FIRST_PROVIDER="${MISSING_PROVIDERS%%,*}"
+        # docs for model auth are hala's (in progress, 2026-08-01); doctor points at the doc,
+        # does not duplicate its content here.
+        # a FAIL (not INERT/WARN): FAILS>0 skips the INERT summary entirely at the bottom of
+        # this script (see the final if/elif/else), so this needs its own fix text inline,
+        # which it has, rather than relying on a list that would never print alongside it.
+        row fail "no usable model route ($DEFAULT_MODEL, missing auth: $MISSING_PROVIDERS)" "run: openclaw models auth login --provider $FIRST_PROVIDER   (or: openclaw configure); see docs/12-model-auth.md"
+        ;;
+      OK:*)
+        row ok "model auth (default: ${MODEL_RESULT#OK:})" ;;
+    esac
+  else
+    row warn "model auth" "\`openclaw models status --json\` produced no output (older openclaw without this subcommand, or it timed out); run \`openclaw models status\` by hand"
   fi
 fi
 
@@ -157,8 +238,9 @@ if command -v openclaw >/dev/null 2>&1; then
 fi
 
 # 6. telegram token valid (only if configured; never printed)
-OC="$HOME/.openclaw/openclaw.json"
-if [ -f "$OC" ]; then
+# reuses $OC/$OC_EXISTS from 4a - no config yet is already reported there as a FAIL; no need
+# to say it twice under a softer WARN here.
+if [ "$OC_EXISTS" = "1" ]; then
   # docs/09-security.md claims openclaw.json is held to the same 600 standard as
   # identity.env (check 1); doctor never actually verified that claim. It holds the live
   # Telegram bot token, so a world/group-readable copy is exactly as bad as an exposed
@@ -194,9 +276,9 @@ print(c.get("channels",{}).get("telegram",{}).get("dmPolicy") or "pairing (defau
   else
     row warn "telegram" "no bot token yet; fine before docs/02-telegram.md"
   fi
-else
-  row warn "openclaw config" "no $OC yet; run openclaw once"
 fi
+# no `else` here: OC_EXISTS=0 is already reported as a FAIL at 4a, above every other check
+# that depends on it - do not repeat it here under a softer WARN.
 
 # 6b. can it reach you at all?
 if [ -z "${OWNER_CHAT_ID:-}" ]; then

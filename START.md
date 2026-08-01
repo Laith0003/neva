@@ -86,13 +86,19 @@ Tell them in one line you are setting everything up now. Then:
 
 1. Install anything missing from preflight (openclaw per https://docs.openclaw.ai/install,
    Node 22+ first if needed). Surface only steps needing them (a dialog, a password).
-2. Run from this folder:
+2. **Configure a model for the assistant** (docs/01a-model.md): the assistant cannot work
+   without one. Choose OAuth (Claude subscription) or API key, complete the auth steps,
+   and verify with `openclaw models auth list` showing an active profile before proceeding.
+3. Run from this folder:
    `OWNER_NAME="..." AGENT_NAME="..." TIMEZONE="..." VAULT_PATH="..." NEVA_NONINTERACTIVE=1 bash install.sh`
    It is idempotent and never overwrites existing content. If it reports a non-empty
    folder at the vault path, relay and ask: use as-is, or new path. If they punted on
    question 2 (your name), pass the literal placeholder `"Assistant"`; do not invent a name
    on their behalf, and say plainly that they can rename it whenever they pick one.
-3. **Write the interview into the system** (this is what makes it personal):
+4. **Write the interview into the system** (this is what makes it personal):
+   The workspace (default `~/.openclaw/workspace`) holds the agent's files: USER.md, SOUL.local.md,
+   BOOTSTRAP.md, and the vault folder holds your notes. Together they form your complete
+   personalized system.
    - `USER.md` in the workspace: name, work, the one active project, use cases, from their
      words.
    - `SOUL.local.md`: their agent's name, the voice-mirror observations (note they are
@@ -102,8 +108,8 @@ Tell them in one line you are setting everything up now. Then:
      "why" and done-means for Day 2, when they've actually asked you about it again.
    - Update `identity.env` ACTIVE_HOURS_* from question 6.
    - Do not create project notes beyond the one project above, and do not create people
-     notes today. Both are week-one work: see step 4.
-4. **Leave `BOOTSTRAP.md` in the workspace.** This conversation covered its day-one beats,
+     notes today. Both are week-one work: see step 5.
+5. **Leave `BOOTSTRAP.md` in the workspace.** This conversation covered its day-one beats,
    but its week-one section (the Day 2 through Day 7 questions: goal depth, people, the
    correction pass) is not leftover scaffolding, it is the rest of the interview, and it is
    what actually creates the project notes and people notes this conversation deliberately
@@ -111,7 +117,7 @@ Tell them in one line you are setting everything up now. Then:
    got answered or not; it deletes itself on Day 7, per its own instructions, and only then.
    If you skipped a day-one question, the resident agent also resumes that specific gap,
    one per day, per `BOOTSTRAP.md`'s own resumable rule.
-5. Run `doctor`. Fix every FAIL yourself and re-run until zero. Telegram and scheduled-job
+6. Run `doctor`. Fix every FAIL yourself and re-run until zero. Telegram and scheduled-job
    WARNs are expected; say so in one line.
 
 ## Phase 4: show, then serve

@@ -6,7 +6,7 @@ formality, what you care about. This document covers how to customize it after s
 
 ## What SOUL.local.md controls
 
-Open `~/.local/neva/workspace/SOUL.local.md` (or your configured `WORKSPACE_PATH`/SOUL.local.md).
+Open `~/.openclaw/workspace/SOUL.local.md` (or your configured `WORKSPACE_PATH`/SOUL.local.md).
 It has four sections:
 
 - **Agent name:** what you call your assistant day to day.
