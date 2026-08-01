@@ -1,0 +1,417 @@
+#!/bin/bash
+# doctor: name what is broken and exactly how to fix it. Run any time; read-only.
+# Exit 0 = all ok. Exit 1 = at least one FAIL.
+set -u
+
+BOLD=$(tput bold 2>/dev/null || true); RESET=$(tput sgr0 2>/dev/null || true)
+FAILS=0
+
+# PORTABILITY FIX (2026-08-01): `timeout` is GNU coreutils, absent on a stock Mac PATH.
+# doctor deliberately does not source lib/config.sh (it must still run and report when
+# config itself is broken), so this is a standalone copy of the same fallback used there:
+# real timeout/gtimeout if present, else a background+poll+kill loop.
+doctor_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+  "$@" &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$secs" ]; then
+      kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  wait "$pid"
+}
+# Conditions that are not "broken config" but DO mean the assistant cannot yet work.
+# Reporting "all clear" over these taught buyers to ignore the nine things that matter.
+INERT=""
+
+row() { # status name fix
+  local st="$1" name="$2" fix="${3:-}"
+  case "$st" in
+    ok)   printf "  ok    %-34s\n" "$name" ;;
+    warn) printf "  WARN  %-34s %s\n" "$name" "$fix" ;;
+    fail) printf "  FAIL  %-34s %s\n" "$name" "$fix"; FAILS=$((FAILS+1)) ;;
+  esac
+}
+
+echo "${BOLD}doctor${RESET}"
+
+# 1. config
+CONFIG="$HOME/.config/neva/identity.env"
+if [ -f "$CONFIG" ]; then
+  PERMS=$(stat -f "%Lp" "$CONFIG" 2>/dev/null || stat -c "%a" "$CONFIG" 2>/dev/null)
+  if [ "$PERMS" = "600" ] || [ "$PERMS" = "400" ]; then
+    row ok "identity config"
+    # shellcheck disable=SC1090
+    . "$CONFIG" 2>/dev/null
+  else
+    row fail "identity config perms" "chmod 600 '$CONFIG'"
+  fi
+else
+  row fail "identity config" "run install.sh to create it"
+fi
+
+# 2. required keys
+# OWNER_CHAT_ID intentionally excluded: empty is correct until Telegram setup (row 6b)
+for KEY in OWNER_NAME AGENT_NAME TIMEZONE VAULT_PATH WORKSPACE_PATH; do
+  if [ -z "${!KEY:-}" ]; then
+    row fail "config key $KEY" "edit $CONFIG or re-run install.sh"
+  fi
+done
+[ -n "${OWNER_NAME:-}" ] && row ok "required config keys"
+
+# 3. vault
+VP="${VAULT_PATH:-}"; VP="${VP/#\$HOME/$HOME}"
+if [ -n "$VP" ] && [ -d "$VP" ]; then
+  row ok "vault at $VP"
+  [ -d "$VP/03 People" ] || row warn "vault folders" "expected '03 People' etc; open the vault in Obsidian once"
+else
+  row fail "vault" "folder missing: $VP; run install.sh or fix VAULT_PATH"
+fi
+
+# 4. openclaw
+if command -v openclaw >/dev/null 2>&1; then
+  row ok "openclaw installed ($(openclaw --version 2>/dev/null | awk '{print $2}' | head -c 16))"
+else
+  row fail "openclaw" "install it: https://docs.openclaw.ai/install"
+fi
+
+# 4a. openclaw has ANY runtime config at all yet. This MUST print, and be readable, before
+# every check below that prescribes an `openclaw config set ...` fix (4b, and the telegram
+# section further down) - it is the prerequisite those fixes silently assume.
+#
+# ORDERING BUG (2026-08-01, CRITICAL, found live): this row used to exist only much further
+# down (inside the telegram block), which meant a buyer reading top to bottom saw 4b's FAIL
+# ("run: openclaw config set gateway.auth.mode token") BEFORE ever being told no config
+# existed yet. START.md says "fix every FAIL yourself, re-run until zero" - in order. Verified
+# live: running 4b's exact prescribed command against a profile that never ran `openclaw
+# setup`/`onboard` writes gateway.auth WITHOUT gateway.mode, and the gateway then refuses to
+# boot: "Gateway start blocked: existing config is missing gateway.mode." Neither `gateway.mode`
+# nor `openclaw onboard` (the strings needed to recover) appear in any doc we ship; a tester
+# only got unstuck by reading openclaw's own runtime error, not anything from us. This row now
+# prints first, as its own FAIL (not a WARN - a WARN can be skipped by "fix every FAIL" and
+# this prerequisite is not optional), and 4b's own fix text is also made self-sufficient below
+# so the single copied line is safe even if someone reads these out of order anyway.
+OC="$HOME/.openclaw/openclaw.json"
+OC_EXISTS=0
+if [ -f "$OC" ]; then
+  OC_EXISTS=1
+  row ok "openclaw runtime config exists"
+else
+  row fail "openclaw has no runtime config yet" "run: openclaw setup   (creates gateway.mode and a real baseline config; do this BEFORE any 'openclaw config set ...' fix shown below, or that command can write a half-config the gateway refuses to boot)"
+fi
+
+# 4b. openclaw's own security posture. This deliberately does NOT hardcode a "minimum safe
+# version": a hardcoded number goes stale the day the next CVE lands and gives false
+# confidence forever after. openclaw ships its own maintained audit
+# (docs.openclaw.ai/cli/security, real documented JSON: `.summary`, `.findings[].severity`)
+# and update checker (docs.openclaw.ai/cli/update); doctor calls those instead of guessing.
+if command -v openclaw >/dev/null 2>&1; then
+  AUDIT_JSON=$(doctor_timeout 30 openclaw security audit --json 2>/dev/null)
+  if [ -n "$AUDIT_JSON" ]; then
+    AUDIT_COUNTS=$(printf '%s' "$AUDIT_JSON" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("parse-error"); sys.exit()
+findings = d.get("findings") or []
+sev = [str(f.get("severity", "")).lower() for f in findings if isinstance(f, dict)]
+crit = sev.count("critical") + sev.count("high")
+warn = sev.count("medium") + sev.count("warn") + sev.count("warning")
+print(f"{crit} {warn} {len(findings)}")
+' 2>/dev/null)
+    case "$AUDIT_COUNTS" in
+      parse-error|"")
+        row warn "openclaw security audit" "ran but output could not be parsed; run \`openclaw security audit\` yourself and read it" ;;
+      *)
+        CRIT=$(echo "$AUDIT_COUNTS" | awk '{print $1}')
+        WARNC=$(echo "$AUDIT_COUNTS" | awk '{print $2}')
+        if [ "${CRIT:-0}" -gt 0 ]; then
+          # BROKEN-FIX CORRECTION (2026-08-01): `security audit --fix` does not, and cannot
+          # safely, resolve the single finding almost every buyer hits on day one
+          # (gateway.loopback_no_auth: no gateway auth secret configured). Verified against a
+          # real openclaw install: `--fix` reports "Fixes: no changes applied" and the
+          # critical finding is unchanged, because choosing to enable auth and generate a
+          # secret is a decision `--fix`'s "safe remediations only" contract correctly refuses
+          # to make for you. The real fix (also verified end to end: critical findings go from
+          # 1 to 0) sets the two fields the schema actually requires - gateway.auth is an
+          # OBJECT, so `openclaw config set gateway.auth "<string>"` fails with "expected
+          # object, received string" (the OLD prescription here, also wrong, also verified).
+          #
+          # SELF-SUFFICIENT FIX TEXT (2026-08-01): this line is written to be safe to copy and
+          # run in isolation, even if 4a above was missed or read out of order (belt-and-
+          # suspenders on top of the reorder itself - see 4a's comment for the full incident).
+          AUTHFIX="openclaw config set gateway.auth.mode token && openclaw config set gateway.auth.token \"\$(openssl rand -hex 16)\"   then restart the gateway, then re-run: openclaw security audit --json"
+          if [ "$OC_EXISTS" = "1" ]; then
+            row fail "openclaw security audit: $CRIT high/critical finding(s)" "run: $AUTHFIX"
+          else
+            row fail "openclaw security audit: $CRIT high/critical finding(s)" "first: openclaw setup   (see the row above - config does not exist yet), then: $AUTHFIX"
+          fi
+        elif [ "${WARNC:-0}" -gt 0 ]; then
+          row warn "openclaw security audit: $WARNC medium/warning finding(s)" "run: openclaw security audit   for detail"
+        else
+          row ok "openclaw security audit (clean)"
+        fi ;;
+    esac
+  else
+    row warn "openclaw security audit" "\`openclaw security audit --json\` produced no output (older openclaw without this subcommand, or it timed out); run \`openclaw security audit\` by hand"
+  fi
+  UPDATE_STATUS=$(doctor_timeout 20 openclaw update status 2>/dev/null | head -1)
+  if [ -n "$UPDATE_STATUS" ]; then
+    # informational only: we do not know openclaw's exact wording well enough to assert
+    # ok/fail from it, so this is reported neutrally rather than risking a false claim either way
+    row ok "openclaw update status: ${UPDATE_STATUS:0:60}"
+  else
+    row warn "openclaw update status" "could not check; run \`openclaw update status\` yourself"
+  fi
+fi
+
+# 4c. model auth: is there an actually usable model route to talk to. `install.sh` writes
+# MODEL_BACKEND into identity.env and NOTHING in this codebase reads it - it is exactly the
+# class of phantom setting docs/10-configuration.md's own HEARTBEAT_MS section warns about,
+# just a different variable. The real mechanism is openclaw's own model config (`openclaw
+# models set`, `openclaw configure`, or the onboarding wizard). Found live (2026-08-01): a
+# fresh gateway boots CLEANLY on openclaw's own default route with no key configured at all
+# ("[gateway] agent model: openai/gpt-5.5", zero auth), and doctor had NO row for this - it
+# reported "config is healthy" and blamed Telegram/timers, neither of which a terminal chat
+# needs. This is the actual reason a blind buyer got a green doctor and then could not get a
+# single reply out of the assistant. `openclaw models status --json` is the same primitive
+# `openclaw models status` documents as "show model/provider auth health before running
+# agents" - `auth.missingProvidersInUse` is empty on a healthy, working setup and lists the
+# unauthenticated provider(s) otherwise, regardless of whether openclaw.json exists yet.
+if command -v openclaw >/dev/null 2>&1; then
+  MODEL_JSON=$(doctor_timeout 20 openclaw models status --json 2>/dev/null)
+  if [ -n "$MODEL_JSON" ]; then
+    MODEL_RESULT=$(printf '%s' "$MODEL_JSON" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("parse-error"); sys.exit()
+missing = d.get("auth", {}).get("missingProvidersInUse") or []
+default = d.get("resolvedDefault") or d.get("defaultModel") or "unknown"
+print(("MISSING:" + ",".join(missing) + ":" + default) if missing else ("OK:" + default))
+' 2>/dev/null)
+    case "$MODEL_RESULT" in
+      parse-error|"")
+        row warn "model auth" "\`openclaw models status --json\` produced no output or could not be parsed; run \`openclaw models status\` yourself and read it" ;;
+      MISSING:*)
+        MR="${MODEL_RESULT#MISSING:}"; MISSING_PROVIDERS="${MR%:*}"; DEFAULT_MODEL="${MR##*:}"
+        FIRST_PROVIDER="${MISSING_PROVIDERS%%,*}"
+        # docs for model auth are hala's; doctor points at the doc (docs/01a-model.md), does
+        # not duplicate its content here.
+        # a FAIL (not INERT/WARN): FAILS>0 skips the INERT summary entirely at the bottom of
+        # this script (see the final if/elif/else), so this needs its own fix text inline,
+        # which it has, rather than relying on a list that would never print alongside it.
+        row fail "no usable model route ($DEFAULT_MODEL, missing auth: $MISSING_PROVIDERS)" "run: openclaw models auth login --provider $FIRST_PROVIDER   (or: openclaw configure); see docs/01a-model.md"
+        ;;
+      OK:*)
+        row ok "model auth (default: ${MODEL_RESULT#OK:})" ;;
+    esac
+  else
+    row warn "model auth" "\`openclaw models status --json\` produced no output (older openclaw without this subcommand, or it timed out); run \`openclaw models status\` by hand"
+  fi
+fi
+
+# 5. gateway reachable and loopback-only
+if command -v openclaw >/dev/null 2>&1; then
+  PORT=18789
+  if curl -s --max-time 5 "http://127.0.0.1:$PORT" -o /dev/null 2>/dev/null; then
+    row ok "gateway on 127.0.0.1:$PORT"
+  else
+    row warn "gateway" "not responding on 127.0.0.1:$PORT; start it (openclaw gateway) or check its service"
+    INERT="$INERT\n    - the gateway is not running (start it: openclaw gateway)"
+  fi
+  # exposed to the world is a FAIL, not a warn: this is the documented #1 self-hosting disaster
+  LISTEN=$( (command -v ss >/dev/null && ss -tln 2>/dev/null || netstat -an 2>/dev/null) | grep -E "[.:]$PORT[[:space:]]" | grep -vE "127\.0\.0\.1|::1|localhost" | head -1)
+  if [ -n "$LISTEN" ]; then
+    row fail "gateway EXPOSED beyond loopback" "bind it to 127.0.0.1 only; see docs/09-security.md"
+  else
+    row ok "gateway loopback-only"
+  fi
+fi
+
+# 6. telegram token valid (only if configured; never printed)
+# reuses $OC/$OC_EXISTS from 4a - no config yet is already reported there as a FAIL; no need
+# to say it twice under a softer WARN here.
+if [ "$OC_EXISTS" = "1" ]; then
+  # docs/09-security.md claims openclaw.json is held to the same 600 standard as
+  # identity.env (check 1); doctor never actually verified that claim. It holds the live
+  # Telegram bot token, so a world/group-readable copy is exactly as bad as an exposed
+  # identity.env, and gets the same severity (FAIL, not warn).
+  OC_PERMS=$(stat -f "%Lp" "$OC" 2>/dev/null || stat -c "%a" "$OC" 2>/dev/null)
+  case "$OC_PERMS" in
+    600|400) row ok "openclaw.json perms ($OC_PERMS)" ;;
+    *) row fail "openclaw.json perms are $OC_PERMS, must be 600" "chmod 600 '$OC'" ;;
+  esac
+  TOKEN=$(python3 -c 'import json,sys
+try: print(json.load(open("'"$OC"'"))["channels"]["telegram"]["botToken"])
+except Exception: print("")' 2>/dev/null)
+  if [ -n "$TOKEN" ]; then
+    CODE=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "https://api.telegram.org/bot${TOKEN}/getMe" 2>/dev/null)
+    case "$CODE" in
+      200) row ok "telegram token (getMe 200)" ;;
+      401) row fail "telegram token" "getMe returned 401: regenerate the token with @BotFather and update openclaw.json" ;;
+      *)   row warn "telegram token" "getMe returned $CODE: check network, then docs/02-telegram.md" ;;
+    esac
+    ALLOW=$(python3 -c 'import json
+c=json.load(open("'"$OC"'"))
+print(c.get("channels",{}).get("telegram",{}).get("allowFrom") or "")' 2>/dev/null)
+    POLICY=$(python3 -c 'import json
+c=json.load(open("'"$OC"'"))
+print(c.get("channels",{}).get("telegram",{}).get("dmPolicy") or "pairing (default)")' 2>/dev/null)
+    if [ -n "$ALLOW" ] && [ "${POLICY%% *}" = "allowlist" ]; then
+      row ok "telegram locked to your id (allowlist)"
+    elif [ -n "$ALLOW" ]; then
+      row warn "telegram allowFrom set, policy is $POLICY" "set channels.telegram.dmPolicy to \"allowlist\" so only your id can talk to the bot"
+    else
+      row fail "telegram not locked to your id (policy: $POLICY)" "set channels.telegram.dmPolicy=\"allowlist\" and allowFrom=[your numeric id] (get it from @userinfobot); docs/02-telegram.md"
+    fi
+  else
+    row warn "telegram" "no bot token yet; fine before docs/02-telegram.md"
+  fi
+fi
+# no `else` here: OC_EXISTS=0 is already reported as a FAIL at 4a, above every other check
+# that depends on it - do not repeat it here under a softer WARN.
+
+# 6b. can it reach you at all?
+if [ -z "${OWNER_CHAT_ID:-}" ]; then
+  row warn "no chat id yet" "expected before Telegram setup; docs/02-telegram.md fills it"
+  INERT="$INERT\n    - it has no way to message you (docs/02-telegram.md)"
+else
+  row ok "chat id configured"
+fi
+
+# 6c. is the vault under version control (vault-sync depends on it)
+VP2="${VAULT_PATH:-}"; VP2="${VP2/#\$HOME/$HOME}"
+if [ -n "$VP2" ] && [ -d "$VP2/.git" ]; then
+  row ok "vault is a git repo"
+else
+  row fail "vault is not a git repo" "cd '$VP2' && git init && git add -A && git commit -m init  (vault-sync needs this)"
+fi
+
+# 7. tools installed and reachable: distinguish "not installed" from "not on PATH"
+MISSING=""; UNPATHED=""
+for T in canon canon-propose canon-lint cadence vault-sync doctor; do
+  if command -v "$T" >/dev/null 2>&1; then :
+  elif [ -x "$HOME/.local/bin/$T" ]; then UNPATHED="$UNPATHED $T"
+  else MISSING="$MISSING $T"; fi
+done
+if [ -n "$MISSING" ]; then
+  row fail "tools missing:$MISSING" "run install.sh"
+elif [ -n "$UNPATHED" ]; then
+  row warn "tools installed, not on PATH" "add to your shell rc: export PATH=\"\$HOME/.local/bin:\$PATH\""
+else
+  row ok "core tools on PATH"
+fi
+
+# 8. scheduled jobs: loaded AND actually firing
+# "loaded" only proves launchd/systemd registered the job definition. It does NOT prove the
+# job has ever run: on a real running system (2026-08-01) `systemctl --user list-timers --all`
+# showed two timers loaded with a last-run of "-" for six weeks, because the
+# per-user systemd manager dies when the SSH session ends (no lingering). A job that has never
+# run is invisible to a check that only asks "is it loaded". Every job here now runs through
+# services/heartbeat-wrap.sh, which writes one line per invocation (success, failure, or
+# never-touched) to ~/.local/state/neva/heartbeat/<job>.status regardless of outcome. That is
+# the signal checked below, cross-referenced against what is actually loaded.
+hb_epoch() { # hb_epoch ISO8601Z -> epoch seconds, or empty on parse failure
+  date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null
+}
+# TEST HOOK (2026-08-01): overridable so build/verify.sh can exercise this whole branch
+# (including the FAIL-counter regression check below it) without loading a real launchd or
+# systemd job onto the host. Loading a throwaway job into the REAL logged-in account's
+# session just to test doctor is exactly the mistake install.sh's NEVA_SKIP_SCHEDULE_ENABLE
+# exists to prevent during a real install; doctor testing itself must not repeat it. Unset
+# in any real run - only set by the test harness.
+if [ -n "${NEVA_DOCTOR_LOADED_TEST:-}" ]; then
+  LOADED="$NEVA_DOCTOR_LOADED_TEST"
+else
+  case "$(uname)" in
+    Darwin) LOADED=$(launchctl list 2>/dev/null | awk '{print $3}' | grep "^com\.neva\." | sed 's/^com\.neva\.//' | sort -u) ;;
+    Linux)  LOADED=$(systemctl --user list-timers --all 2>/dev/null | grep -o "neva-[a-zA-Z-]*\.timer" | sed -e 's/^neva-//' -e 's/\.timer$//' | sort -u) ;;
+    *)      LOADED="" ;;
+  esac
+fi
+if [ -z "$LOADED" ]; then
+  row warn "scheduled jobs" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
+  INERT="$INERT\n    - no scheduled jobs are running (guards, cadence, sync): docs/03"
+else
+  row ok "scheduled jobs loaded ($(echo "$LOADED" | grep -c .))"
+  HB_DIR="$HOME/.local/state/neva/heartbeat"
+  NOW_EPOCH=$(date -u +%s)
+  # job:max-silence-minutes, matched against LOADED so we only judge jobs this box actually enabled
+  for PAIR in "cadence:1560" "canon-lint:1560" "diag:11520" "lane-guard:10" "session-guard:10" "vault-sync:10" "vault-mirror:100"; do
+    JOB="${PAIR%%:*}"; MAXMIN="${PAIR#*:}"
+    echo "$LOADED" | grep -qx "$JOB" || continue
+    ST="$HB_DIR/${JOB}.status"
+    if [ ! -f "$ST" ]; then
+      row fail "$JOB has NEVER fired" "loaded, zero heartbeats recorded; check $HOME/.local/state/neva/${JOB}.err.log; on Linux this is almost always missing lingering: loginctl enable-linger \$(id -un)"
+      continue
+    fi
+    LAST=$(tail -n 1 "$ST")
+    LAST_TS=$(echo "$LAST" | awk '{print $1}')
+    LAST_RC=$(echo "$LAST" | awk '{print $2}')
+    LAST_EPOCH=$(hb_epoch "$LAST_TS")
+    if [ -z "$LAST_EPOCH" ]; then
+      row warn "$JOB heartbeat" "recorded but timestamp unparsable ($LAST_TS); check $ST by hand"
+      continue
+    fi
+    AGE_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
+    RUNS=$(wc -l < "$ST" 2>/dev/null | tr -d ' ')
+    # VARIABLE-CLOBBER FIX (2026-08-01, CRITICAL): this used to assign into $FAILS - the same
+    # global name `row()` increments for every FAIL row and the final exit-code check at the
+    # bottom of the script reads. Every pass through this per-job loop silently overwrote the
+    # running FAIL-row total with this one job's "how many of its last 5 runs failed" count
+    # instead. Proven on a live install in both directions: zero FAIL rows on screen produced
+    # "1 failure(s)" and a non-zero exit, and a genuine CRITICAL FAIL row on screen produced NO
+    # footer line at all and exit 0 - the exact opposite of "doctor fails loudly", the README's
+    # own headline claim about this tool. JOB_RECENT_FAILS is scoped to this loop only and
+    # never touches the real counter.
+    JOB_RECENT_FAILS=$(tail -n 5 "$ST" | awk '$2 != 0' | grep -c .)
+    if [ "$AGE_MIN" -gt "$MAXMIN" ]; then
+      row fail "$JOB has not fired in ${AGE_MIN}m (expected every ~${MAXMIN}m)" "check $HOME/.local/state/neva/${JOB}.err.log; on Linux confirm the timer is still active: systemctl --user list-timers neva-${JOB}.timer"
+    elif [ "${JOB_RECENT_FAILS:-0}" -ge 3 ]; then
+      row fail "$JOB failing repeatedly ($JOB_RECENT_FAILS of its last 5 runs, last exit $LAST_RC)" "tail $ST and $HOME/.local/state/neva/${JOB}.err.log"
+    elif [ "$LAST_RC" != "0" ]; then
+      row warn "$JOB last run exited $LAST_RC" "tail $HOME/.local/state/neva/${JOB}.err.log"
+    else
+      row ok "$JOB firing on schedule (last run ${AGE_MIN}m ago, $RUNS recorded)"
+    fi
+  done
+  # the README's flagship promise: called out on its own, not buried in the aggregate count above
+  if echo "$LOADED" | grep -qx "cadence"; then
+    :  # already covered by the loop above with its own row
+  else
+    row warn "review-nudge (cadence) not enabled" "the README promise 'drafts reviews when you go quiet' will not happen; docs/03-scheduled-jobs.md, or answer yes to the cadence question on your next install.sh re-run"
+    INERT="$INERT\n    - review nudges are off (the README promise 'drafts reviews when you go quiet'): docs/03"
+  fi
+fi
+
+# 9. optional integrations, presence only
+for PAIR in "hledger:money ledger" "syncthing:vault sync" "rg:vault search"; do
+  BIN="${PAIR%%:*}"; LABEL="${PAIR#*:}"
+  if command -v "$BIN" >/dev/null 2>&1; then row ok "$LABEL ($BIN)"; else
+    row warn "$LABEL" "$BIN not installed; optional, see docs/08-integrations.md"
+  fi
+done
+
+echo
+if [ "$FAILS" -eq 0 ] && [ -z "$INERT" ]; then
+  echo "${BOLD}all clear${RESET}"
+  exit 0
+elif [ "$FAILS" -eq 0 ]; then
+  echo "${BOLD}config is healthy, but your assistant cannot work yet:${RESET}"
+  printf "$INERT\n"
+  echo
+  echo "Nothing above is broken. Each is a setup step you have not done yet."
+  exit 0
+else
+  echo "${BOLD}$FAILS failure(s) above, each with its fix${RESET}"
+  exit 1
+fi

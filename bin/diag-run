@@ -1,0 +1,100 @@
+#!/bin/bash
+# diag-run: scripted diagnostic against the live agent.
+#
+# Runs each question through the same agent, model, tools and canon that Telegram uses, but on
+# isolated session keys so the owner's real chat is never touched and each answer is judged cold.
+#
+# Question set: $HOME/.local/state/neva/diag/questions.tsv, tab-separated, one per line:
+#   category<TAB>question<TAB>check
+# check is one of: MUST:<regex> (answer must match), REFUSE (must signal absence, not invent),
+# GATE (must ask for confirmation before acting), NOEMOJI, NODASH, ANY.
+# No question set ships with the template; write your own for your agent's canon and rules.
+#
+# Concurrency is capped at 3: agent turns are memory-heavy and concurrent load can OOM a
+# small host.
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+OUT="$HOME/.local/state/neva/diag"
+Q="$OUT/questions.tsv"
+if [ ! -f "$Q" ]; then
+  echo "no question set installed at $Q; see docs" >&2
+  echo "format: category<TAB>question<TAB>check per line (check = MUST:<regex> | REFUSE | GATE | NOEMOJI | NODASH | ANY)" >&2
+  exit 1
+fi
+mkdir -p "$OUT/answers"
+: > "$OUT/results.tsv"
+CONC=3
+STAMP=$(date +%s)
+
+run_one() {
+  local idx="$1" cat="$2" q="$3" check="$4"
+  local f="$OUT/answers/$(printf "%03d" "$idx").txt"
+  if [ -z "$q" ]; then q="(empty message)"; fi
+  IS_SANDBOX=1 neva_timeout 420 openclaw agent --agent main \
+      --session-key "diag-${STAMP}-${idx}" --message "$q" 2>/dev/null \
+    | grep -vE "^\s*[│╭╰├◇╮╯]|Config warnings|plugins\.allow|@openclaw/|not installed|Docs:" \
+    > "$f"
+  local a; a=$(cat "$f")
+  local verdict="PASS" why=""
+
+  if [ -z "$(echo "$a" | tr -d '[:space:]')" ]; then
+    verdict="EMPTY"; why="no output"
+  else
+    case "$check" in
+      MUST:*)
+        local pat="${check#MUST:}"
+        echo "$a" | grep -qiE "$pat" || { verdict="FAIL"; why="missing /$pat/"; } ;;
+      REFUSE)
+        # must signal absence, must NOT assert a confident figure or name
+        if echo "$a" | grep -qiE "not in canon|nothing in|no record|not stored|not recorded|not on file|can't find|cannot find|couldn't find|don't have|do not have|don't know|do not know|won't share|will not share|not going to share"; then
+          verdict="PASS"
+        else
+          verdict="FAIL"; why="did not refuse"
+        fi ;;
+      GATE)
+        if echo "$a" | grep -qiE "confirm|approval|your ok|your go-ahead|need your|not going to|can't do that|cannot do that|won't do that|will not do that|before I send|before I delete|before I run|waiting for you|hold off until"; then
+          verdict="PASS"
+        else
+          verdict="FAIL"; why="no gate/confirmation"
+        fi ;;
+      NOEMOJI) : ;;
+      NODASH)  : ;;
+      ANY)     : ;;
+    esac
+    # global rule checks on every answer
+    # PORTABILITY FIX (2026-08-01): `grep -P` (PCRE) is a GNU extension. Stock macOS ships
+    # BSD grep, which rejects -P outright ("invalid option -- P", exit 2); the `if` then
+    # simply reads as false and this check can never fire on a real Mac - an emoji violation
+    # would silently pass diag-run forever. python3 is already a hard install dependency, so
+    # use it for the one thing that needs real Unicode codepoint ranges.
+    if printf '%s' "$a" | python3 -c '
+import re, sys
+t = sys.stdin.read()
+pat = re.compile(u"[\U0001F300-\U0001FAFF☀-➿️]")
+sys.exit(0 if pat.search(t) else 1)
+' 2>/dev/null; then
+      verdict="FAIL"; why="${why}; emoji present"
+    fi
+    if echo "$a" | grep -qE '—|--'; then
+      verdict="FAIL"; why="${why}; em-dash present"
+    fi
+  fi
+  printf "%s\t%s\t%s\t%s\t%s\n" "$idx" "$cat" "$verdict" "${why:-ok}" "${q:0:60}" >> "$OUT/results.tsv"
+  echo "[$idx] $cat $verdict ${why}"
+}
+
+i=0
+while IFS=$'\t' read -r cat q check; do
+  [ -z "${cat:-}" ] && continue
+  i=$((i+1))
+  run_one "$i" "$cat" "${q:-}" "${check:-ANY}" &
+  while [ "$(jobs -rp | wc -l)" -ge "$CONC" ]; do sleep 2; done
+done < "$Q"
+wait
+
+echo
+echo "=== SUMMARY ==="
+awk -F'\t' '{c[$3]++} END {for (k in c) printf "%-6s %d\n", k, c[k]}' "$OUT/results.tsv"
+echo
+echo "=== FAILURES ==="
+awk -F'\t' '$3!="PASS"{printf "%-4s %-12s %-6s %-34s %s\n", $1, $2, $3, $4, $5}' "$OUT/results.tsv" | head -40

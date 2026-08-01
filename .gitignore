@@ -1,0 +1,8 @@
+identity.env
+*.local.md
+*.err.log
+.DS_Store
+OLD_VAULT/
+__pycache__/
+*.pyc
+build/leak-scan.local

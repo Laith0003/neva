@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""brain-health: one-page status widget with aging alerts and pattern recognition.
+
+One page: are the gates installed, is sync flowing, how much memory, how many open loops and
+which are stale, and which commitments keep getting deferred. Read-only. Prints to stdout and
+writes brain-health.md in the state dir so a dashboard can render it. Sections whose underlying
+file or database is absent degrade to a status line instead of erroring.
+"""
+import os, json, glob, datetime, sqlite3, sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from config import load
+
+CFG = load()
+STATE = os.path.join(os.path.expanduser("~"), ".local", "state", "neva")
+COMMITS = os.path.join(STATE, "commitments.json")
+BACKUPS = os.path.join(STATE, "brain-backups")
+OUT = os.path.join(STATE, "brain-health.md")
+MEMDB = os.path.join(STATE, "mem.db")
+
+
+def local_now():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo(CFG["TIMEZONE"]))
+    except Exception:
+        return datetime.datetime.now()
+
+
+def stamp():
+    return local_now().strftime("%Y-%m-%d %H:%M")
+
+
+def exists(p):
+    return "ok" if os.path.exists(p) else "MISSING"
+
+
+def age_days(iso):
+    try:
+        return (local_now().date() - datetime.date.fromisoformat(iso[:10])).days
+    except Exception:
+        return 0
+
+
+def main():
+    L = []
+    L.append(f"# Brain health ({stamp()})\n")
+
+    # gates
+    L.append("## Gates")
+    L.append("- pre-commit (working repo): "
+             + exists(os.path.join(CFG["VAULT_PATH"], ".git", "hooks", "pre-commit")))
+    origin = os.path.expanduser("~/vault.git")
+    if os.path.isdir(origin):  # only when a local bare origin is set up
+        L.append("- pre-receive (origin):      "
+                 + exists(os.path.join(origin, "hooks", "pre-receive")))
+    L.append("- canon secret:              " + exists(os.path.join(STATE, "canon-secret")))
+
+    # memory
+    try:
+        c = sqlite3.connect(MEMDB) if os.path.exists(MEMDB) else None
+        if c is None:
+            raise FileNotFoundError(MEMDB)
+        cur = c.cursor()
+        total = cur.execute("SELECT count(*) FROM facts").fetchone()[0]
+        canon = cur.execute("SELECT count(*) FROM facts WHERE source LIKE 'canon:%'").fetchone()[0]
+        try:
+            stale = cur.execute("SELECT count(*) FROM facts WHERE stale=1").fetchone()[0]
+        except Exception:
+            stale = 0
+    except Exception:
+        total = canon = stale = "?"
+    L.append("\n## Memory")
+    L.append(f"- facts: {total} (canon {canon}, non-canon {total - canon if isinstance(total, int) else '?'})")
+    L.append(f"- needs-verification (stale): {stale}")
+    memdb = sorted(glob.glob(f"{BACKUPS}/memdb-*.sqlite"))
+    L.append(f"- last mem.db backup: {os.path.basename(memdb[-1]) if memdb else 'none'}")
+
+    # sync + backup
+    L.append("\n## Sync & backup")
+    diff = os.path.join(STATE, "vault-diff.log")
+    last_pull = "none"
+    if os.path.exists(diff):
+        lines = [l for l in open(diff).read().splitlines() if l.startswith("=== pull")]
+        last_pull = lines[-1] if lines else "none"
+    L.append(f"- last pull with changes: {last_pull}")
+    bundles = sorted(glob.glob(f"{BACKUPS}/brain-*.bundle"))
+    L.append(f"- last full brain backup: {os.path.basename(bundles[-1]) if bundles else 'none'}")
+
+    # open loops + aging
+    loops = []
+    try:
+        loops = [r for r in json.load(open(COMMITS))["rows"].values() if r.get("status") == "open"]
+    except Exception:
+        pass
+    stale_loops = [r for r in loops if age_days(r.get("opened", "")) >= 14]
+    L.append("\n## Open loops (aging)")
+    L.append(f"- open: {len(loops)} | stale (>=14d): {len(stale_loops)}")
+    for r in sorted(stale_loops, key=lambda r: age_days(r.get("opened", "")), reverse=True)[:6]:
+        L.append(f"  - [{age_days(r.get('opened',''))}d] {r.get('who','?')}: {(r.get('what') or '')[:60]}")
+
+    # patterns: repeatedly deferred commitments + people with many open loops
+    L.append("\n## Patterns")
+    deferred = [r for r in loops if int(r.get("roll_count", 0)) >= 2]
+    for r in sorted(deferred, key=lambda r: -int(r.get("roll_count", 0)))[:5]:
+        L.append(f"- deferred {r.get('roll_count')}x: {r.get('who','?')}: {(r.get('what') or '')[:55]}")
+    by_person = {}
+    for r in loops:
+        by_person[r.get("who", "?")] = by_person.get(r.get("who", "?"), 0) + 1
+    for who, n in sorted(by_person.items(), key=lambda x: -x[1]):
+        if n >= 3:
+            L.append(f"- {who} has {n} open loops (pattern: things pile up here)")
+    if not deferred and max(by_person.values(), default=0) < 3:
+        L.append("- no strong deferral patterns right now")
+
+    out = "\n".join(L) + "\n"
+    os.makedirs(STATE, exist_ok=True)
+    open(OUT, "w", encoding="utf-8").write(out)
+    print(out)
+
+
+if __name__ == "__main__":
+    main()

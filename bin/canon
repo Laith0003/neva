@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""canon: the agent's LIVE grounding lookup over the current vault.
+
+The vault IS the source of truth. This reads it fresh on every call, so whatever canon
+says right now is what comes back - no cached snapshots, no pinned facts, no drift. When a
+balance or a contact changes in canon, the next lookup reflects it automatically.
+
+Usage: canon "<query>"    (words in Arabic or English; names, topics, numbers)
+Returns the most relevant CURRENT notes (path + content) and, for money queries, the live
+ledger + balance. If nothing matches, it says so plainly - that is the signal to answer
+"I don't have that" rather than guess.
+
+Design: at 400 notes the source documents are the index. Filename hits rank highest, then
+content term frequency. Fast (ripgrep), exact, and always current. Ground truth over speed.
+"""
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from config import load
+CFG = load()
+
+VAULT = CFG["VAULT_PATH"]
+# Legacy cached hint, NOT ground truth (nothing in this codebase regenerates it - see
+# money_block() below). Kept only as a secondary, clearly-labeled artifact.
+ANCHOR_TOOLS = os.path.join(CFG["WORKSPACE_PATH"], "TOOLS.md")
+# Fallback only matters if identity.env somehow omits LEDGER_FILE (install.sh always sets
+# it). Use the CURRENT year, not a hardcoded one - bin/money independently computes this
+# same fallback as `$(date +%Y).journal`; a hardcoded year here would silently diverge from
+# that tool every January and the two "sanctioned" money paths would stop agreeing.
+LEDGER_FILE = CFG.get("LEDGER_FILE", os.path.join(VAULT, "05 Money", time.strftime("%Y") + ".journal"))
+FOOD_DIR = CFG.get("FOOD_DIR", os.path.join(VAULT, "Food"))
+# Folders that hold canonical, current facts. Archive/journal excluded (historical, not truth).
+# "Food" is walked here too for forward-compat (a hand-written .md note would be found), but
+# the real day-to-day content bin/food writes is JSON, not prose - see food_block() below,
+# which reads that JSON directly. Adding the folder to this list alone would NOT have fixed
+# the gap: canon only ever globs *.md in all_notes().
+LIVE_DIRS = ["01 Projects", "02 Clients", "03 People", "04 Knowledge", "05 Money", "10 Personal", "Maps", "Food"]
+MONEY_HINT = re.compile(r"مال|فلوس|رصيد|مبلغ|دفع|مستلم|متبقي|عقد|دينar|dinar|jod|balance|money|owe|received|remaining|contract|paid|invoice|ledger", re.I)
+FOOD_HINT = re.compile(r"food|meal|eat|ate|kcal|calorie|protein|macro|diet|أكل|طعام|وجبة|سعرات|بروتين", re.I)
+STOP = set("the a an of to in on for is are was and or my me his her your what how much who is are عن في من ما كم هو هي شو وين".split())
+
+
+# Arabic normalization: the SAME name is routinely written with different, semantically-
+# equal Unicode forms (hamza-carrying alef vs bare alef, alef maksura vs ya, with or
+# without diacritics/tatweel). Confirmed by test: a plain query for "احمد" scores ZERO
+# against a note containing "أَحْمَد" - same name, different Unicode, no substring overlap.
+# Conservative on purpose: taa marbuta (ة) is NOT folded to ه, since those are often
+# genuinely different words and over-folding trades a false "I don't know" for a wrong
+# match, which is a worse failure for a grounding tool. Reference: alef/ya unification and
+# diacritic stripping are the standard operations in Arabic text-search preprocessing
+# (see e.g. github.com/NoorBayan/Tanqeeh's unify_alef / unify_final_ya).
+_AR_DIACRITICS = re.compile(r"[ً-ْٰـ]")  # tashkeel + superscript alef + tatweel
+_AR_ALEF = re.compile(r"[آأإٱ]")          # آ أ إ ٱ -> ا
+_AR_YA = re.compile(r"ى")                                 # ى -> ي
+
+
+def ar_normalize(s):
+    s = _AR_DIACRITICS.sub("", s)
+    s = _AR_ALEF.sub("ا", s)
+    s = _AR_YA.sub("ي", s)
+    return s
+
+
+def tokens(q):
+    raw = re.findall(r"[\w؀-ۿ]+", ar_normalize(q.lower()))
+    return [t for t in raw if t not in STOP and len(t) > 1]
+
+
+def all_notes():
+    out = []
+    for d in LIVE_DIRS:
+        base = os.path.join(VAULT, d)
+        for root, _, files in os.walk(base):
+            for f in files:
+                if f.endswith(".md"):
+                    out.append(os.path.join(root, f))
+    return out
+
+
+_HAVE_RG = shutil.which("rg") is not None
+
+
+def score(path, toks):
+    name = ar_normalize(os.path.basename(path)[:-3].lower())
+    s = 0
+    for t in toks:
+        if t in name:
+            s += 12  # filename hit = strong signal (the note IS about this)
+    # Content term frequency. ripgrep when present (fast), pure-python otherwise.
+    # NEVER silently skip content matching: a missing rg used to make this return
+    # filename-only hits, so the agent answered "I don't have that" about notes that
+    # plainly contained the words. A wrong "I don't know" is indistinguishable from
+    # the product working correctly, which makes it the worst possible failure here.
+    pat = "|".join(re.escape(t) for t in toks)
+    counted = False
+    content_hits = 0
+    if _HAVE_RG:
+        try:
+            r = subprocess.run(["rg", "-c", "-i", pat, path],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode in (0, 1):          # 1 = no match, still a valid answer
+                counted = True
+                if r.stdout.strip():
+                    content_hits = int(r.stdout.strip())
+        except Exception:
+            counted = False
+    if not counted:
+        try:
+            txt = ar_normalize(open(path, encoding="utf-8", errors="replace").read().lower())
+            content_hits = sum(txt.count(t) for t in toks)
+        except OSError:
+            pass
+    # Arabic normalization safety net: rg does a byte-exact match, so it structurally
+    # cannot see "احمد" inside "أَحْمَد" - same name, different Unicode form for the hamza
+    # and diacritics. Only the normalized python comparison can. Run it whenever content_hits
+    # is still zero and a query token is Arabic script, regardless of why it is zero (rg
+    # ran and found nothing, or python's raw compare found nothing) - never double-counted,
+    # since it only fires when the primary path found NOTHING.
+    if content_hits == 0 and any(re.search(r"[؀-ۿ]", t) for t in toks):
+        try:
+            txt = ar_normalize(open(path, encoding="utf-8", errors="replace").read().lower())
+            content_hits = sum(txt.count(t) for t in toks)
+        except OSError:
+            pass
+    return s + min(content_hits, 20)
+
+
+def excerpt(path, toks, limit=1800):
+    txt = open(path, encoding="utf-8", errors="replace").read()
+    if len(txt) <= limit:
+        return txt.strip()
+    # center on the first token hit
+    low = txt.lower()
+    idx = min((low.find(t) for t in toks if low.find(t) >= 0), default=0)
+    start = max(0, idx - 400)
+    return ("... " if start else "") + txt[start:start + limit].strip() + " ..."
+
+
+_HAVE_HLEDGER = shutil.which("hledger") is not None
+
+
+def journal_files():
+    """Every hledger journal in 05 Money/, oldest first. 'money lives in more than one
+    file' includes this case (e.g. 2025.journal + 2026.journal) - read all of them, not
+    just the one LEDGER_FILE points at, or a balance spanning a year boundary is wrong."""
+    money_dir = os.path.join(VAULT, "05 Money")
+    found = sorted(glob.glob(os.path.join(money_dir, "*.journal")))
+    if LEDGER_FILE not in found and os.path.isfile(LEDGER_FILE):
+        found.append(LEDGER_FILE)
+    return found
+
+
+def money_block():
+    """Live, at query time, from the actual ledger - never a cached/derived number.
+    This is the tool's own promise ('reads it fresh on every call... no cached snapshots')
+    and money queries were the one place that promise was not kept: this used to read a
+    <!-- MONEY-ANCHOR --> block out of a workspace file nothing in this codebase ever
+    wrote, so whatever was pasted there (including a stale or hand-typed derived figure)
+    was presented to the model as ground truth. Fix: read 05 Money/*.journal directly."""
+    files = journal_files()
+    if not files:
+        return ("MONEY: no ledger file found at " + LEDGER_FILE + " or 05 Money/*.journal. "
+                "There is no money source of truth yet - say so, do not guess a figure.")
+    parts = []
+    if _HAVE_HLEDGER:
+        try:
+            args = ["hledger"]
+            for f in files:
+                args += ["-f", f]
+            args += ["balance"]
+            r = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            bal = r.stdout.strip()
+            if r.returncode == 0 and bal:
+                parts.append("LIVE LEDGER BALANCE (computed now by hledger from "
+                              + ", ".join(os.path.relpath(f, VAULT) for f in files) + "):\n" + bal)
+            else:
+                parts.append("hledger ran but returned no balance (empty or malformed journal): "
+                              + (r.stderr.strip() or "no output"))
+        except Exception as e:
+            parts.append(f"hledger failed ({e}); showing the raw journal below instead.")
+    if not parts:
+        # No hledger. Never hand-compute a balance here: a half-implemented parser that
+        # gets multi-currency, elided amounts, or balance assertions wrong would hand the
+        # model a plausible-looking WRONG number, which is worse than none. Show the
+        # verbatim entries instead and say so plainly.
+        raw = []
+        for f in files:
+            try:
+                txt = open(f, encoding="utf-8", errors="replace").read().strip()
+            except OSError:
+                continue
+            raw.append(f"--- {os.path.relpath(f, VAULT)} (verbatim, hledger not installed, "
+                       "no total computed) ---\n" + txt[-1800:])
+        parts.append("hledger is not installed, so no balance was computed (`brew/apt install "
+                      "hledger` to get real totals). RAW LEDGER TEXT below - read the numbers "
+                      "as written, do not do the arithmetic yourself:\n" + "\n\n".join(raw))
+    # The legacy anchor, if present, is shown LAST and relabeled: it is a workspace cache
+    # this tool cannot verify against the ledger above, never the primary answer.
+    try:
+        t = open(ANCHOR_TOOLS, encoding="utf-8").read()
+        m = re.search(r"<!-- MONEY-ANCHOR-START -->(.*?)<!-- MONEY-ANCHOR-END -->", t, re.S)
+        if m:
+            parts.append("UNVERIFIED CACHED NOTE (from " + ANCHOR_TOOLS + ", not the ledger - "
+                          "prefer the live block above if the two disagree):\n" + m.group(1).strip())
+    except Exception:
+        pass
+    return "\n\n".join(parts)
+
+
+def food_block():
+    """Live, at query time, from FOOD_DIR's JSON logs. bin/food writes one JSON file per
+    day (YYYY-MM-DD.json); canon's normal note walk only globs *.md, so those files were
+    invisible to every food query even on a correctly installed system - the tool always
+    said 'I don't have that' about food the owner had just logged."""
+    if not os.path.isdir(FOOD_DIR):
+        return "FOOD: no food log directory yet at " + FOOD_DIR + "."
+    days = sorted(glob.glob(os.path.join(FOOD_DIR, "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json")))[-7:]
+    if not days:
+        return "FOOD: log directory exists but has no entries yet (" + FOOD_DIR + ")."
+    lines = ["LIVE FOOD LOG (last " + str(len(days)) + " logged day(s), read now from " + FOOD_DIR + "):"]
+    for p in days:
+        try:
+            d = json.load(open(p, encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            lines.append(f"  {os.path.basename(p)}: UNREADABLE ({e}) - skipped, not counted")
+            continue
+        meals = d.get("meals", [])
+        tk = sum(m.get("kcal", 0) for m in meals)
+        tp = sum(m.get("protein", 0) for m in meals)
+        lines.append(f"  {d.get('day', os.path.basename(p)[:-5])}: {tk} kcal, {tp}g protein, "
+                     f"{len(meals)} item(s): " + "; ".join(m.get("desc", "?") for m in meals))
+    return "\n".join(lines)
+
+
+def main():
+    if len(sys.argv) < 2 or not sys.argv[1].strip():
+        sys.exit('usage: canon "<query>"')
+    q = " ".join(sys.argv[1:])
+    toks = tokens(q)
+    if not toks:
+        sys.exit("canon: no searchable terms in the query.")
+
+    ranked = sorted(((score(p, toks), p) for p in all_notes()), reverse=True)
+    matched = [(s, p) for s, p in ranked if s > 0]
+    total_matched = len(matched)
+    hits = matched[:4]
+
+    print(f"CANON LOOKUP (live, {os.path.basename(VAULT)}): {q}")
+    gave_live = False
+    if MONEY_HINT.search(q):
+        mb = money_block()
+        if mb:
+            print("\n=== " + mb + "\n")
+            gave_live = True
+    if FOOD_HINT.search(q):
+        fb = food_block()
+        if fb:
+            print("\n=== " + fb + "\n")
+            gave_live = True
+    if not hits:
+        if not gave_live:
+            print("\nNo canon note matches this. Ground truth has nothing on it - say you don't have it, do not guess.")
+        return
+    for s, p in hits:
+        rel = os.path.relpath(p, VAULT)
+        print(f"\n=== SOURCE: {rel}  (relevance {s})\n{excerpt(p, toks)}")
+    if total_matched > len(hits):
+        # A tie on relevance score is common at scale (bulk imports, templated notes) and
+        # Python's sort is stable but the underlying os.walk() order is not guaranteed
+        # across filesystems - do not let a silent top-4 look like "the" answer when it is
+        # an arbitrary sample of a much larger match set.
+        print(f"\nNOTE: {total_matched} notes matched, only the top {len(hits)} are shown above. "
+              "There may be more relevant ground truth not included here - narrow the query "
+              "(more specific words, a name, a date) before treating this as exhaustive.")
+    print("\nAnswer ONLY from the sources above, cite the note, and give exact figures/names as written. "
+          "If a specific fact is not present, say so - never invent a number, name, date, or phone.")
+
+
+if __name__ == "__main__":
+    main()

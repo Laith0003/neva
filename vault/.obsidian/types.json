@@ -1,0 +1,14 @@
+{
+  "types": {
+    "tags": "tags",
+    "cssclasses": "multitext",
+    "aliases": "multitext",
+    "distinct_from": "multitext",
+    "borrowed_numbers": "multitext",
+    "status": "text",
+    "date": "date",
+    "created": "date",
+    "updated": "date",
+    "deadline": "date"
+  }
+}

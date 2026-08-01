@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""canon-propose: the agent's GATED writer for CANON (vault ground truth).
+
+Risky writes (money, edits to existing notes, deletes) are queued instead of applied.
+Drain the queue with `canon-approve` (list / show / yes / no). Before that tool existed the
+queue was a one-way trapdoor: this script printed "sent for approval", nothing sent, and
+nothing could ever apply it.
+
+Usage:  canon-propose <kind> "<title>" [--mode new|update|append]   (body on stdin)
+  kind = client | person | money | project | knowledge | personal
+
+What it does (the write contract, in code):
+  1. Classify -> route to the right canonical folder.
+  2. Stamp frontmatter (type tag first, date, status) + heading if missing.
+  3. Dedup (one-fact-one-home): if a near-named note already exists, treat as an UPDATE,
+     never a parallel copy.
+  4. Risk gate: a NEW non-money note applies directly (low blast radius, git-revertable).
+     Money, updates/appends to existing canon, and deletes require the owner's Telegram tap.
+  5. Apply = write to the vault working copy + git commit + push -> syncs to Obsidian
+     AND auto-ingests into the agent's searchable memory (via vault-watch).
+  6. vault-lint runs after; if the write introduces a broken link/collision it is flagged.
+
+Safety: target path is hard-constrained to the allowlisted canon folders; traversal refused.
+The queue (drained by canon-approve) is the ONLY path to a gated write - --apply-queued
+refuses anything not marked approved, and there is no other flag that skips the gate.
+"""
+import sys, os, re, json, subprocess, time, datetime, difflib, uuid, hashlib, fcntl
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from config import load
+CFG = load()
+
+VAULT = CFG["VAULT_PATH"]
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "neva")
+QDIR = os.path.join(STATE_DIR, "queue")
+WRITE_LOCK = os.path.join(STATE_DIR, "canon-write.lock")
+OWNER_CHAT = CFG["OWNER_CHAT_ID"]
+OPENCLAW_CONFIG = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+# Optional: base URL of a dashboard /api/tap endpoint for one-tap approve buttons.
+# Without it, proposals still stage + notify; approval happens via the queue file.
+TAP_BASE = CFG.get("TAP_BASE_URL", "")
+
+# kind -> (folder, type-tag, always-gate?)
+ROUTE = {
+    "client":    ("02 Clients/Active", "client",    False),
+    "person":    ("03 People",         "person",    False),
+    "money":     ("05 Money",          "money",     True),   # money always gated (fabrication risk)
+    "project":   ("01 Projects",       "project",   False),
+    "knowledge": ("04 Knowledge",      "knowledge", False),
+    "personal":  ("10 Personal",       "personal",  False),
+}
+ALLOWED_FOLDERS = [v[0] for v in ROUTE.values()]
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def safe_title(s):
+    return re.sub(r'[/\\:*?"<>|]', "", s).strip()[:80]
+
+
+def git(*args, check=False):
+    env = dict(os.environ, HOME=os.path.expanduser("~"))
+    return subprocess.run(["git", "-C", VAULT, "-c", "safe.directory=*"] + list(args),
+                          env=env, capture_output=True, text=True)
+
+
+def find_existing(folder, title):
+    """Dedup: exact or high-similarity title in the target folder -> the existing file."""
+    d = os.path.join(VAULT, folder)
+    if not os.path.isdir(d):
+        return None
+    t = slug(title)
+    best = None
+    for f in os.listdir(d):
+        if not f.endswith(".md"):
+            continue
+        base = slug(f[:-3])
+        if base == t:
+            return f
+        if difflib.SequenceMatcher(None, base, t).ratio() > 0.86:
+            best = f
+    return best
+
+
+def ensure_frontmatter(content, type_tag, title):
+    if content.lstrip().startswith("---"):
+        return content
+    fm = ("---\n"
+          f"tags: [{type_tag}, {slug(title)}]\n"
+          f"date: {datetime.date.today().isoformat()}\n"
+          "status: active\n"
+          "---\n\n"
+          f"# {title}\n\n")
+    return fm + content.lstrip("\n")
+
+
+def lint_check():
+    """Run vault-lint; return the broken-links section (empty = clean)."""
+    sk = os.path.join(VAULT, "Skills", "vault-lint.sh")
+    if not os.path.exists(sk):
+        return ""
+    out = subprocess.run(["bash", sk], cwd=VAULT, capture_output=True, text=True).stdout
+    m = re.search(r"BROKEN WIKILINKS.*?\n(.*?)\n=== 2", out, re.S)
+    return (m.group(1).strip() if m else "")
+
+
+def sha256_of(path):
+    try:
+        return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    except OSError:
+        return None
+
+
+def apply_write(relpath, content, mode="new", prior_sha256=None):
+    """Write to canon + commit + push. Path is re-validated here (defence in depth).
+
+    mode: "new" writes relpath fresh. "append" adds to whatever is there now. "update"
+    overwrites, but refuses if the target drifted (edited or deleted) since prior_sha256
+    was recorded at proposal time - confirmed by direct test that, without this check,
+    approving a stale update after the target note was deleted silently resurrected the
+    path containing ONLY the new fragment, permanently losing everything that was in it.
+    """
+    rp = os.path.normpath(relpath)
+    # Boundary-aware prefix check: "05 Money".startswith is not enough, it also matches a
+    # sibling folder like "05 MoneyShadow" that is not in ALLOWED_FOLDERS at all - confirmed
+    # reachable via a hand-crafted queue entry, landing content inside the vault but outside
+    # every folder canon's search (LIVE_DIRS) ever looks at. Require an exact match or a
+    # real path-separator boundary.
+    in_allowlist = any(rp == a or rp.startswith(a + os.sep) for a in ALLOWED_FOLDERS)
+    if rp.startswith("..") or not in_allowlist:
+        return False, f"refused: path not in canon allowlist: {rp}"
+    full = os.path.realpath(os.path.join(VAULT, rp))
+    if not full.startswith(os.path.realpath(VAULT) + os.sep):
+        return False, "refused: path traversal"
+
+    os.makedirs(STATE_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    # Exclusive lock around read-check-write-commit. fcntl.flock ties the lock to this
+    # process's open fd, so a crash releases it automatically (unlike a "does a .lock file
+    # exist" convention, which leaks a permanent stale lock on crash) - safe to block here.
+    # Needed because two canon-propose processes writing at once WILL silently drop a
+    # commit: confirmed directly - process B printed "APPLIED: committed ..." while `git
+    # log` afterwards showed only process A's commit had ever landed; B's file sat on disk,
+    # untracked, forever, with the tool having claimed success.
+    with open(WRITE_LOCK, "a") as lockfh:
+        fcntl.flock(lockfh.fileno(), fcntl.LOCK_EX)
+
+        existed_now = os.path.isfile(full)
+        if mode == "update" and prior_sha256 is not None:
+            if sha256_of(full) != prior_sha256:
+                return False, (f"refused: {rp} changed since this was proposed (edited or "
+                                f"deleted) - re-propose it so the update reflects what is "
+                                f"actually there now")
+
+        if mode == "append" and existed_now:
+            # ensure_frontmatter() already stamped a fresh --- block + "# Title" heading onto
+            # this fragment (main() runs it unconditionally, before mode is known there).
+            # The target already has both; strip the duplicate so an appended note doesn't
+            # accumulate a new frontmatter+heading block every time.
+            frag = content
+            fm_match = re.match(r"^---\n.*?\n---\n+", frag, re.S)
+            if fm_match:
+                frag = frag[fm_match.end():]
+            frag = re.sub(r"^#[^\n]*\n+", "", frag, count=1)
+            prior_text = open(full, encoding="utf-8", errors="replace").read()
+            content = prior_text.rstrip("\n") + "\n\n" + frag.strip("\n") + "\n"
+
+        open(full, "w").write(content)
+
+        r_add = git("add", rp)
+        if r_add.returncode != 0:
+            return False, f"refused: git add failed for {rp}: {(r_add.stderr or '').strip()[:200]}"
+        r_commit = git("commit", "-q", "-m", f"canon: {rp}")
+        if r_commit.returncode != 0:
+            out = (r_commit.stdout or "") + (r_commit.stderr or "")
+            if "nothing to commit" in out.lower():
+                return True, f"no change: {rp} already matched this content"
+            return False, (f"git commit FAILED for {rp}: {out.strip()[:200]} "
+                            "(the write landed on disk but is NOT in version history yet)")
+
+        # A fresh install has no remote. Attempting a push there produces a git fatal on the
+        # buyer's very first note, which reads like data loss and is not. Only push if a
+        # remote actually exists; otherwise say plainly that local is all there is.
+        if git("remote", "get-url", "origin").returncode != 0:
+            return (True, "committed " + relpath + " locally. No git remote is configured, so "
+                    "there is nothing to sync to yet; the note is safely in your vault.")
+        push = git("push", "-q", "origin", "main")
+        broken = lint_check()
+        lint_note = (" | LINT: broken links introduced:\n" + broken) if broken else " | lint clean"
+        if push.returncode != 0:
+            return True, (f"committed {rp} LOCALLY but PUSH FAILED (not synced to Obsidian "
+                           f"or memory): {(push.stderr or '').strip()[:200]}{lint_note}")
+        return True, f"committed {rp}{lint_note}"
+
+
+def tg_token():
+    try:
+        return json.load(open(OPENCLAW_CONFIG))["channels"]["telegram"]["botToken"]
+    except Exception:
+        return None
+
+
+def stage_and_tap(relpath, content, mode, reason):
+    """Stage a canon-write proposal + send the owner a Telegram tap (approve/cancel)."""
+    import hmac
+    os.makedirs(QDIR, exist_ok=True)
+    tid = "canon-" + str(uuid.uuid4())[:12]
+    # Fingerprint the target as it is RIGHT NOW, so apply time can detect drift (the target
+    # note edited or deleted between proposing and approving) instead of blindly overwriting.
+    prior_sha256 = sha256_of(os.path.realpath(os.path.join(VAULT, relpath)))
+    task = {"id": tid, "kind": "canon-write", "relpath": relpath, "content": content,
+            "mode": mode, "status": "tap", "reason": reason, "prior_sha256": prior_sha256,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    json.dump(task, open(os.path.join(QDIR, tid + ".json"), "w"), indent=2, ensure_ascii=False)
+    token = tg_token()
+    reply_markup = None
+    try:
+        if not TAP_BASE:
+            raise ValueError("TAP_BASE_URL not configured")
+        secret = open(os.path.join(STATE_DIR, "tap-secret")).read().strip()
+        ts = int(time.time())
+        def sig(a):
+            return hmac.new(secret.encode(), f"{tid}:{a}:{ts}".encode(), hashlib.sha256).hexdigest()
+        base = TAP_BASE.rstrip("/") + "/api/tap"
+        reply_markup = {"inline_keyboard": [[
+            {"text": "Approve write", "url": f"{base}?id={tid}&action=approve&ts={ts}&sig={sig('approve')}"},
+            {"text": "Cancel", "url": f"{base}?id={tid}&action=cancel&ts={ts}&sig={sig('cancel')}"}]]}
+    except Exception:
+        pass
+    preview = content[:500]
+    msg = (f"<b>Canon write proposal</b> ({reason})\n<code>{relpath}</code>\n\n"
+           f"<pre>{preview}</pre>\n\nApprove to commit it to your brain.")
+    if token:
+        import urllib.request, urllib.parse
+        data = {"chat_id": OWNER_CHAT, "text": msg, "parse_mode": "HTML"}
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                urllib.parse.urlencode(data).encode()), timeout=15)
+        except Exception:
+            pass
+    return tid
+
+
+def apply_queued(tid):
+    """Apply a proposal the owner approved via canon-approve. Same writer, same rules.
+
+    Requires status == "approved": a transition ONLY canon-approve's interactive yes/no
+    flow performs, by rewriting the queue file immediately before calling this. Confirmed
+    by direct test that, before this check existed, `canon-propose --apply-queued <tid>`
+    applied a GATED money proposal straight to the vault with no human ever asked - the tid
+    is trivially readable from the queue directory listing, so the "gate" was decorative.
+    """
+    path = os.path.join(QDIR, tid + ".json")
+    if not os.path.isfile(path):
+        print(f"no queued proposal {tid}", file=sys.stderr); sys.exit(2)
+    try:
+        t = json.load(open(path, encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        print(f"refused: queued proposal {tid} is corrupt and cannot be applied ({e}).\n"
+              f"fix: inspect {path} by hand; canon-approve will also flag this file as "
+              "corrupt in its listing", file=sys.stderr)
+        sys.exit(2)
+    if t.get("status") != "approved":
+        print(f"refused: {tid} has not been approved yet (status={t.get('status')!r}).\n"
+              f"fix: canon-approve yes {tid[:12]}", file=sys.stderr)
+        sys.exit(2)
+    ok, detail = apply_write(t["relpath"], t["content"], mode=t.get("mode", "new"),
+                              prior_sha256=t.get("prior_sha256"))
+    if ok:
+        os.remove(path)
+    print(("APPLIED: " if ok else "FAILED: ") + detail)
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    args = [a for a in sys.argv[1:]]
+    if args and args[0] == "--apply-queued" and len(args) > 1:
+        apply_queued(args[1])
+    mode = "new"
+    if "--mode" in args:
+        i = args.index("--mode"); mode = args[i + 1]; del args[i:i + 2]
+    if len(args) < 2:
+        print("usage: canon-propose <client|person|money|project|knowledge|personal> \"<title>\" [--mode new|update|append]  (body on stdin)", file=sys.stderr)
+        sys.exit(2)
+    kind, title = args[0].lower(), safe_title(args[1])
+    if kind not in ROUTE:
+        print(f"unknown kind: {kind}", file=sys.stderr); sys.exit(2)
+    if sys.stdin.isatty():
+        print("provide the note body on stdin", file=sys.stderr); sys.exit(2)
+    body = sys.stdin.read()
+
+    folder, type_tag, always_gate = ROUTE[kind]
+    existing = find_existing(folder, title)
+    if existing:
+        relpath = f"{folder}/{existing}"
+        mode = "update" if mode == "new" else mode
+    else:
+        relpath = f"{folder}/{title}.md"
+
+    content = ensure_frontmatter(body, type_tag, title)
+
+    # Risk gate: money OR touching existing canon OR explicit update/append -> the owner taps.
+    # There used to be an --approved <token> flag here that skipped straight to apply_write
+    # on ANY value, including a brand-new never-staged proposal: confirmed by direct test
+    # that `canon-propose money "<title>" --approved anything` wrote a fabricated money note
+    # straight into the vault, no queue, no review, no human involved at all. Removed - the
+    # queue (drained by canon-approve, gated on status=="approved") is now the only path.
+    risky = always_gate or bool(existing) or mode in ("update", "append")
+    if risky:
+        reason = "money" if always_gate else ("updates existing note" if existing else mode)
+        tid = stage_and_tap(relpath, content, mode, reason)
+        notified = "" if TAP_BASE else "  (no tap URL configured, so no push was sent)"
+        print(f"GATED: proposal {tid} is waiting for your approval ({reason}) -> {relpath}"
+              f"\n  review it:  canon-approve show {tid[:12]}"
+              f"\n  apply it:   canon-approve yes {tid[:12]}{notified}")
+    else:
+        ok, detail = apply_write(relpath, content, mode=mode)
+        print(("APPLIED: " if ok else "FAILED: ") + detail)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,74 @@
+#!/bin/bash
+# Morning briefing. The agent's brain reads overnight sources and composes ONE calm digest,
+# which this script sends to the owner's Telegram. Unlike a monitoring sweep (silent unless
+# needed), the briefing always lands once a day.
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+STATE="$HOME/.local/state/neva"; mkdir -p "$STATE"
+
+read -r -d '' PROMPT <<'PROMPT_EOF' || true
+This is the morning briefing, running automatically. Work silently, skipping any source that is missing or errors, then output ONE message for the owner (it goes straight to their Telegram).
+Read overnight and today, using only sources that exist on this system: WhatsApp if the wacli tool is installed (run `wacli chats list --limit 20`, weight close family and key work contacts highest; ignore muted groups), email if the himalaya tool is installed (run `himalaya envelope list --folder INBOX 2>/dev/null | head -15`), the vault daily note at __VAULT__/Daily Briefing.md if present, and goals at __VAULT__/GOALS.md if present.
+Compose the morning picture: open with a warm one-line greeting calibrated to the hour. Then, tight and specific: what came in overnight that matters and from whom, what is on for today, and the one or two things that actually need attention. No filler, no emoji, no dashes. If it was a quiet night, say so in a line. Output only the message text.
+PROMPT_EOF
+PROMPT="${PROMPT//__VAULT__/$VAULT_PATH}"
+
+set -a; . "$STATE/claude.env" 2>/dev/null; set +a
+# FALSE-GREEN FIX (2026-08-01): this used to pipe openclaw's stderr to /dev/null and only
+# look at the python parser's stdout, and the python parser caught every exception and printed
+# an empty string either way. So "openclaw crashed / timed out / returned garbage" and "openclaw
+# ran fine and genuinely had nothing to report" produced the IDENTICAL empty string and the
+# IDENTICAL "briefing skipped: nothing to report" log line. That is the same shape of bug as
+# the WhatsApp watcher counting an empty read as quiet instead of broken. The two cases are
+# now told apart: openclaw's real exit code is captured (PIPESTATUS, since the python parser
+# always exits 0), and unparsable output is a distinct sentinel, not a silently-caught empty string.
+OPENCLAW_OUT="$(IS_SANDBOX=1 neva_timeout 220 openclaw agent --local --json --session-key agent:main:briefing -m "$PROMPT" 2>>"$STATE/briefing.log")"
+OPENCLAW_RC=$?
+OUT="$(printf '%s' "$OPENCLAW_OUT" | python3 -c "import sys,json
+try:
+ d=json.load(sys.stdin); p=d.get('payloads') or []
+ print((p[0].get('text','') if p else '').strip())
+except Exception:
+ print('__PARSE_ERROR__')")"
+
+if [ "$OPENCLAW_RC" -ne 0 ] || [ "$OUT" = "__PARSE_ERROR__" ]; then
+  echo "$(date '+%F %T') briefing FAILED: openclaw exit=$OPENCLAW_RC, output unparsable (see lines above)" >> "$STATE/briefing.log"
+  exit 1
+fi
+
+MSG="$(printf '%s' "$OUT" | sed -e 's/ *-- */, /g' -e 's/—/, /g')"
+# Only claim a send when one actually happened, and only when there IS somewhere to send.
+# The product's own headline rule forbids reporting an action that did not occur.
+if [ -z "$MSG" ]; then
+  echo "$(date '+%F %T') briefing skipped: nothing to report (openclaw ran clean, genuinely quiet night)" >> "$STATE/briefing.log"
+  exit 0
+fi
+if [ -z "${OWNER_CHAT_ID:-}" ]; then
+  echo "$(date '+%F %T') briefing composed (${#MSG} chars) but NOT sent: no chat id yet" >> "$STATE/briefing.log"
+  printf '%s\n' "$MSG"
+  exit 0
+fi
+# DELIVERY-HONESTY FIX (2026-08-01): this used to log "briefing sent" unconditionally, right
+# after an `&&`-guarded curl whose exit status and response were never inspected. A dead
+# token, a 401, or a network outage all produced the identical "briefing sent" line: the
+# product's own headline rule (no tool claims an action it did not perform) broken by the
+# product itself. Now delivery is only logged as sent when Telegram's own response confirms
+# it, the same http_code + JSON `ok` check bin/doctor already uses for the token itself.
+TOKEN="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['channels']['telegram']['botToken'])" 2>/dev/null)"
+if [ -z "$TOKEN" ]; then
+  echo "$(date '+%F %T') briefing composed (${#MSG} chars) but NOT sent: no telegram bot token configured" >> "$STATE/briefing.log"
+  exit 1
+fi
+RESP="$(curl -s --max-time 15 -w '\n%{http_code}' "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+  --data-urlencode "chat_id=${OWNER_CHAT_ID}" --data-urlencode "text=${MSG}")"
+HTTP_CODE="$(printf '%s' "$RESP" | tail -n1)"
+BODY="$(printf '%s' "$RESP" | sed '$d')"
+TG_OK="$(printf '%s' "$BODY" | python3 -c "import sys,json
+try: print('true' if json.load(sys.stdin).get('ok') else 'false')
+except Exception: print('false')" 2>/dev/null)"
+if [ "$HTTP_CODE" = "200" ] && [ "$TG_OK" = "true" ]; then
+  echo "$(date '+%F %T') briefing sent (${#MSG} chars)" >> "$STATE/briefing.log"
+else
+  echo "$(date '+%F %T') briefing DELIVERY FAILED: http=$HTTP_CODE telegram_ok=$TG_OK (composed ${#MSG} chars, Telegram did not confirm; check the token and chat id)" >> "$STATE/briefing.log"
+  exit 1
+fi

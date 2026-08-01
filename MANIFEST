@@ -1,0 +1,22 @@
+# template-owned paths: upgrade.sh may replace these on update
+bin/
+lib/
+services/
+docs/
+build/
+workspace/AGENTS.base.md
+workspace/SOUL.base.md
+workspace/BOOTSTRAP.md
+vault/CLAUDE.md
+vault/Templates/
+vault/Skills/
+install.sh
+README.md
+VERSION
+MANIFEST
+# user-owned, NEVER touched by upgrades: everything else, notably
+#   ~/.config/neva/identity.env, workspace *.local.md and USER.md,
+#   all vault content folders (00-10, Food, Journal, Reviews),
+#   and vault/.obsidian: shipped once at install, then yours. This is deliberate, not an
+#   omission. Buyers retheme and add plugins, and silently overwriting that on upgrade would
+#   cost them more than a stale dashboard does. If a dashboard changes, docs say what to copy.

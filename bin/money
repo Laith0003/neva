@@ -1,0 +1,87 @@
+#!/bin/bash
+# money: the one sanctioned way to query the ledger, plus the check that catches the
+# single worst money-integrity defect found in testing (2026-08-01): the founder's own
+# reference system keeps money figures in MORE THAN ONE FILE, and the agent quoted an
+# after-tax figure that existed in NO file at all. AGENTS.base.md promises "money figures
+# come only from the ledger file. If the ledger does not contain it, you do not know it."
+# That promise was never machine-checked; it relied entirely on the agent remembering to
+# obey it. This tool makes the ledger the only path an agent needs to type, and adds a
+# scan that surfaces a second money-shaped file before it becomes a second source of truth.
+#
+# Why CSV output, not hledger's own JSON: tested `register --output-format json` and
+# `print -O json` against a real journal on 2026-08-01. register's JSON is an array of
+# arrays with no field names (matches https://github.com/simonmichael/hledger/issues/2552,
+# "difficult to consume"). print's JSON is namedbut nests every amount as
+# {decimalMantissa, decimalPlaces, floatingPoint} rather than a plain number, which an LLM
+# can silently misread (e.g. mistake mantissa for the amount). `-O csv` gives a flat
+# "1000.00 USD" string per posting; that is what an agent should parse. See
+# docs/08-integrations.md and hledger's export docs: https://hledger.org/export.html
+#
+# Usage:
+#   money balance [hledger args...]    # -O csv
+#   money register [hledger args...]   # -O csv
+#   money print [hledger args...]      # native journal text (the ground truth format)
+#   money check                        # scan the vault OUTSIDE the ledger folder for
+#                                       # currency-shaped text; a hit means a second money
+#                                       # file may be forming
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+
+if ! command -v hledger >/dev/null 2>&1; then
+  echo "hledger not installed: brew install hledger  (or https://hledger.org/install.html)" >&2
+  exit 127
+fi
+
+LEDGER="${LEDGER_FILE:-$VAULT_PATH/05 Money/$(date +%Y).journal}"
+MONEYDIR="$(dirname "$LEDGER")"
+CMD="${1:-balance}"; [ $# -gt 0 ] && shift
+
+# Combine every *.journal in the money folder, not just LEDGER_FILE: a buyer with a
+# 2025.journal AND a 2026.journal has money in two files inside the SAME folder, and a
+# tool that only reads LEDGER_FILE would silently under-report. Matches the fix already
+# shipped in bin/canon (journal_files()) after the same defect was found there 2026-08-01.
+FILES=()
+if [ -d "$MONEYDIR" ]; then
+  while IFS= read -r f; do FILES+=("$f"); done < <(find "$MONEYDIR" -maxdepth 1 -name "*.journal" | sort)
+fi
+if [ ${#FILES[@]} -eq 0 ] && [ -f "$LEDGER" ]; then FILES=("$LEDGER"); fi
+
+if [ "$CMD" != "check" ]; then
+  if [ ${#FILES[@]} -eq 0 ]; then
+    echo "no ledger file found: $LEDGER or $MONEYDIR/*.journal" >&2
+    echo "fix: create one under '05 Money/', or correct LEDGER_FILE in identity.env" >&2
+    exit 1
+  fi
+fi
+HLARGS=(); for f in "${FILES[@]}"; do HLARGS+=(-f "$f"); done
+
+case "$CMD" in
+  balance|bal)
+    neva_timeout 10 hledger "${HLARGS[@]}" balance -O csv "$@" ;;
+  register|reg)
+    neva_timeout 10 hledger "${HLARGS[@]}" register -O csv "$@" ;;
+  print)
+    neva_timeout 10 hledger "${HLARGS[@]}" print "$@" ;;
+  check)
+    # currency-shaped: a symbol glued to a digit, or a number glued to a 3-letter code.
+    # Deliberately narrow (not "any number") to avoid drowning the buyer in false positives
+    # from dates, list indices, or kcal counts elsewhere in the vault.
+    PATTERN='([$£€][0-9])|([0-9](\.[0-9]{2})?[[:space:]]?(USD|EUR|GBP|JOD|SAR|AED|EGP)\b)'
+    HITS=$(grep -rlEI "$PATTERN" \
+      --include="*.md" \
+      --exclude-dir=".git" --exclude-dir=".obsidian" --exclude-dir=".trash" \
+      "$VAULT_PATH" 2>/dev/null | grep -vF "$MONEYDIR" || true)
+    if [ -n "$HITS" ]; then
+      echo "WARN: money-shaped text found outside $MONEYDIR (a second money file may be forming):"
+      echo "$HITS" | sed 's/^/  /'
+      echo "fix: move real figures into the ledger via 'money print', or if these are not"
+      echo "     money (prices quoted from someone else, examples, etc.), leave them but say"
+      echo "     so when asked, never treat them as the owner's own figures."
+      exit 1
+    fi
+    echo "ok: no money-shaped text found outside $MONEYDIR"
+    ;;
+  *)
+    echo "usage: money {balance|register|print|check} [hledger args...]" >&2
+    exit 64 ;;
+esac

@@ -1,0 +1,12 @@
+; hledger journal. The ONLY source of money figures for your agent.
+; One transaction per entry; the agent appends here and reports with `hledger` commands.
+; Docs: https://hledger.org/1.32/hledger.html
+; Example entries (delete these once real ones exist):
+
+2026-01-05 * Example Client | invoice 001 paid
+    assets:bank            1000.00 USD
+    income:clients
+
+2026-01-08 * hosting
+    expenses:infrastructure  12.00 USD
+    assets:bank

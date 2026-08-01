@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily canon content lint (people identifiers, duplicates)
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+# see neva-cadence.timer.tmpl: immediate first run, same intent as launchd's RunAtLoad.
+OnActiveSec=30
+[Install]
+WantedBy=timers.target

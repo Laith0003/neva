@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.neva.session-guard</string>
+  <key>ProgramArguments</key><array><string>@PREFIX@/services/heartbeat-wrap.sh</string><string>session-guard</string><string>@PREFIX@/bin/session-guard</string></array>
+  <key>StartInterval</key><integer>120</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/neva/session-guard.err.log</string>
+</dict></plist>

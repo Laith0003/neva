@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.neva.diag</string>
+  <key>ProgramArguments</key><array><string>@PREFIX@/services/heartbeat-wrap.sh</string><string>diag</string><string>@PREFIX@/bin/diag-run</string></array>
+  <!-- Weekday 0 = Sunday. The systemd twin (neva-diag.timer, OnCalendar=Sun ...) is weekly;
+       this dict was missing Weekday, so on macOS it silently ran the diagnostic battery
+       every day instead of weekly (found by cross-platform-drift review, 2026-08-01). -->
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/neva/diag.err.log</string>
+</dict></plist>

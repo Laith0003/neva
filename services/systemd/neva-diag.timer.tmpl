@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly agent diagnostic battery
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00
+Persistent=true
+# see neva-cadence.timer.tmpl: immediate first run, same intent as launchd's RunAtLoad.
+OnActiveSec=30
+[Install]
+WantedBy=timers.target

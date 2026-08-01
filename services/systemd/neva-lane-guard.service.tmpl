@@ -1,0 +1,5 @@
+[Unit]
+Description=Recover the Telegram lane when it locks itself
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh lane-guard @PREFIX@/bin/lane-guard

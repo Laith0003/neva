@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep vault rituals alive (reviews, journal, strategy)
+[Timer]
+OnCalendar=*-*-* 17:00:00
+Persistent=true
+# fires once ~30s after the timer is first enabled, same intent as launchd's RunAtLoad: proves
+# the job actually runs instead of waiting up to 24h for the calendar slot, and gives doctor
+# an immediate heartbeat right after install instead of a false "never fired" for a full day.
+OnActiveSec=30
+[Install]
+WantedBy=timers.target

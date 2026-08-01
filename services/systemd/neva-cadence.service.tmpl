@@ -1,0 +1,5 @@
+[Unit]
+Description=Keep vault rituals alive (reviews, journal, strategy)
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh cadence @PREFIX@/bin/cadence

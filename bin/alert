@@ -1,0 +1,40 @@
+#!/bin/bash
+# alert (trust floor): never-fail-silently, as one reusable command.
+#
+#   alert "<what broke + retry plan>"
+#
+# Sends ONE Telegram line to the owner. Dedupes: the same alert fires at most once per 2 hours
+# (state keyed on the message hash), so a failing loop cannot spam anyone. Everything is logged
+# to the state dir either way.
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+MSG="${1:?usage: alert \"what broke + retry plan\"}"
+STATE="$HOME/.local/state/neva"
+STATEDIR="$STATE/alert-state"; mkdir -p "$STATEDIR"
+LOG="$STATE/alerts.log"
+# PORTABILITY (2026-08-01): `md5sum` (GNU) is present on this Mac's OS release, but that has
+# not always been true of every macOS version, and this is only a dedup key, not a security
+# boundary - `md5` (BSD, always present) and cksum (POSIX, always present) are equally valid
+# fallbacks that never leave a buyer's install unable to dedupe alerts.
+if command -v md5sum >/dev/null 2>&1; then
+  KEY=$(printf '%s' "$MSG" | md5sum | cut -c1-12)
+elif command -v md5 >/dev/null 2>&1; then
+  KEY=$(printf '%s' "$MSG" | md5 | cut -c1-12)
+else
+  KEY=$(printf '%s' "$MSG" | cksum | tr -d ' \t' | cut -c1-12)
+fi
+NOW=$(date +%s)
+LAST=$(cat "$STATEDIR/$KEY" 2>/dev/null || echo 0)
+echo "$(date '+%F %T') $MSG" >> "$LOG"
+[ $(( NOW - LAST )) -lt 7200 ] && exit 0   # deduped, already sent recently
+echo "$NOW" > "$STATEDIR/$KEY"
+find "$STATEDIR" -type f -mtime +2 -delete 2>/dev/null
+TOKEN=$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['channels']['telegram']['botToken'])" 2>/dev/null)
+[ -z "$TOKEN" ] && exit 0
+if [ -z "${OWNER_CHAT_ID:-}" ]; then
+  echo "alert not sent (no chat id configured yet): $*" >&2
+  exit 0
+fi
+curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+  --data-urlencode "chat_id=${OWNER_CHAT_ID}" \
+  --data-urlencode "text=System alert: ${MSG}" >/dev/null 2>&1 || true

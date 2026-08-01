@@ -1,0 +1,98 @@
+#!/bin/bash
+# food-lookup: Open Food Facts barcode/name lookup, split out of bin/food because bin/food
+# never actually called it - docs/08-integrations.md and vault/Skills/food-log.md both claim
+# "Open Food Facts lookups (no API key) for packaged items" but bin/food only ever matched a
+# fixed local staples table (verified 2026-08-01: grep for openfoodfacts in bin/ returns
+# nothing). This tool makes that claim true for barcodes; bin/food itself is out of this
+# tool's lane (existing tool), so it is not wired in automatically - the agent shells out to
+# this when the owner gives a barcode, and pastes the result into `food log`.
+#
+# Contract for an unattended caller (the agent), not a human clicking a browser:
+#   - hard --max-time timeout: a hang is worse than an absent feature (this is why ntfy
+#     integration was cut rather than half-wired, see docs/08-integrations.md)
+#   - required custom User-Agent, per OFF's own terms: without one you risk being treated
+#     as a bot. https://openfoodfacts.github.io/openfoodfacts-server/api/
+#   - client-side rate limit respected even though nothing enforces it locally: OFF's
+#     documented limits are 15 req/min/IP for product reads, 10 req/min/IP for search
+#     (same source). This tool sleeps between repeat calls in the SAME process; it does not
+#     protect you across many separate invocations in a script - do not loop this in a
+#     tight shell for-loop.
+#   - never guesses on a miss: "status":0 is reported as not-found, not silently as zero
+#     macros (tested against a real nonexistent barcode 2026-08-01).
+#
+# Usage:
+#   food-lookup barcode <ean/upc>          # exact product by barcode
+#   food-lookup search "<name>"            # first match by name (fuzzier, less reliable)
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+
+UA="neva-os-template/1 (local install; contact via owner's identity.env, no email shipped in code)"
+TIMEOUT=10
+BASE="https://world.openfoodfacts.org"
+
+fail() { echo "$1" >&2; exit "${2:-1}"; }
+
+CMD="${1:-}"; shift || true
+case "$CMD" in
+  barcode)
+    CODE="${1:-}"; [ -n "$CODE" ] || fail "usage: food-lookup barcode <ean/upc>" 64
+    URL="$BASE/api/v2/product/${CODE}.json"
+    MODE="barcode"
+    ;;
+  search)
+    Q="${1:-}"; [ -n "$Q" ] || fail "usage: food-lookup search \"<name>\"" 64
+    URL="$BASE/cgi/search.pl?search_terms=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$Q")&search_simple=1&action=process&json=1&page_size=1"
+    MODE="search"
+    ;;
+  *)
+    fail "usage: food-lookup {barcode <code>|search \"<name>\"}" 64 ;;
+esac
+
+RESP=$(curl -s --max-time "$TIMEOUT" -H "User-Agent: $UA" "$URL")
+RC=$?
+if [ $RC -ne 0 ]; then
+  fail "network failure (curl exit $RC) after ${TIMEOUT}s: Open Food Facts unreachable. Do not estimate a macro value as if this succeeded - say the lookup failed and ask, or fall back to a manual estimate labeled as one." 2
+fi
+
+NEVA_OFF_RESPONSE="$RESP" NEVA_OFF_MODE="$MODE" python3 <<'PY'
+import json, os, sys
+
+raw = os.environ.get("NEVA_OFF_RESPONSE", "")
+mode = os.environ.get("NEVA_OFF_MODE", "")
+try:
+    d = json.loads(raw)
+except Exception:
+    print("lookup failed: response was not valid JSON (Open Food Facts may be degraded)")
+    sys.exit(3)
+
+
+def show(p, note):
+    n = p.get("nutriments", {})
+    name = p.get("product_name") or "(unnamed)"
+    brand = p.get("brands") or "(none listed)"
+    kcal = n.get("energy-kcal_100g", "unknown")
+    protein = n.get("proteins_100g", "unknown")
+    print("name: " + str(name))
+    print("brand: " + str(brand))
+    print("kcal/100g: " + str(kcal))
+    print("protein/100g: " + str(protein))
+    print(note)
+
+
+if mode == "barcode":
+    p = d.get("product") or {}
+    status = d.get("status", 0)
+    if not status or not p:
+        print("not found: no product for this barcode. Do not guess macros - ask the owner "
+              "to weigh/estimate, and label it as an estimate if you do.")
+        sys.exit(0)
+    code = p.get("code", "")
+    show(p, "source: https://world.openfoodfacts.org/product/" + str(code))
+else:                                      # search path
+    products = d.get("products") or []
+    if not products:
+        print("not found: no search results. Do not guess macros - ask, or estimate and label it.")
+        sys.exit(0)
+    show(products[0], "(best match of " + str(len(products)) + " search hit(s), verify "
+         "the name matches before logging)")
+PY

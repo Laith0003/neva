@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.neva.vault-mirror</string>
+  <key>ProgramArguments</key><array><string>@PREFIX@/services/heartbeat-wrap.sh</string><string>vault-mirror</string><string>@PREFIX@/bin/vault-mirror</string></array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/neva/vault-mirror.err.log</string>
+</dict></plist>

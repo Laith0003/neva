@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""food: meal + macro tracker. The agent logs what the owner eats and tracks totals
+against optional daily targets.
+
+Targets come from config keys FOOD_KCAL_TARGET and FOOD_PROTEIN_TARGET (integers).
+Unset means no target: totals are shown without goal bars. The log directory comes
+from config key FOOD_DIR, defaulting to the state dir.
+
+Usage:
+  food log "<what was eaten>" [kcal] [protein]   # numbers optional -> estimated from staples
+  food today                                      # today's meals + running total vs target
+  food gap                                        # one line: what's left to hit the target
+  food week                                       # last 7 days protein/kcal summary
+  food undo                                       # remove the last logged meal today
+"""
+import json, os, sys, time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from config import load
+
+CFG = load()
+LOG_DIR = CFG.get("FOOD_DIR") or os.path.join(
+    os.path.expanduser("~"), ".local", "state", "neva", "food-log")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+
+def goal():
+    """(kcal_target, protein_target); either is None when unset in config."""
+    def num(key):
+        try:
+            return int(CFG.get(key, ""))
+        except (TypeError, ValueError):
+            return None
+    return num("FOOD_KCAL_TARGET"), num("FOOD_PROTEIN_TARGET")
+
+
+# Rough per-serving macros for common staples (kcal, protein g). Keyword -> macro.
+TABLE = {
+    "3 eggs": (320, 19), "eggs with butter": (320, 19), "egg": (90, 6),
+    "labaneh": (80, 5), "makdous": (120, 2), "arabic bread": (160, 5), "pita": (160, 5),
+    "honey": (60, 0), "banana": (105, 1), "milk": (150, 8), "full-fat milk": (150, 8),
+    "foul": (200, 13), "masabba": (250, 8), "hummus": (250, 8),
+    "zurbiyan": (700, 40), "kabsa": (700, 40), "biryani": (700, 40),
+    "shish tawook": (650, 45), "tawook": (650, 45), "shawarma": (700, 40),
+    "dawud basha": (600, 30), "daoud basha": (600, 30),
+    "ground beef": (500, 40), "beef": (450, 35), "burger": (650, 35),
+    "lamb neck": (650, 45), "lamb": (550, 38), "kofta": (500, 30), "kabd": (300, 28), "liver": (300, 28),
+    "whey": (120, 24), "protein shake": (250, 35), "greek yogurt": (100, 10), "yogurt": (90, 5), "laban": (90, 5),
+    "peanut butter": (95, 4), "tuna": (180, 30), "nuts": (200, 6),
+    "chicken breast": (250, 46), "chicken": (300, 28), "rice": (200, 4),
+    "oatmeal": (300, 8), "potato": (160, 4), "potatoes": (160, 4),
+    "croissant": (270, 5), "sujuk": (350, 18), "pastrami": (320, 22),
+    "avocado": (240, 3), "feta": (100, 5), "cheese": (110, 7), "coffee": (5, 0), "v60": (5, 0),
+}
+
+def estimate(desc):
+    d = desc.lower()
+    kcal = prot = 0
+    hits = []
+    # match longer keys first to avoid double-count (e.g. "chicken breast" before "chicken")
+    for kw in sorted(TABLE, key=len, reverse=True):
+        if kw in d:
+            k, p = TABLE[kw]
+            kcal += k; prot += p; hits.append(kw)
+            d = d.replace(kw, "")  # consume so sub-keywords don't double
+    return kcal, prot, hits
+
+def today_path(day=None):
+    day = day or time.strftime("%Y-%m-%d")
+    return os.path.join(LOG_DIR, day + ".json")
+
+def load_day(day=None):
+    p = today_path(day)
+    try:
+        return json.load(open(p))
+    except Exception:
+        return {"day": day or time.strftime("%Y-%m-%d"), "meals": []}
+
+def save(data):
+    json.dump(data, open(today_path(data["day"]), "w"), indent=2, ensure_ascii=False)
+
+def bar(cur, tgt, width=20):
+    filled = min(width, int(width * cur / tgt)) if tgt else 0
+    return "[" + "#" * filled + "." * (width - filled) + "]"
+
+def cmd_log(args):
+    if not args:
+        print("usage: food log \"<meal>\" [kcal] [protein]"); return
+    desc = args[0]
+    kcal = prot = None
+    src = "manual"
+    if len(args) >= 3:
+        kcal, prot = int(args[1]), int(args[2])
+    elif len(args) == 2:
+        kcal = int(args[1])
+    if kcal is None:
+        kcal, prot, hits = estimate(desc)
+        src = "estimated(" + ",".join(hits) + ")" if hits else "unknown"
+    if prot is None:
+        _, prot, _ = estimate(desc)
+    data = load_day()
+    data["meals"].append({"time": time.strftime("%H:%M"), "desc": desc,
+                          "kcal": kcal, "protein": prot, "source": src})
+    save(data)
+    tk = sum(m["kcal"] for m in data["meals"]); tp = sum(m["protein"] for m in data["meals"])
+    gk, gp = goal()
+    print(f"logged: {desc} (+{kcal} kcal, +{prot}g protein, {src})")
+    line = "today: " + (f"{tk}/{gk} kcal" if gk else f"{tk} kcal")
+    line += ", " + (f"{tp}/{gp}g protein" if gp else f"{tp}g protein") + "."
+    left = []
+    if gk: left.append(f"{max(0, gk - tk)} kcal")
+    if gp: left.append(f"{max(0, gp - tp)}g protein")
+    if left:
+        line += " left: " + ", ".join(left) + "."
+    print(line)
+
+def cmd_today(day=None):
+    data = load_day(day); gk, gp = goal()
+    tk = sum(m["kcal"] for m in data["meals"]); tp = sum(m["protein"] for m in data["meals"])
+    print(f"== {data['day']} ==")
+    if not data["meals"]:
+        print("(nothing logged yet)")
+    for m in data["meals"]:
+        print(f"  {m['time']}  {m['desc'][:50]:50}  {m['kcal']:>4} kcal  {m['protein']:>3}g")
+    if gk:
+        print(f"kcal    {bar(tk, gk)} {tk}/{gk}  ({max(0, gk - tk)} left)")
+    else:
+        print(f"kcal    {tk} (no target set)")
+    if gp:
+        print(f"protein {bar(tp, gp)} {tp}/{gp}g ({max(0, gp - tp)}g left)")
+    else:
+        print(f"protein {tp}g (no target set)")
+
+def cmd_gap():
+    data = load_day(); gk, gp = goal()
+    tk = sum(m["kcal"] for m in data["meals"]); tp = sum(m["protein"] for m in data["meals"])
+    if gk is None and gp is None:
+        print(f"no targets set (today: {tk} kcal, {tp}g protein). "
+              "set FOOD_KCAL_TARGET / FOOD_PROTEIN_TARGET in the config to track a goal.")
+        return
+    lk = max(0, gk - tk) if gk else 0
+    lp = max(0, gp - tp) if gp else 0
+    if lk == 0 and lp == 0:
+        print("hit the target. " + str(tk) + " kcal, " + str(tp) + "g protein.")
+    else:
+        parts = []
+        if gk: parts.append(f"{lk} kcal")
+        if gp: parts.append(f"{lp}g protein")
+        at = []
+        if gk: at.append(f"{tk}/{gk}")
+        if gp: at.append(f"{tp}/{gp}g")
+        print(" and ".join(parts) + f" left today (at {', '.join(at)}).")
+
+def cmd_week():
+    gk, gp = goal()
+    print("last 7 days:")
+    for i in range(6, -1, -1):
+        day = time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400))
+        d = load_day(day)
+        tk = sum(m["kcal"] for m in d["meals"]); tp = sum(m["protein"] for m in d["meals"])
+        if d["meals"]:
+            mark = ("ok " if tp >= gp * 0.9 else "LOW") if gp else ""
+            print(f"  {day}  {tk:>4} kcal  {tp:>3}g protein  {mark}")
+        else:
+            print(f"  {day}  (no log)")
+
+def cmd_undo():
+    data = load_day()
+    if data["meals"]:
+        m = data["meals"].pop(); save(data)
+        print("removed:", m["desc"])
+    else:
+        print("nothing to undo today")
+
+cmds = {"log": lambda a: cmd_log(a), "today": lambda a: cmd_today(), "gap": lambda a: cmd_gap(),
+        "week": lambda a: cmd_week(), "undo": lambda a: cmd_undo()}
+c = sys.argv[1] if len(sys.argv) > 1 else "today"
+if c not in cmds:
+    # Never fall through to `today`: an unknown verb that prints the day view looks exactly
+    # like a successful log of nothing, which is the failure this product exists to prevent.
+    sys.exit("food: no such command '" + c + "'.\nfix: use one of " + ", ".join(sorted(cmds)) +
+             " (to record a meal it is `food log \"<meal>\" [kcal] [protein]`)")
+cmds[c](sys.argv[2:])

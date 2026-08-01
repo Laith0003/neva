@@ -1,0 +1,68 @@
+#!/bin/bash
+# cadence: keep the brain's rituals alive instead of letting the folders go quiet.
+#
+# The vault already has the structure and the weekly-update skill. What it lacked was anything
+# that noticed when an area went stale. On 2026-07-31 the observed state was: Reviews last
+# touched 2026-07-02, Journal 2026-06-17, Strategy 2026-07-02. Structure present, habit dead.
+#
+# This checks staleness and has the agent open the conversation itself, with the actual
+# numbers, and offers to do the work rather than nagging. The agent can write the vault
+# (git brain syncs both ways), so it can draft the note and the owner edits it.
+#
+# Usage: cadence [--dry-run]
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+VAULT="$VAULT_PATH"
+STATE_DIR="$HOME/.local/state/neva"
+mkdir -p "$STATE_DIR"
+STATE="$STATE_DIR/cadence.state"
+LOG="$STATE_DIR/cadence.log"
+CHAT="$OWNER_CHAT_ID"
+COOLDOWN_SEC=79200   # 22h, so at most one nudge a day
+
+# PORTABILITY FIX (2026-08-01): `find -printf` is GNU-only. On stock macOS (BSD find) it
+# errors, and that error was swallowed by 2>/dev/null, so `newest` was always empty and this
+# fell back to 9999 days for every folder, every time, on every Mac buyer. Staleness was never
+# actually measured on macOS: the review-nudge feature either never fires (thresholds never
+# crossed because nothing is ever "close" the way real ages would be) or, depending on the
+# exact threshold shape, misfires on everything, and both failure modes are silent, no error
+# anywhere. `stat -f` (BSD) / `stat -c` (GNU) per file is the portable replacement; one of the
+# two always succeeds on a given OS, so this works unmodified on macOS and Linux.
+newest_age_days() {
+  local dir="$1" newest=0 f mtime
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    mtime=$(stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null)
+    [ -n "$mtime" ] && [ "$mtime" -gt "$newest" ] && newest="$mtime"
+  done < <(find "$VAULT/$dir" -name "*.md" -not -path "*/.obsidian/*" 2>/dev/null)
+  [ "$newest" -eq 0 ] && { echo 9999; return; }
+  echo $(( ( $(date +%s) - newest ) / 86400 ))
+}
+
+R=$(newest_age_days "09 Reviews")
+J=$(newest_age_days "08 Journal")
+S=$(newest_age_days "04 Knowledge/Strategy")
+
+# thresholds: weekly review 7d, journal 4d, strategy 30d
+MSG=""
+[ "$R" -gt 7 ]  && MSG="Last weekly review was ${R} days ago. Want to do it now? I can draft it from this week and you edit."
+[ -z "$MSG" ] && [ "$J" -gt 4 ]  && MSG="Last journal entry was ${J} days ago. Want to tell me what happened and I will write it up?"
+[ -z "$MSG" ] && [ "$S" -gt 30 ] && MSG="The strategy notes have not been touched in ${S} days. The long-term plan deserves half an hour. Review it?"
+
+if [ "$DRY" = "1" ]; then
+  echo "dry-run: reviews=${R}d journal=${J}d strategy=${S}d -> ${MSG:-nothing due}"
+  exit 0
+fi
+[ -n "$MSG" ] || exit 0
+
+NOW=$(date +%s); LAST=$(cat "$STATE" 2>/dev/null || echo 0)
+[ $(( NOW - LAST )) -lt "$COOLDOWN_SEC" ] && exit 0
+echo "$NOW" > "$STATE"
+
+TOKEN=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.openclaw/openclaw.json")))["channels"]["telegram"]["botToken"])' 2>/dev/null)
+if [ -n "$TOKEN" ]; then
+  curl -s --max-time 20 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${CHAT}" --data-urlencode "text=${MSG}" >/dev/null 2>&1
+fi
+echo "$(date '+%F %T') nudged: reviews=${R}d journal=${J}d strategy=${S}d | ${MSG:0:60}" >> "$LOG"

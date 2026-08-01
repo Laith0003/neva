@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""canon-lint: catch wrong-person identifiers and duplicate people in canon.
+
+The pre-receive gate validates PROVENANCE (did this write come through canon-propose).
+It cannot see CONTENT. On 2026-07-30 the agent answered a contact's phone with the owner's
+own number, because it pulled from the wrong note. A provenance gate would have passed
+that write happily.
+
+Checks:
+  1. Phone country code vs the country stated in the same note (+964 Iraq, +962 Jordan, ...).
+  2. The same phone number appearing on two different people (ERROR) unless one note lists it
+     in frontmatter `borrowed_numbers: ["+962 ..."]` (e.g. son reachable on father's line).
+  3. The owner's own numbers appearing on someone else's note (ERROR).
+  4. The same email on two different people (ERROR).
+  5. ONE PERSON, ONE NOTE (standing rule, 2026-07-31): a person note whose name is
+     contained in another note's name (e.g. "Smith" in "John Smith") is a WARNING,
+     not an error: families share surnames. The warning is silenced when either note declares
+     the other in frontmatter `distinct_from: ["Other Name"]` (a father/son sharing a surname,
+     confirmed by the owner). Nicknames belong in `aliases:` frontmatter (Obsidian-native, so the quick switcher
+     finds the person by nickname for free; `nicknames:` is still accepted) on the
+     ONE canonical note, never as separate files.
+
+Exit 1 if any ERROR found. Usage: canon-lint [--quiet]
+"""
+import os, re, sys, glob, collections
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from config import load
+CFG = load()
+
+VAULT = CFG["VAULT_PATH"]
+PEOPLE = os.path.join(VAULT, "03 People")
+# The owner's own line(s), digits only, from config. Empty phone -> empty set (check 3 disabled).
+OWNER_NUMBERS = {re.sub(r"\D", "", CFG.get("OWNER_PHONE", ""))} - {""}
+OWNER_NAMES = {CFG["OWNER_NAME"].lower(), CFG["OWNER_NAME"].split()[0].lower()}
+CC = {"964": "iraq", "962": "jordan", "971": "uae", "966": "saudi",
+      "20": "egypt", "90": "turkey", "1": "usa", "44": "uk", "961": "lebanon"}
+COUNTRY_WORDS = {
+    "iraq":   ["iraq", "العراق", "عراق", "basra", "البصرة", "baghdad", "بغداد", "erbil", "أربيل"],
+    "jordan": ["jordan", "الأردن", "الاردن", "amman", "عمان", "عمّان"],
+    "uae":    ["uae", "dubai", "دبي", "abu dhabi", "أبوظبي", "الإمارات"],
+    "saudi":  ["saudi", "السعودية", "riyadh", "الرياض", "jeddah"],
+    "egypt":  ["egypt", "مصر", "cairo", "القاهرة"],
+    "turkey": ["turkey", "تركيا", "istanbul"],
+    "lebanon":["lebanon", "لبنان", "beirut", "بيروت"],
+}
+PHONE = re.compile(r"\+\s?(\d[\d\s\-]{7,20})")
+EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+FM_LIST = re.compile(r'^(borrowed_numbers|distinct_from|nicknames|aliases):\s*\[(.*?)\]', re.M)
+
+
+def frontmatter_lists(text):
+    """Parse the simple inline-list frontmatter keys this vault uses."""
+    out = {}
+    head = text.split("---", 2)[1] if text.startswith("---") else ""
+    for m in FM_LIST.finditer(head):
+        vals = [v.strip().strip('"').strip("'") for v in m.group(2).split(",") if v.strip()]
+        out[m.group(1)] = vals
+    return out
+
+
+def digits(s):
+    return re.sub(r"\D", "", s)
+
+
+def cc_of(num):
+    for length in (3, 2, 1):
+        if num[:length] in CC:
+            return num[:length]
+    return None
+
+
+def main():
+    quiet = "--quiet" in sys.argv
+    if not os.path.isdir(PEOPLE):
+        print(f"no people dir at {PEOPLE}"); return 0
+
+    errors, warnings = [], []
+    phone_owners = collections.defaultdict(set)
+    email_owners = collections.defaultdict(set)
+    notes = {}   # name -> frontmatter lists
+
+    paths = sorted(glob.glob(os.path.join(PEOPLE, "*.md")))
+    for path in paths:
+        name = os.path.basename(path)[:-3]
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        low = text.lower()
+        fm = frontmatter_lists(text)
+        notes[name] = fm
+        borrowed = {digits(b) for b in fm.get("borrowed_numbers", [])}
+
+        stated = {c for c, words in COUNTRY_WORDS.items() if any(w in low for w in words)}
+
+        for raw in PHONE.findall(text):
+            num = digits(raw)
+            if len(num) < 8:
+                continue
+            if num in borrowed:
+                continue                       # declared as someone else's line
+            phone_owners[num].add(name)
+
+            if num in OWNER_NUMBERS and name.lower() not in OWNER_NAMES:
+                errors.append(f"{name}: carries the owner's own number +{num}")
+                continue
+
+            code = cc_of(num)
+            if code and stated:
+                country = CC[code]
+                if country not in stated:
+                    warnings.append(
+                        f"{name}: +{code} ({country}) but note mentions {', '.join(sorted(stated))}")
+
+        for em in set(EMAIL.findall(text)):
+            email_owners[em.lower()].add(name)
+
+    for num, owners in phone_owners.items():
+        if len(owners) > 1:
+            errors.append(f"phone +{num} shared by: {', '.join(sorted(owners))} "
+                          f"(if intentional, add borrowed_numbers frontmatter to the non-owner)")
+    for em, owners in email_owners.items():
+        if len(owners) > 1:
+            errors.append(f"email {em} shared by: {', '.join(sorted(owners))}")
+
+    # one-person-one-note: name containment, silenced by distinct_from either way
+    names = sorted(notes)
+    for a in names:
+        for b in names:
+            if a == b:
+                continue
+            if re.search(rf"(^|\s){re.escape(a)}(\s|$)", b):
+                da = {d.lower() for d in notes[a].get("distinct_from", [])}
+                db = {d.lower() for d in notes[b].get("distinct_from", [])}
+                if b.lower() in da or a.lower() in db:
+                    continue
+                warnings.append(
+                    f"possible duplicate person: '{a}' is contained in '{b}' "
+                    f"(one person one note; merge with nicknames frontmatter, or mark both distinct_from)")
+
+    if not quiet or errors:
+        print(f"canon-lint: {len(paths)} people notes checked")
+        for e in errors:
+            print(f"  ERROR  {e}")
+        for w in warnings:
+            print(f"  warn   {w}")
+        if not errors and not warnings:
+            print("  clean")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

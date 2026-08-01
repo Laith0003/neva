@@ -1,0 +1,5 @@
+[Unit]
+Description=Rotate the chat session before bloat degrades the agent
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh session-guard @PREFIX@/bin/session-guard

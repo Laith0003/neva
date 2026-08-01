@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""canon-approve: see and decide the canon writes your agent is holding for you.
+
+Why this exists: the agent queues risky canon writes (money notes, edits to existing
+people/clients, deletes) instead of applying them. Without this tool that queue was a
+one-way trapdoor: the agent said "sent for approval", nothing sent, and nothing could
+ever drain it. Found by a stranger-test of the template, 2026-08-01.
+
+Usage:
+  canon-approve                 list what is waiting, newest first
+  canon-approve show <id>       full proposed content and the exact target path
+  canon-approve yes <id>        apply it to the vault (through the same write path)
+  canon-approve no <id> [why]   discard it, with an optional reason kept in the log
+  canon-approve yes --all       apply everything waiting (asks once to confirm)
+
+Ids may be abbreviated to any unique prefix.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from config import load
+
+CFG = load()
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "neva")
+QDIR = os.path.join(STATE_DIR, "queue")
+LOG = os.path.join(STATE_DIR, "canon-approve.log")
+PROPOSE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "canon-propose")
+
+
+def log(msg):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(LOG, "a", encoding="utf-8") as fh:
+        fh.write(msg + "\n")
+
+
+def pending():
+    """Valid, parseable proposals. Corrupt queue files are deliberately NOT dropped here -
+    see corrupt_entries() - a queue that silently hides what it cannot parse is exactly the
+    "nobody drains it" failure this tool exists to prevent. Confirmed by direct test: a
+    truncated queue JSON (simulating a crash mid-write) used to make `canon-approve` print
+    "nothing waiting for approval" while the broken file sat on disk forever, invisible."""
+    if not os.path.isdir(QDIR):
+        return []
+    out = []
+    for fn in sorted(os.listdir(QDIR)):
+        if not fn.endswith(".json"):
+            continue
+        path = os.path.join(QDIR, fn)
+        try:
+            out.append((fn[:-5], json.load(open(path, encoding="utf-8")), path))
+        except (ValueError, OSError):
+            continue
+    out.sort(key=lambda t: os.path.getmtime(t[2]), reverse=True)
+    return out
+
+
+def corrupt_entries():
+    """Queue files that exist but failed to parse - surfaced, never silently skipped."""
+    if not os.path.isdir(QDIR):
+        return []
+    out = []
+    for fn in sorted(os.listdir(QDIR)):
+        if not fn.endswith(".json"):
+            continue
+        path = os.path.join(QDIR, fn)
+        try:
+            json.load(open(path, encoding="utf-8"))
+        except (ValueError, OSError) as e:
+            out.append((fn[:-5], str(e), path))
+    return out
+
+
+def resolve(prefix):
+    hits = [p for p in pending() if p[0].startswith(prefix)]
+    if not hits:
+        sys.exit(f"no pending proposal starts with '{prefix}'. run canon-approve to list.")
+    if len(hits) > 1:
+        sys.exit("ambiguous id; matches: " + ", ".join(h[0] for h in hits))
+    return hits[0]
+
+
+def show_list():
+    items = pending()
+    broken = corrupt_entries()
+    if not items and not broken:
+        print("nothing waiting for approval.")
+        return
+    if items:
+        print(f"{len(items)} proposal(s) waiting:\n")
+        for tid, t, _ in items:
+            print(f"  {tid[:12]}  {str(t.get('reason','pending')):22s}  {t.get('relpath','?')}")
+            body = (t.get("content") or "").strip().replace("\n", " ")
+            print(f"                        {body[:80]}{'...' if len(body) > 80 else ''}")
+    else:
+        print("no valid proposals waiting.")
+    if broken:
+        print(f"\n{len(broken)} queue file(s) are CORRUPT and could not be read - "
+              "not silently dropped, needs your attention:")
+        for tid, err, path in broken:
+            print(f"  {tid[:12]}  unreadable ({err[:60]})  fix: inspect or delete {path}")
+    print("\ncanon-approve show <id> | yes <id> | no <id>")
+
+
+def mark_approved(t, path):
+    """Rewrite the queue file's status to 'approved' - the ONLY transition canon-propose's
+    --apply-queued will act on. This is the human-tap moment made durable: a discrete write
+    performed by this interactive tool, never by canon-propose itself, so a stray or
+    scripted call to `canon-propose --apply-queued <id>` cannot apply anything nobody
+    reviewed. Atomic (temp file + os.replace, POSIX-atomic per the os.replace docs) so a
+    crash mid-write cannot leave a half-approved file behind."""
+    t["status"] = "approved"
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".canon-approve-", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(t, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def apply_one(tid, t, path):
+    """Apply through canon-propose's own writer so the write path stays identical."""
+    mark_approved(t, path)
+    r = subprocess.run([PROPOSE, "--apply-queued", tid], text=True, capture_output=True)
+    out = (r.stdout or "").strip() or (r.stderr or "").strip()
+    if r.returncode == 0:
+        # canon-propose --apply-queued already removes it on success; tolerate that.
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        log(f"APPLIED {tid} -> {t.get('relpath')}")
+        print(f"applied: {t.get('relpath')}")
+        if out:
+            print(out)
+    else:
+        print(f"could not apply {tid[:12]}: {out}", file=sys.stderr)
+        print("the proposal is still queued; nothing was lost.", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        show_list(); return
+    cmd = a[0]
+
+    if cmd == "show" and len(a) > 1:
+        tid, t, _ = resolve(a[1])
+        print(f"id:     {tid}\nkind:   {t.get('kind')}\nmode:   {t.get('mode')}\n"
+              f"reason: {t.get('reason')}\ntarget: {t.get('relpath')}\n\n{t.get('content','')}")
+        return
+
+    if cmd == "yes":
+        if len(a) > 1 and a[1] == "--all":
+            items = pending()
+            if not items:
+                print("nothing waiting."); return
+            print(f"apply all {len(items)} proposal(s)? [y/N]: ", end="")
+            if input().strip().lower() != "y":
+                print("nothing applied."); return
+            for tid, t, path in items:
+                apply_one(tid, t, path)
+            return
+        if len(a) > 1:
+            tid, t, path = resolve(a[1]); apply_one(tid, t, path); return
+
+    if cmd == "no" and len(a) > 1:
+        tid, t, path = resolve(a[1])
+        why = " ".join(a[2:]) or "no reason given"
+        os.remove(path)
+        log(f"REJECTED {tid} -> {t.get('relpath')} ({why})")
+        print(f"discarded: {t.get('relpath')}")
+        return
+
+    sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main()

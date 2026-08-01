@@ -1,0 +1,119 @@
+#!/bin/bash
+# session-guard: rotate the agent's Telegram session before it degrades.
+#
+# TWO failure modes, both fixed by /new (a gateway restart does NOT rotate a cli session):
+#
+#   1. STALL - the session grows so large every turn takes 130-300s and the watchdog
+#              (stuckSessionAbortMs=120s) aborts it, so the agent looks dead.
+#   2. BLOAT - the session stays responsive but long context erodes instruction-following.
+#              Observed 2026-07-30: at 105k context tokens and 4 days old the agent ignored
+#              the AGENTS.md grounding rule and invented facts about two well-documented
+#              entities. The same two questions in a FRESH session were answered correctly
+#              from canon. Adherence dies long before the 1M window does.
+#
+# Mode 2 is why the size/age triggers exist: a bloated session never stalls, so the old
+# stall-only guard never fired and the agent silently got less accurate for four days.
+#
+# Usage: session-guard [--dry-run]
+set -uo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
+DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+STATE_DIR="$HOME/.local/state/neva"
+mkdir -p "$STATE_DIR"
+STATE="$STATE_DIR/session-guard.state"
+LOG="$STATE_DIR/session-guard.log"
+SESSION_KEY="agent:main:telegram:direct:${OWNER_CHAT_ID}"
+OWNER_CHAT="$OWNER_CHAT_ID"
+WINDOW_MIN=10
+COOLDOWN_SEC=1800
+MAX_TOKENS=95000      # a fresh session is ~55-60k (system prompt + workspace files)
+MAX_AGE_HOURS=24
+
+# PARTIAL PLATFORM GAP (2026-08-01): the stall-streak branch below depends on
+# `journalctl -u openclaw-gateway`, i.e. systemd/journald, which does not exist on macOS
+# (this guard is still scheduled there: services/launchd/com.neva.session-guard.plist.tmpl).
+# Unlike lane-guard, session-guard also has a platform-independent branch (token/age bloat via
+# `openclaw sessions list --json`), so this does not bail out entirely; it just says plainly,
+# once per run, that the stall-detection half cannot see anything here, instead of silently
+# reporting the same "ok" a working stall check would.
+if command -v journalctl >/dev/null 2>&1; then
+  J=$(journalctl -u openclaw-gateway --since "-${WINDOW_MIN}m" --no-pager 2>/dev/null)
+  ABORTS=$(echo "$J" | grep -c "turn failed.*error=AbortError" || true)
+  STALLS=$(echo "$J" | grep -c "stalled session.*${SESSION_KEY}" || true)
+else
+  echo "$(date '+%F %T') stall-streak detection UNSUPPORTED on this platform ($(uname), no journalctl); bloat/age detection below still runs" >> "$LOG"
+  ABORTS=0; STALLS=0
+fi
+
+# live stats straight from the official session store
+STATS=$(neva_timeout 60 openclaw sessions list --json 2>/dev/null \
+  | SESSION_KEY="$SESSION_KEY" python3 -c '
+import json, os, sys, time
+key = os.environ["SESSION_KEY"]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("0 0"); sys.exit()
+for s in d.get("sessions", []):
+    if s.get("key") == key:
+        tok = s.get("totalTokens") or 0
+        started = s.get("sessionStartedAt") or 0
+        age = int((time.time() * 1000 - started) / 3600000) if started else 0
+        print(f"{tok} {age}"); sys.exit()
+print("0 0")
+' 2>/dev/null || echo "0 0")
+
+TOKENS=$(echo "$STATS" | awk '{print $1}')
+AGE_H=$(echo "$STATS" | awk '{print $2}')
+TOKENS=${TOKENS:-0}; AGE_H=${AGE_H:-0}
+
+REASON=""
+if [ "$ABORTS" -ge 2 ] && [ "$STALLS" -ge 1 ]; then
+  REASON="stall streak (aborts=$ABORTS stalls=$STALLS)"
+elif [ "$TOKENS" -gt "$MAX_TOKENS" ]; then
+  REASON="context bloat (${TOKENS} tok > ${MAX_TOKENS})"
+elif [ "$AGE_H" -gt "$MAX_AGE_HOURS" ]; then
+  REASON="session age (${AGE_H}h > ${MAX_AGE_HOURS}h)"
+fi
+
+if [ "$DRY" = "1" ]; then
+  echo "dry-run: aborts=$ABORTS stalls=$STALLS tokens=$TOKENS age=${AGE_H}h -> ${REASON:-ok}"
+  exit 0
+fi
+[ -n "$REASON" ] || exit 0
+
+NOW=$(date +%s)
+LAST=$(cat "$STATE" 2>/dev/null || echo 0)
+[ $(( NOW - LAST )) -lt "$COOLDOWN_SEC" ] && exit 0
+echo "$NOW" > "$STATE"
+
+echo "$(date '+%F %T') $REASON -> rotating session" >> "$LOG"
+neva_timeout 90 openclaw agent --agent main --session-key "$SESSION_KEY" -m "/new" --json >> "$LOG" 2>&1
+
+TOKEN=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.openclaw/openclaw.json")))["channels"]["telegram"]["botToken"])' 2>/dev/null)
+if [ -n "$TOKEN" ]; then
+  curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${OWNER_CHAT}" \
+    --data-urlencode "text=I rotated my session before it bloated and hurt my accuracy. My memory is intact (anchor and handoff preserved)." >/dev/null 2>&1
+fi
+# A rotation leaves the agent IDLE. /new zeroes the session and nothing then speaks to it, so an
+# agent partway through a task simply stops until a human types. Rule 14 (AFTER A RESET, RESUME)
+# cannot fire because no resume event ever happens. Found live 2026-08-01: the agent went quiet
+# mid-task and its owner assumed it had crashed.
+#
+# Poke it, but ONLY when there is unfinished work, or a rotation on a quiet evening becomes a
+# message about nothing.
+TASKFILE="${TASK_FILE:-$WORKSPACE_PATH/TASK.md}"
+if [ -f "$TASKFILE" ] && ! head -3 "$TASKFILE" | grep -qiE "^#* *DONE|STATUS: *DONE"; then
+  # --deliver AND --reply-to are BOTH required. Without them the turn runs headless and the reply
+  # is discarded: the work happens and nobody, including the owner, ever sees it.
+  neva_timeout 120 openclaw agent --agent main --session-key "$SESSION_KEY" \
+    --deliver --channel telegram --reply-to "$OWNER_CHAT" \
+    -m "Your session was rotated to keep you accurate. Read $TASKFILE and continue from where it says. Say one line naming the step you are resuming, then carry on. Do not ask for instructions that are already in that file." \
+    --json >> "$LOG" 2>&1
+  echo "$(date '+%F %T') resume nudge sent ($TASKFILE unfinished)" >> "$LOG"
+else
+  echo "$(date '+%F %T') no unfinished task, no nudge" >> "$LOG"
+fi
+
+echo "$(date '+%F %T') rotation done ($REASON) + owner notified" >> "$LOG"

@@ -1,0 +1,5 @@
+[Unit]
+Description=Daily canon content lint (people identifiers, duplicates)
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh canon-lint @PREFIX@/bin/canon-lint
