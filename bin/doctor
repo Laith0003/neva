@@ -5,6 +5,27 @@ set -u
 
 BOLD=$(tput bold 2>/dev/null || true); RESET=$(tput sgr0 2>/dev/null || true)
 FAILS=0
+
+# PORTABILITY FIX (2026-08-01): `timeout` is GNU coreutils, absent on a stock Mac PATH.
+# doctor deliberately does not source lib/config.sh (it must still run and report when
+# config itself is broken), so this is a standalone copy of the same fallback used there:
+# real timeout/gtimeout if present, else a background+poll+kill loop.
+doctor_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+  "$@" &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$secs" ]; then
+      kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  wait "$pid"
+}
 # Conditions that are not "broken config" but DO mean the assistant cannot yet work.
 # Reporting "all clear" over these taught buyers to ignore the nine things that matter.
 INERT=""
@@ -66,7 +87,7 @@ fi
 # (docs.openclaw.ai/cli/security, real documented JSON: `.summary`, `.findings[].severity`)
 # and update checker (docs.openclaw.ai/cli/update); doctor calls those instead of guessing.
 if command -v openclaw >/dev/null 2>&1; then
-  AUDIT_JSON=$(timeout 30 openclaw security audit --json 2>/dev/null)
+  AUDIT_JSON=$(doctor_timeout 30 openclaw security audit --json 2>/dev/null)
   if [ -n "$AUDIT_JSON" ]; then
     AUDIT_COUNTS=$(printf '%s' "$AUDIT_JSON" | python3 -c '
 import json, sys
@@ -97,7 +118,7 @@ print(f"{crit} {warn} {len(findings)}")
   else
     row warn "openclaw security audit" "\`openclaw security audit --json\` produced no output (older openclaw without this subcommand, or it timed out); run \`openclaw security audit\` by hand"
   fi
-  UPDATE_STATUS=$(timeout 20 openclaw update status 2>/dev/null | head -1)
+  UPDATE_STATUS=$(doctor_timeout 20 openclaw update status 2>/dev/null | head -1)
   if [ -n "$UPDATE_STATUS" ]; then
     # informational only: we do not know openclaw's exact wording well enough to assert
     # ok/fail from it, so this is reported neutrally rather than risking a false claim either way

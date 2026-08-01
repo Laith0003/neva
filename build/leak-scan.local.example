@@ -1,0 +1,12 @@
+# Personal tier-1 denylist. Copy to build/leak-scan.local and put YOUR OWN identifiers here.
+# This file is gitignored on purpose: a denylist of real secrets IS a disclosure the moment
+# the repository is public. That is not hypothetical, it is why this file exists: the real
+# list shipped inside leak-scan.py through fifteen commits before a pre-publication audit
+# caught it. One regex per line, blank lines and # comments ignored.
+
+jane-doe
+\+1[\s().-]*555[\s().-]*0100
+jane\.doe@example\.com
+/Users/janedoe
+203\.0\.113\.\d+
+AcmeCorp

@@ -22,7 +22,7 @@ set -a; . "$STATE/claude.env" 2>/dev/null; set +a
 # the WhatsApp watcher counting an empty read as quiet instead of broken. The two cases are
 # now told apart: openclaw's real exit code is captured (PIPESTATUS, since the python parser
 # always exits 0), and unparsable output is a distinct sentinel, not a silently-caught empty string.
-OPENCLAW_OUT="$(IS_SANDBOX=1 timeout 220 openclaw agent --local --json --session-key agent:main:briefing -m "$PROMPT" 2>>"$STATE/briefing.log")"
+OPENCLAW_OUT="$(IS_SANDBOX=1 neva_timeout 220 openclaw agent --local --json --session-key agent:main:briefing -m "$PROMPT" 2>>"$STATE/briefing.log")"
 OPENCLAW_RC=$?
 OUT="$(printf '%s' "$OPENCLAW_OUT" | python3 -c "import sys,json
 try:

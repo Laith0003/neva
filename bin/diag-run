@@ -30,7 +30,7 @@ run_one() {
   local idx="$1" cat="$2" q="$3" check="$4"
   local f="$OUT/answers/$(printf "%03d" "$idx").txt"
   if [ -z "$q" ]; then q="(empty message)"; fi
-  IS_SANDBOX=1 timeout 420 openclaw agent --agent main \
+  IS_SANDBOX=1 neva_timeout 420 openclaw agent --agent main \
       --session-key "diag-${STAMP}-${idx}" --message "$q" 2>/dev/null \
     | grep -vE "^\s*[│╭╰├◇╮╯]|Config warnings|plugins\.allow|@openclaw/|not installed|Docs:" \
     > "$f"
@@ -62,7 +62,17 @@ run_one() {
       ANY)     : ;;
     esac
     # global rule checks on every answer
-    if echo "$a" | grep -qP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{FE0F}]'; then
+    # PORTABILITY FIX (2026-08-01): `grep -P` (PCRE) is a GNU extension. Stock macOS ships
+    # BSD grep, which rejects -P outright ("invalid option -- P", exit 2); the `if` then
+    # simply reads as false and this check can never fire on a real Mac - an emoji violation
+    # would silently pass diag-run forever. python3 is already a hard install dependency, so
+    # use it for the one thing that needs real Unicode codepoint ranges.
+    if printf '%s' "$a" | python3 -c '
+import re, sys
+t = sys.stdin.read()
+pat = re.compile(u"[\U0001F300-\U0001FAFF☀-➿️]")
+sys.exit(0 if pat.search(t) else 1)
+' 2>/dev/null; then
       verdict="FAIL"; why="${why}; emoji present"
     fi
     if echo "$a" | grep -qE '—|--'; then
