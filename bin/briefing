@@ -21,7 +21,18 @@ try:
 except Exception: print('')")"
 
 MSG="$(printf '%s' "$OUT" | sed -e 's/ *-- */, /g' -e 's/—/, /g')"
-if [ -n "$MSG" ]; then
+# Only claim a send when one actually happened, and only when there IS somewhere to send.
+# The product's own headline rule forbids reporting an action that did not occur.
+if [ -z "$MSG" ]; then
+  echo "$(date '+%F %T') briefing skipped: nothing to report" >> "$STATE/briefing.log"
+  exit 0
+fi
+if [ -z "${OWNER_CHAT_ID:-}" ]; then
+  echo "$(date '+%F %T') briefing composed (${#MSG} chars) but NOT sent: no chat id yet" >> "$STATE/briefing.log"
+  printf '%s\n' "$MSG"
+  exit 0
+fi
+if true; then
   TOKEN="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['channels']['telegram']['botToken'])" 2>/dev/null)"
   [ -n "$TOKEN" ] && curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     --data-urlencode "chat_id=${OWNER_CHAT_ID}" --data-urlencode "text=${MSG}" >/dev/null

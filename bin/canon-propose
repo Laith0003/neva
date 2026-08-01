@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """canon-propose: the agent's GATED writer for CANON (vault ground truth).
 
+Risky writes (money, edits to existing notes, deletes) are queued instead of applied.
+Drain the queue with `canon-approve` (list / show / yes / no). Before that tool existed the
+queue was a one-way trapdoor: this script printed "sent for approval", nothing sent, and
+nothing could ever apply it.
+
 Usage:  canon-propose <kind> "<title>" [--mode new|update|append]   (body on stdin)
   kind = client | person | money | project | knowledge | personal
 
@@ -129,7 +134,7 @@ def stage_and_tap(relpath, content, mode, reason):
     os.makedirs(QDIR, exist_ok=True)
     tid = "canon-" + str(uuid.uuid4())[:12]
     task = {"id": tid, "kind": "canon-write", "relpath": relpath, "content": content,
-            "mode": mode, "status": "tap",
+            "mode": mode, "status": "tap", "reason": reason,
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     json.dump(task, open(os.path.join(QDIR, tid + ".json"), "w"), indent=2, ensure_ascii=False)
     token = tg_token()
@@ -164,9 +169,30 @@ def stage_and_tap(relpath, content, mode, reason):
     return tid
 
 
+def apply_queued(tid):
+    """Apply a proposal the owner approved via canon-approve. Same writer, same rules."""
+    path = os.path.join(QDIR, tid + ".json")
+    if not os.path.isfile(path):
+        print(f"no queued proposal {tid}", file=sys.stderr); sys.exit(2)
+    t = json.load(open(path, encoding="utf-8"))
+    ok, detail = apply_write(t["relpath"], t["content"])
+    if ok:
+        os.remove(path)
+    print(("APPLIED: " if ok else "FAILED: ") + detail)
+    sys.exit(0 if ok else 1)
+
+
 def main():
     args = [a for a in sys.argv[1:]]
+    if args and args[0] == "--apply-queued" and len(args) > 1:
+        apply_queued(args[1])
     mode = "new"
+    # --approved <id>: the owner already said yes via canon-approve, so skip the risk gate
+    # and write. Only canon-approve passes this, and only for a proposal it just read out
+    # of the queue.
+    approved = ""
+    if "--approved" in args:
+        i = args.index("--approved"); approved = args[i + 1]; del args[i:i + 2]
     if "--mode" in args:
         i = args.index("--mode"); mode = args[i + 1]; del args[i:i + 2]
     if len(args) < 2:
@@ -190,11 +216,14 @@ def main():
     content = ensure_frontmatter(body, type_tag, title)
 
     # Risk gate: money OR touching existing canon OR explicit update/append -> the owner taps.
-    risky = always_gate or bool(existing) or mode in ("update", "append")
+    risky = (always_gate or bool(existing) or mode in ("update", "append")) and not approved
     if risky:
         reason = "money" if always_gate else ("updates existing note" if existing else mode)
         tid = stage_and_tap(relpath, content, mode, reason)
-        print(f"GATED: proposal {tid} sent to the owner for approval ({reason}) -> {relpath}")
+        notified = "" if TAP_BASE else "  (no tap URL configured, so no push was sent)"
+        print(f"GATED: proposal {tid} is waiting for your approval ({reason}) -> {relpath}"
+              f"\n  review it:  canon-approve show {tid[:12]}"
+              f"\n  apply it:   canon-approve yes {tid[:12]}{notified}")
     else:
         ok, detail = apply_write(relpath, content)
         print(("APPLIED: " if ok else "FAILED: ") + detail)

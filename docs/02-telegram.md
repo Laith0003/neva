@@ -11,8 +11,9 @@ Do this only after first-run success in the terminal.
 1. Put the token in `~/.openclaw/openclaw.json` under `channels.telegram.botToken`.
    Never commit this file anywhere.
 2. Get your numeric id: message @userinfobot, it replies with your id.
-3. Set `channels.telegram.allowFrom: [<your numeric id>]`. THIS IS NOT OPTIONAL: without it
-   anyone who finds your bot can talk to your agent and your vault.
+3. Set BOTH `channels.telegram.dmPolicy: "allowlist"` AND
+   `channels.telegram.allowFrom: [<your numeric id>]`. THIS IS NOT OPTIONAL: without the
+   allowlist policy the default is `pairing`, which is weaker than locking the bot to you.
 4. Restart the gateway. Message your bot. It should reply, and doctor should show
    `telegram token (getMe 200)` and `telegram allowFrom locked`.
 
