@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""report: draft a shareable install report, with your private life stripped out of it.
+
+Why this exists: the useful thing an early user can send back is what actually happened on
+their machine, and the reason people do not send it is that writing it is work and they are
+not sure what is safe to include. So this writes it, and refuses to include anything it
+cannot prove is safe.
+
+What it collects: what your system is, what the health check says, what the acceptance
+harness says, and whatever you tell it went well or badly.
+
+What it will not collect, ever: the contents of your notes, your name, your paths, your
+tokens, anything from your vault. It reads STATUS, not CONTENT. Every draft is then scanned
+with the same tool that gates this repository, and it refuses to print a report that fails.
+
+usage:
+  report                 draft it, show it, and print a prefilled issue link
+  report --stdout        just the markdown, for piping
+"""
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+
+REPO = "https://github.com/Laith0003/neva"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def run(cmd, timeout=90):
+    try:
+        r = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=timeout)
+        return (r.stdout or "") + (r.stderr or "")
+    except Exception as e:
+        return f"(could not run: {e})"
+
+
+def scrub(text):
+    """Remove absolute home paths and anything that looks like a secret.
+
+    Deliberately blunt: a report is worth less than a leaked token, so when in doubt this
+    removes rather than keeps.
+    """
+    home = os.path.expanduser("~")
+    text = text.replace(home, "~")
+    text = re.sub(r"/Users/[^/\s]+", "/Users/USER", text)
+    text = re.sub(r"/home/[^/\s]+", "/home/USER", text)
+    text = re.sub(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b", "[TOKEN REMOVED]", text)
+    text = re.sub(r"\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,})\b", "[KEY REMOVED]", text)
+    text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.]+", "[EMAIL REMOVED]", text)
+    text = re.sub(r"\+?\d[\d\s().-]{8,}\d", "[NUMBER REMOVED]", text)
+    return text
+
+
+def section(title, body, limit=1600):
+    body = (body or "").strip()
+    if len(body) > limit:
+        body = body[:limit] + "\n... (truncated)"
+    return f"### {title}\n\n```\n{body or '(nothing)'}\n```\n"
+
+
+def main():
+    quiet = "--stdout" in sys.argv
+
+    doctor = shutil.which("doctor") or os.path.join(HERE, "doctor")
+    verify = os.path.join(os.path.dirname(HERE), "build", "verify.sh")
+
+    env = (f"os: {platform.system()} {platform.release()}\n"
+           f"arch: {platform.machine()}\n"
+           f"python: {platform.python_version()}\n"
+           f"node: {run('node --version', 20).strip() or 'not found'}\n"
+           f"openclaw: {'present' if shutil.which('openclaw') else 'not installed (Claude Code path)'}\n")
+
+    doc = run(f'"{doctor}"', 120) if os.path.exists(doctor) else "(doctor not found)"
+    ver = run(f'bash "{verify}" 2>&1 | tail -25', 900) if os.path.exists(verify) else "(harness not present in this copy)"
+
+    note = ""
+    if not quiet and sys.stdin.isatty():
+        print("Two questions, then it is written for you.\n")
+        print("1. What worked, or what broke? Plain words are fine.")
+        a = input("   > ").strip()
+        print("\n2. Anything you would change about the setup? Enter to skip.")
+        b = input("   > ").strip()
+        note = a + (("\n\nWould change: " + b) if b else "")
+
+    md = (f"## Install report\n\nNeva "
+          f"{open(os.path.join(os.path.dirname(HERE), 'VERSION')).read().strip() if os.path.exists(os.path.join(os.path.dirname(HERE), 'VERSION')) else ''}\n\n"
+          f"### What happened\n\n{note or '(fill this in)'}\n\n"
+          + section("Environment", env)
+          + section("doctor", doc)
+          + section("acceptance harness", ver))
+
+    md = scrub(md)
+
+    # The same gate that guards the repository guards this. A report is not worth a leak.
+    scanner = os.path.join(os.path.dirname(HERE), "build", "leak-scan.py")
+    if os.path.exists(scanner):
+        tmp = os.path.join("/tmp", f"neva-report-{os.getpid()}")
+        os.makedirs(tmp, exist_ok=True)
+        open(os.path.join(tmp, "r.md"), "w").write(md)
+        r = subprocess.run([sys.executable, scanner, tmp], capture_output=True, text=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if r.returncode != 0:
+            sys.stderr.write("report: the draft contains something that looks private, so it "
+                             "was NOT written.\n" + (r.stdout or "") +
+                             "fix: tell the assistant what to remove, or edit and send it yourself.\n")
+            return 1
+
+    if quiet:
+        print(md)
+        return 0
+
+    out = os.path.join(os.path.expanduser("~"), "neva-install-report.md")
+    open(out, "w").write(md)
+    url = (f"{REPO}/issues/new?labels=install-report&title="
+           + urllib.parse.quote("Install report: ") + "&body=" + urllib.parse.quote(md[:5500]))
+    print(md)
+    print("-" * 70)
+    print(f"saved: {out}")
+    print("\nOpen this to post it, edit anything before you submit:\n")
+    print(url)
+    print("\nNothing is sent for you. You post it, or you do not.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

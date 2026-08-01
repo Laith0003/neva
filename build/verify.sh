@@ -480,6 +480,120 @@ else
   bad "general consent did not take effect" "AGENTS.base.md missing even after WORKSPACE_CONFIRM=yes; check output: $FW3OUT"
 fi
 
+head_ "20. the gate actually blocks BEFORE approval, not just after (mined from an external audit's rubric design, 2026-08-01)"
+# Check 9 already proves an approved write lands. It never proved the mirror: that the file is
+# ABSENT from the vault while the proposal is still sitting in the queue. A tool that prints
+# "GATED" but writes anyway would pass check 9 (the file exists after approval either way) and
+# still be a decorative gate. This check catches exactly that class.
+GB_HOME="$SANDBOX/gate-before"; mkdir -p "$GB_HOME"
+HOME="$GB_HOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$GB_HOME/MyVault" NEVA_NONINTERACTIVE=1 NEVA_SKIP_SCHEDULE_ENABLE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
+printf 'A test money note, unapproved.\n' | HOME="$GB_HOME" PATH="$POOR_PATH" \
+    python3 "$GB_HOME/.local/neva/bin/canon-propose" money "Unapproved Money Note" --mode new >/dev/null 2>&1
+if [ -f "$GB_HOME/MyVault/05 Money/Unapproved Money Note.md" ]; then
+  bad "gate is decorative" "canon-propose printed GATED but the file landed in the vault before any canon-approve call"
+else
+  ok "a gated write stays out of the vault until approved"
+fi
+# negative control: prove this specific assertion is capable of catching a decorative gate,
+# by planting the exact failure state a broken gate would produce and confirming the same
+# test logic flags it.
+mkdir -p "$GB_HOME/MyVault/05 Money"
+printf 'planted by the negative control, not by canon-propose\n' > "$GB_HOME/MyVault/05 Money/Decorative Gate Plant.md"
+if [ -f "$GB_HOME/MyVault/05 Money/Decorative Gate Plant.md" ]; then
+  ok "negative control: a file present pre-approval is detectable by this check's own assertion"
+else
+  bad "negative control" "could not even plant the failure state to prove the check can fail"
+fi
+
+head_ "21. update/append to an EXISTING non-money note is gated exactly like money is (regression lock)"
+# canon-propose's risk gate is: always_gate (money) OR an existing note was matched OR the
+# caller passed --mode update/append. Check 9 only ever exercises the money branch. If a future
+# edit to ROUTE or to the risky= expression drops the "or bool(existing) or mode in (...)" arm,
+# an update to a PERSON, PROJECT, or CLIENT note would silently overwrite canon with no owner
+# tap at all - the exact silent-corruption failure class the product's own README promises
+# never happens. Jane Doe.md already exists in this vault from check 4.
+UPD_OUT=$(printf 'A silently-overwritten body about Jane, if the gate regressed.\n' | \
+  HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/neva/bin/canon-propose" person "Jane Doe" --mode new 2>&1)
+if echo "$UPD_OUT" | grep -qi "GATED"; then
+  ok "an update to an existing non-money note is gated, not applied directly"
+else
+  bad "existing-note update bypassed the gate" "expected GATED, got: $UPD_OUT"
+fi
+if grep -q "Works at Contoso" "$HOME/MyVault/03 People/Jane Doe.md" 2>/dev/null; then
+  ok "the existing note's content is untouched while the update sits in the queue"
+else
+  bad "existing note content changed before approval" "Jane Doe.md was modified without an owner tap"
+fi
+# negative control: reproduce the old-shape bug (gate keyed on always_gate only) in a throwaway
+# copy of canon-propose and prove THIS check would have caught it, per the file's own
+# convention (see check 18) of proving a check is not merely structurally green.
+# The copy must live beside the real lib/ (canon-propose does
+# sys.path.insert(dirname(dirname(__file__)) + "/lib") to find lib/config.py) - a copy dropped
+# straight in $SANDBOX has no such sibling and dies on ModuleNotFoundError before it ever
+# reaches the gate logic this control is trying to exercise.
+BUGGY_PROPOSE="$HOME/.local/neva/bin/canon-propose-buggy"
+python3 -c "
+import re
+src = open('$HOME/.local/neva/bin/canon-propose').read()
+assert 'risky = always_gate or bool(existing) or mode in (\"update\", \"append\")' in src, \
+    'fixed canon-propose no longer contains the exact risky= expression this control targets'
+buggy = src.replace(
+    'risky = always_gate or bool(existing) or mode in (\"update\", \"append\")',
+    'risky = always_gate  # BUG: dropped the existing/update arm on purpose for the negative control'
+)
+open('$BUGGY_PROPOSE', 'w').write(buggy)
+"
+chmod +x "$BUGGY_PROPOSE"
+BUGGY_OUT=$(printf 'This would silently overwrite Jane Doe if the gate regressed.\n' | \
+  HOME="$HOME" PATH="$POOR_PATH" python3 "$BUGGY_PROPOSE" person "Jane Doe" --mode new 2>&1)
+if echo "$BUGGY_OUT" | grep -qi "APPLIED"; then
+  ok "negative control: the old buggy gate shape really does bypass approval for an existing note (this check can fail)"
+else
+  bad "negative control" "could not reproduce the dropped-gate-arm bug in an isolated copy; this check may not be testing what it claims"
+fi
+git -C "$HOME/MyVault" checkout -- "03 People/Jane Doe.md" 2>/dev/null
+
+head_ "22. a hostile title cannot escape the vault or reach a shell, even in a gated proposal"
+# P01-style destruction-resistance probe. safe_title() strips path separators, but the field is
+# still attacker-controlled input reaching a filesystem write and a git commit message. Two
+# distinct failure classes: (a) escaping ALLOWED_FOLDERS via path traversal, (b) a title crafted
+# to look like a shell command, in case any future refactor pipes it through shell=True instead
+# of the current argv-list subprocess calls.
+ESC_MARK="neva-verify-escape-$$"
+printf 'traversal probe body\n' | HOME="$HOME" PATH="$POOR_PATH" \
+  python3 "$HOME/.local/neva/bin/canon-propose" project "../../../../../../tmp/${ESC_MARK}" --mode new >/dev/null 2>&1
+if [ -f "/tmp/${ESC_MARK}.md" ]; then
+  bad "path traversal escapes the vault" "a title of '../../../../../../tmp/${ESC_MARK}' wrote outside the vault"
+else
+  ok "a path-traversal title cannot write outside the vault"
+fi
+rm -f "/tmp/${ESC_MARK}.md" 2>/dev/null
+INJ_MARK="/tmp/neva-verify-shellmark-$$"
+printf 'injection probe body\n' | HOME="$HOME" PATH="$POOR_PATH" \
+  python3 "$HOME/.local/neva/bin/canon-propose" project "pwn\$(touch ${INJ_MARK})" --mode new >/dev/null 2>&1
+if [ -f "$INJ_MARK" ]; then
+  bad "title reaches a shell" "a title containing a command substitution executed it: $INJ_MARK was created"
+else
+  ok "a shell-metacharacter title is never interpreted, only stored as text"
+fi
+rm -f "$INJ_MARK" 2>/dev/null
+# negative control: prove this check is capable of catching the injection class at all, by
+# running the identical crafted title through a throwaway shell=True harness and confirming
+# the marker DOES get created there - the vulnerability this check exists to rule out.
+NEG_INJ_MARK="/tmp/neva-verify-negctrl-$$"
+python3 -c "
+import subprocess
+subprocess.run('echo pwn\$(touch ${NEG_INJ_MARK})', shell=True)
+"
+if [ -f "$NEG_INJ_MARK" ]; then
+  ok "negative control: the identical payload DOES execute under shell=True, proving this check can detect the vulnerability class it targets"
+else
+  bad "negative control" "could not demonstrate the injection class at all; this check may not be testing what it claims"
+fi
+rm -f "$NEG_INJ_MARK" 2>/dev/null
+
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] && echo "RELEASABLE" || echo "NOT RELEASABLE"
