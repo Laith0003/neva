@@ -36,12 +36,17 @@ import sys
 
 # ---- tier 1: the enumerated denylist (case-insensitive) ----
 TIER1 = [
-    r"laith", r"aljunaidy", r"junaidy",
+    # NOT listed: "laith", "aljunaidy", "junaidy", laithjunaidy.com, laithaljunaidy.me,
+    # Laith0003. Those are the author's own public identity and appear ON PURPOSE in
+    # LICENSE, NOTICE, AUTHOR.md and the README: a product with no named creator and no
+    # way to reach him is a product nobody trusts. His PRIVATE surface is still blocked
+    # below (home path, phone, personal email, chat id), and so is every other person's
+    # and every client's, with no exceptions and no file scoping.
     # owner phone: any run of spaces/dots/dashes/parens between digits, optional leading +
     r"\+?962[\s().\-]*7[\s().\-]*9[\s().\-]*7[\s().\-]*8[\s().\-]*6[\s().\-]*8[\s().\-]*3[\s().\-]*3[\s().\-]*5",
     r"962798224081", r"9647503730862", r"9647740847301",
     r"5177115582",                                     # telegram chat id
-    r"laith\.aljunaidy\.laith", r"laithjunaidy\.com", r"laithaljunaidy\.me",
+    r"laith\.aljunaidy\.laith",                        # personal email local-part
     r"brainof\.", r"thedotwallet",
     r"mercato", r"bayazid", r"hakki", r"bashiti", r"\bares\b", r"expora",
     r"qaddumi", r"qaddomi", r"\btiq\b", r"milagros", r"capsula",
@@ -97,14 +102,6 @@ T1 = re.compile("|".join(f"({p})" for p in TIER1), re.I)
 # carry an attribution keyword. It is deliberately NOT a substring allowlist: that design
 # is what let a real secret hide beside a placeholder and it is not coming back. A real
 # leak anywhere else in these files, or on any other line in them, still fails the scan.
-LEGAL_FILES = {"NOTICE", "LICENSE", "TRADEMARK.md"}
-_ATTRIB = re.compile(r"(?i)\b(copyright|\(c\)|©|trademark|licensed to|author)\b")
-
-
-def _legal_attribution(rel, line):
-    return rel in LEGAL_FILES and _ATTRIB.search(line) is not None
-
-
 def scan(root):
     findings = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -120,7 +117,7 @@ def scan(root):
                 continue
             for n, line in enumerate(text.splitlines(), 1):
                 m = T1.search(line)
-                if m and not _legal_attribution(rel, line):
+                if m:
                     findings.append(("TIER1", rel, n, m.group(0)))
                 for label, rx in TIER2:
                     for m2 in rx.finditer(line):

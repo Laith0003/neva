@@ -67,3 +67,9 @@ The name is separate: the licence covers the code, not the word "Neva". See
 Contributions welcome, including ones that change how this works. Sign commits with
 `git commit -s`; that one line is the whole legal process. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Who built this
+
+Neva is by [Laith Aljunaidy](https://laithjunaidy.com), built first as his own assistant and
+only later as something to hand over. Background, why it exists, and how to get in touch:
+[AUTHOR.md](AUTHOR.md).
