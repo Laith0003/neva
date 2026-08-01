@@ -95,6 +95,12 @@ if [ ! -d "$VAULT_PATH" ] || [ -z "$(ls -A "$VAULT_PATH" 2>/dev/null)" ]; then
   date +%F > "$VAULT_PATH/.lucy-template"
   say "vault created at $VAULT_PATH"
 fi
+# vault-sync needs a repo; without one it fails every 2 minutes into a log nobody reads
+if [ ! -d "$VAULT_PATH/.git" ] && command -v git >/dev/null 2>&1; then
+  ( cd "$VAULT_PATH" && git init -q && git add -A 2>/dev/null \
+    && git -c user.email="agent@local" -c user.name="${OWNER_NAME:-owner}" \
+       commit -q -m "vault initial commit" 2>/dev/null ) && say "vault is now a git repo (history for every change)"
+fi
 
 # ---------- 4. identity interview (only the undetectable) ----------
 mkdir -p "$CONFIG_DIR"
@@ -105,7 +111,10 @@ ask AGENT_NAME  "What do you want to call your agent (you can change this in its
 ask TIMEZONE    "Timezone" "$DETECTED_TZ"
 # chat id is detected later by the agent itself on Telegram; email/phone only when an
 # integration needs them. We do not collect what we do not use.
-OWNER_CHAT_ID="${OWNER_CHAT_ID:-unset}"
+# Left EMPTY on purpose. The agent fills it when the buyer first messages on Telegram.
+# Writing a placeholder like "unset" here would satisfy every non-empty check in the
+# system and send every alert to chat_id=unset forever, failing silently.
+OWNER_CHAT_ID="${OWNER_CHAT_ID:-}"
 OWNER_EMAIL="${OWNER_EMAIL:-}"
 OWNER_PHONE="${OWNER_PHONE:-}"
 WORKSPACE_PATH="${WORKSPACE_PATH:-$HOME/.openclaw/workspace}"

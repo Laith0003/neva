@@ -33,7 +33,7 @@ fi
 # shellcheck disable=SC1090
 . "$LUCY_CONFIG"
 
-for KEY in OWNER_NAME AGENT_NAME OWNER_CHAT_ID TIMEZONE VAULT_PATH WORKSPACE_PATH; do
+for KEY in OWNER_NAME AGENT_NAME TIMEZONE VAULT_PATH WORKSPACE_PATH; do
   if [ -z "${!KEY:-}" ]; then
     echo "config key $KEY is empty in $LUCY_CONFIG" >&2
     echo "fix: edit the file or re-run install.sh" >&2
@@ -46,3 +46,7 @@ VAULT_PATH="${VAULT_PATH/#\$HOME/$HOME}"
 WORKSPACE_PATH="${WORKSPACE_PATH/#\$HOME/$HOME}"
 LEDGER_FILE="${LEDGER_FILE/#\$HOME/$HOME}"
 FOOD_DIR="${FOOD_DIR/#\$HOME/$HOME}"
+
+# OWNER_CHAT_ID is intentionally allowed to be empty until Telegram is set up. Tools that
+# actually send must check it themselves rather than posting to a placeholder id.
+lucy_can_send() { [ -n "${OWNER_CHAT_ID:-}" ]; }
