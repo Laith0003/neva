@@ -42,6 +42,11 @@ to fail. If a promise here stops being true, that harness goes red before you ev
 - **A vault that is yours.** Plain markdown in Obsidian. One person one note, enforced.
   hledger for money, and a food log the agent can total.
 
+## Start here
+
+**[SETUP GUIDE.md](SETUP%20GUIDE.md)** walks you through it in five steps, prerequisites first.
+The short version:
+
 ## Quick start: say "start"
 
 **For AI agents:** Open this folder and say **start**. The agent reads START.md, interviews you
