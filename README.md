@@ -8,6 +8,11 @@ It answers questions about your world from YOUR notes, cites the file it read, a
 sessions before long-context drift makes it sloppy, and messages you when something needs a
 human.
 
+> **Two ways to run this.** The simple one needs only Claude Code and Obsidian: it already has a
+> model and already reads this folder, so nothing installs and nothing can be misconfigured. The
+> upgrade adds openclaw so the same assistant answers on Telegram while your laptop is shut. Start
+> simple; the upgrade is there when you want it.
+>
 > **First public release, and testers are the point.** The macOS path is proven: 38 checks
 > install it from scratch in a stripped sandbox and assert the outcomes you would actually
 > notice, and each check is proven able to fail. Linux has never been run end to end, not once,
