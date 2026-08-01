@@ -87,7 +87,7 @@ Tell them in one line you are setting everything up now. Then:
 1. Install anything missing from preflight (openclaw per https://docs.openclaw.ai/install,
    Node 22+ first if needed). Surface only steps needing them (a dialog, a password).
 2. Run from this folder:
-   `OWNER_NAME="..." AGENT_NAME="..." TIMEZONE="..." VAULT_PATH="..." LUCY_NONINTERACTIVE=1 bash install.sh`
+   `OWNER_NAME="..." AGENT_NAME="..." TIMEZONE="..." VAULT_PATH="..." NEVA_NONINTERACTIVE=1 bash install.sh`
    It is idempotent and never overwrites existing content. If it reports a non-empty
    folder at the vault path, relay and ask: use as-is, or new path. If they punted on
    question 2 (your name), pass the literal placeholder `"Assistant"`; do not invent a name
@@ -147,7 +147,7 @@ their numeric id. Ask them to paste that.
 **Step 3, lock it before the first message.** This is not optional and you do it yourself:
 set `channels.telegram.dmPolicy` to `"allowlist"` and `channels.telegram.allowFrom` to
 `[<their numeric id>]`, and write the id into `OWNER_CHAT_ID` in
-`~/.config/lucy/identity.env`. Without the allowlist, anyone who finds or guesses the bot
+`~/.config/neva/identity.env`. Without the allowlist, anyone who finds or guesses the bot
 username can talk to their assistant and reach their notes. The default is `pairing`, which
 is weaker than an explicit allowlist and is not what this product promises.
 

@@ -1,4 +1,4 @@
-# Lucy
+# Neva
 
 **An assistant that never makes things up.**
 

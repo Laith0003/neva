@@ -16,7 +16,7 @@
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
-STATE_DIR="$HOME/.local/state/lucy"
+STATE_DIR="$HOME/.local/state/neva"
 mkdir -p "$STATE_DIR"
 STATE="$STATE_DIR/lane-guard.state"
 LOG="$STATE_DIR/lane-guard.log"
@@ -26,13 +26,13 @@ COOLDOWN_SEC=900
 
 # PLATFORM FALSE-GREEN FIX (2026-08-01): this guard's entire detection mechanism is
 # `journalctl -u openclaw-gateway`, i.e. systemd/journald. It is scheduled on macOS too
-# (services/launchd/com.lucy.lane-guard.plist.tmpl exists), where journalctl does not exist.
+# (services/launchd/com.neva.lane-guard.plist.tmpl exists), where journalctl does not exist.
 # Before this fix, that meant `$J` was always empty, the guard's condition could never be
 # true, and it exited 0 every 2 minutes forever: a permanent false green that can structurally
 # never catch the failure it exists to catch, indistinguishable in doctor from a guard that is
 # actually working. Now it says so plainly, once, instead of silently reporting healthy.
 if ! command -v journalctl >/dev/null 2>&1; then
-  MSG="UNSUPPORTED: no journalctl on this platform ($(uname)); lane-guard needs systemd+journald and cannot detect anything here. If this is macOS, unload it: launchctl unload ~/Library/LaunchAgents/com.lucy.lane-guard.plist"
+  MSG="UNSUPPORTED: no journalctl on this platform ($(uname)); lane-guard needs systemd+journald and cannot detect anything here. If this is macOS, unload it: launchctl unload ~/Library/LaunchAgents/com.neva.lane-guard.plist"
   echo "$(date '+%F %T') $MSG" >> "$LOG"
   [ "$DRY" = "1" ] && echo "dry-run: $MSG"
   exit 3

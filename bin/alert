@@ -9,7 +9,7 @@
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
 MSG="${1:?usage: alert \"what broke + retry plan\"}"
-STATE="$HOME/.local/state/lucy"
+STATE="$HOME/.local/state/neva"
 STATEDIR="$STATE/alert-state"; mkdir -p "$STATEDIR"
 LOG="$STATE/alerts.log"
 KEY=$(printf '%s' "$MSG" | md5sum | cut -c1-12)

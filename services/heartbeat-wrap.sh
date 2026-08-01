@@ -4,7 +4,7 @@
 # found in the 2026-08-01 review: a scheduled job that has NEVER FIRED is invisible to every
 # guard that only watches for a job that ran and failed. "loaded" is not "ran".
 #
-# It writes ONE line per invocation to @HOME@/.local/state/lucy/heartbeat/<job>.status, no
+# It writes ONE line per invocation to @HOME@/.local/state/neva/heartbeat/<job>.status, no
 # matter what the wrapped command does, no matter whether it succeeds, fails, or hangs (up to
 # HEARTBEAT_TIMEOUT). The wrapper never swallows the real exit code: systemd/launchd's own
 # failure tracking, journald, and *.err.log all still work exactly as before. This is
@@ -25,7 +25,7 @@ JOB="${1:?usage: heartbeat-wrap.sh <job-name> <command...>}"
 shift
 [ "$#" -ge 1 ] || { echo "heartbeat-wrap.sh: no command given for job '$JOB'" >&2; exit 64; }
 
-HB_DIR="@HOME@/.local/state/lucy/heartbeat"
+HB_DIR="@HOME@/.local/state/neva/heartbeat"
 mkdir -p "$HB_DIR"
 STATUS="$HB_DIR/${JOB}.status"
 

@@ -10,7 +10,7 @@ picture, not just the reassuring half.
 - Gateway binds to 127.0.0.1 only. Doctor fails if it is reachable on any other interface.
 - Telegram allowFrom locked to your numeric id. Doctor fails when unset or when the policy is
   still the default `pairing` instead of `allowlist`.
-- Tokens live in `~/.openclaw/openclaw.json` and `~/.config/lucy/identity.env` (600), which
+- Tokens live in `~/.openclaw/openclaw.json` and `~/.config/neva/identity.env` (600), which
   are never inside the repo or the vault. The agent's rules forbid pasting any credential into
   chat, and `build/leak-scan.py` is the release gate that keeps the founder's own identifiers
   and secrets out of every copy of this template that ships.

@@ -20,7 +20,7 @@ from config import load
 
 CFG = load()
 LOG_DIR = CFG.get("FOOD_DIR") or os.path.join(
-    os.path.expanduser("~"), ".local", "state", "lucy", "food-log")
+    os.path.expanduser("~"), ".local", "state", "neva", "food-log")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 

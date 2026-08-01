@@ -1,6 +1,6 @@
 # Configuration: identity.env and agent behavior
 
-Your assistant's behavior is configured in `~/.config/lucy/identity.env`, created during
+Your assistant's behavior is configured in `~/.config/neva/identity.env`, created during
 install.sh. This file is not tracked in git (it holds sensitive data); edit it any time and
 re-run `doctor` to validate.
 
@@ -66,13 +66,13 @@ See your agent's docs or `openclaw config` for model-specific settings.
 
 ## How to edit
 
-Edit `~/.config/lucy/identity.env` in your text editor:
+Edit `~/.config/neva/identity.env` in your text editor:
 ```bash
 # macOS
-open ~/.config/lucy/identity.env
+open ~/.config/neva/identity.env
 
 # Linux
-$EDITOR ~/.config/lucy/identity.env
+$EDITOR ~/.config/neva/identity.env
 ```
 
 Make changes (one setting per line: `KEY=value`), save, then run `doctor`:

@@ -43,7 +43,7 @@ The agent will not:
 - One note per project; title is the project name
 - Include: goal, deadline if any, people involved, current status
 - Agent uses this to ask context-aware progress questions
-- Example: "Redesign Dot" or "Lucy OS paid tier"
+- Example: "Redesign Dot" or "Neva OS paid tier"
 
 **Client notes (02 Clients):**
 - One note per client or engagement; title is the client name

@@ -21,7 +21,7 @@ row() { # status name fix
 echo "${BOLD}doctor${RESET}"
 
 # 1. config
-CONFIG="$HOME/.config/lucy/identity.env"
+CONFIG="$HOME/.config/neva/identity.env"
 if [ -f "$CONFIG" ]; then
   PERMS=$(stat -f "%Lp" "$CONFIG" 2>/dev/null || stat -c "%a" "$CONFIG" 2>/dev/null)
   if [ "$PERMS" = "600" ] || [ "$PERMS" = "400" ]; then
@@ -205,14 +205,14 @@ fi
 # per-user systemd manager dies when the SSH session ends (no lingering). A job that has never
 # run is invisible to a check that only asks "is it loaded". Every job here now runs through
 # services/heartbeat-wrap.sh, which writes one line per invocation (success, failure, or
-# never-touched) to ~/.local/state/lucy/heartbeat/<job>.status regardless of outcome. That is
+# never-touched) to ~/.local/state/neva/heartbeat/<job>.status regardless of outcome. That is
 # the signal checked below, cross-referenced against what is actually loaded.
 hb_epoch() { # hb_epoch ISO8601Z -> epoch seconds, or empty on parse failure
   date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null
 }
 case "$(uname)" in
-  Darwin) LOADED=$(launchctl list 2>/dev/null | awk '{print $3}' | grep "^com\.lucy\." | sed 's/^com\.lucy\.//' | sort -u) ;;
-  Linux)  LOADED=$(systemctl --user list-timers --all 2>/dev/null | grep -o "lucy-[a-zA-Z-]*\.timer" | sed -e 's/^lucy-//' -e 's/\.timer$//' | sort -u) ;;
+  Darwin) LOADED=$(launchctl list 2>/dev/null | awk '{print $3}' | grep "^com\.neva\." | sed 's/^com\.neva\.//' | sort -u) ;;
+  Linux)  LOADED=$(systemctl --user list-timers --all 2>/dev/null | grep -o "neva-[a-zA-Z-]*\.timer" | sed -e 's/^neva-//' -e 's/\.timer$//' | sort -u) ;;
   *)      LOADED="" ;;
 esac
 if [ -z "$LOADED" ]; then
@@ -220,7 +220,7 @@ if [ -z "$LOADED" ]; then
   INERT="$INERT\n    - no scheduled jobs are running (guards, cadence, sync): docs/03"
 else
   row ok "scheduled jobs loaded ($(echo "$LOADED" | grep -c .))"
-  HB_DIR="$HOME/.local/state/lucy/heartbeat"
+  HB_DIR="$HOME/.local/state/neva/heartbeat"
   NOW_EPOCH=$(date -u +%s)
   # job:max-silence-minutes, matched against LOADED so we only judge jobs this box actually enabled
   for PAIR in "cadence:1560" "canon-lint:1560" "diag:11520" "lane-guard:10" "session-guard:10" "vault-sync:10" "vault-mirror:100"; do
@@ -228,7 +228,7 @@ else
     echo "$LOADED" | grep -qx "$JOB" || continue
     ST="$HB_DIR/${JOB}.status"
     if [ ! -f "$ST" ]; then
-      row fail "$JOB has NEVER fired" "loaded, zero heartbeats recorded; check $HOME/.local/state/lucy/${JOB}.err.log; on Linux this is almost always missing lingering: loginctl enable-linger \$(id -un)"
+      row fail "$JOB has NEVER fired" "loaded, zero heartbeats recorded; check $HOME/.local/state/neva/${JOB}.err.log; on Linux this is almost always missing lingering: loginctl enable-linger \$(id -un)"
       continue
     fi
     LAST=$(tail -n 1 "$ST")
@@ -243,11 +243,11 @@ else
     RUNS=$(wc -l < "$ST" 2>/dev/null | tr -d ' ')
     FAILS=$(tail -n 5 "$ST" | awk '$2 != 0' | grep -c .)
     if [ "$AGE_MIN" -gt "$MAXMIN" ]; then
-      row fail "$JOB has not fired in ${AGE_MIN}m (expected every ~${MAXMIN}m)" "check $HOME/.local/state/lucy/${JOB}.err.log; on Linux confirm the timer is still active: systemctl --user list-timers lucy-${JOB}.timer"
+      row fail "$JOB has not fired in ${AGE_MIN}m (expected every ~${MAXMIN}m)" "check $HOME/.local/state/neva/${JOB}.err.log; on Linux confirm the timer is still active: systemctl --user list-timers neva-${JOB}.timer"
     elif [ "${FAILS:-0}" -ge 3 ]; then
-      row fail "$JOB failing repeatedly ($FAILS of its last 5 runs, last exit $LAST_RC)" "tail $ST and $HOME/.local/state/lucy/${JOB}.err.log"
+      row fail "$JOB failing repeatedly ($FAILS of its last 5 runs, last exit $LAST_RC)" "tail $ST and $HOME/.local/state/neva/${JOB}.err.log"
     elif [ "$LAST_RC" != "0" ]; then
-      row warn "$JOB last run exited $LAST_RC" "tail $HOME/.local/state/lucy/${JOB}.err.log"
+      row warn "$JOB last run exited $LAST_RC" "tail $HOME/.local/state/neva/${JOB}.err.log"
     else
       row ok "$JOB firing on schedule (last run ${AGE_MIN}m ago, $RUNS recorded)"
     fi

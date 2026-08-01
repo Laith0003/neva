@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath
 from config import load
 
 CFG = load()
-STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "lucy")
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "neva")
 QDIR = os.path.join(STATE_DIR, "queue")
 LOG = os.path.join(STATE_DIR, "canon-approve.log")
 PROPOSE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "canon-propose")

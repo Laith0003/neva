@@ -7,11 +7,11 @@ say() { printf "%s\n" "$*"; }
 say "This updates: tools (bin/lib), services templates, docs, base persona layers, vault manual and skills."
 say "It never touches: identity.env, USER.md, SOUL.local.md, AGENTS.local.md, or your vault content."
 # NON-INTERACTIVE MODE (2026-08-01): install.sh's own `ask()` already handles an agent-driven,
-# hands-free run (LUCY_NONINTERACTIVE=1 or no tty): pre-seeded answers pass through, a missing
+# hands-free run (NEVA_NONINTERACTIVE=1 or no tty): pre-seeded answers pass through, a missing
 # required one fails loudly by name. upgrade.sh had none of that: a hands-free invocation hit
 # a bare `read` that returns empty, "" != "y", and the script exited 1 with no explanation at
 # all, unlike every other entry point in this template. Match install.sh's contract.
-if [ "${LUCY_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+if [ "${NEVA_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
   case "${UPGRADE_CONFIRM:-}" in
     y|Y|yes|YES|Yes) : ;;
     *)

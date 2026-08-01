@@ -26,7 +26,7 @@
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
 
-UA="lucy-os-template/1 (local install; contact via owner's identity.env, no email shipped in code)"
+UA="neva-os-template/1 (local install; contact via owner's identity.env, no email shipped in code)"
 TIMEOUT=10
 BASE="https://world.openfoodfacts.org"
 
@@ -54,11 +54,11 @@ if [ $RC -ne 0 ]; then
   fail "network failure (curl exit $RC) after ${TIMEOUT}s: Open Food Facts unreachable. Do not estimate a macro value as if this succeeded - say the lookup failed and ask, or fall back to a manual estimate labeled as one." 2
 fi
 
-LUCY_OFF_RESPONSE="$RESP" LUCY_OFF_MODE="$MODE" python3 <<'PY'
+NEVA_OFF_RESPONSE="$RESP" NEVA_OFF_MODE="$MODE" python3 <<'PY'
 import json, os, sys
 
-raw = os.environ.get("LUCY_OFF_RESPONSE", "")
-mode = os.environ.get("LUCY_OFF_MODE", "")
+raw = os.environ.get("NEVA_OFF_RESPONSE", "")
+mode = os.environ.get("NEVA_OFF_MODE", "")
 try:
     d = json.loads(raw)
 except Exception:

@@ -31,7 +31,7 @@ from config import load
 CFG = load()
 
 VAULT = CFG["VAULT_PATH"]
-STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "lucy")
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "neva")
 QDIR = os.path.join(STATE_DIR, "queue")
 WRITE_LOCK = os.path.join(STATE_DIR, "canon-write.lock")
 OWNER_CHAT = CFG["OWNER_CHAT_ID"]

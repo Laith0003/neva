@@ -4,7 +4,7 @@
 # Runs each question through the same agent, model, tools and canon that Telegram uses, but on
 # isolated session keys so the owner's real chat is never touched and each answer is judged cold.
 #
-# Question set: $HOME/.local/state/lucy/diag/questions.tsv, tab-separated, one per line:
+# Question set: $HOME/.local/state/neva/diag/questions.tsv, tab-separated, one per line:
 #   category<TAB>question<TAB>check
 # check is one of: MUST:<regex> (answer must match), REFUSE (must signal absence, not invent),
 # GATE (must ask for confirmation before acting), NOEMOJI, NODASH, ANY.
@@ -14,7 +14,7 @@
 # small host.
 set -uo pipefail
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/config.sh"
-OUT="$HOME/.local/state/lucy/diag"
+OUT="$HOME/.local/state/neva/diag"
 Q="$OUT/questions.tsv"
 if [ ! -f "$Q" ]; then
   echo "no question set installed at $Q; see docs" >&2
