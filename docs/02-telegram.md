@@ -21,6 +21,8 @@ Do this only after first-run success in the terminal.
 | You see | It means | Fix |
 |---|---|---|
 | getMe returned 401 | token wrong or revoked | regenerate with BotFather, update the config |
-| bot never replies but doctor is green | gateway not restarted after config change | restart it |
+| bot never replies but doctor is green | gateway not restarted after config change | stop and restart: `openclaw gateway` |
 | replies to a friend who found the bot | allowFrom not set | set it now, step 3 above |
-| duplicate replies on long questions | polling watchdog shorter than slow turns | raise `channels.telegram.pollingStallThresholdMs` (docs/07) |
+| duplicate replies on long questions | polling watchdog shorter than slow turns | raise `channels.telegram.pollingStallThresholdMs` in ~/.openclaw/openclaw.json; see docs/10-configuration.md and docs/07-troubleshooting.md |
+
+More errors and solutions: [docs/07-troubleshooting.md](07-troubleshooting.md)

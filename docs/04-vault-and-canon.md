@@ -15,3 +15,7 @@ Daily, `canon-lint` checks people notes for the failure modes that actually occu
 for one person, one phone on two people, a phone whose country code contradicts the note,
 your own number on someone else's record. Real errors message you; conventions
 (`distinct_from`, `borrowed_numbers`) mark verified edge cases so the checks stay quiet.
+
+See [docs/05-vault-structure.md](05-vault-structure.md) for the complete folder map and
+where each kind of note lives, and [docs/06-money-tracking.md](06-money-tracking.md) for
+how money figures are sourced and verified.

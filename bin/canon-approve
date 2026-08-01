@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
 from config import load
@@ -37,6 +38,11 @@ def log(msg):
 
 
 def pending():
+    """Valid, parseable proposals. Corrupt queue files are deliberately NOT dropped here -
+    see corrupt_entries() - a queue that silently hides what it cannot parse is exactly the
+    "nobody drains it" failure this tool exists to prevent. Confirmed by direct test: a
+    truncated queue JSON (simulating a crash mid-write) used to make `canon-approve` print
+    "nothing waiting for approval" while the broken file sat on disk forever, invisible."""
     if not os.path.isdir(QDIR):
         return []
     out = []
@@ -52,6 +58,22 @@ def pending():
     return out
 
 
+def corrupt_entries():
+    """Queue files that exist but failed to parse - surfaced, never silently skipped."""
+    if not os.path.isdir(QDIR):
+        return []
+    out = []
+    for fn in sorted(os.listdir(QDIR)):
+        if not fn.endswith(".json"):
+            continue
+        path = os.path.join(QDIR, fn)
+        try:
+            json.load(open(path, encoding="utf-8"))
+        except (ValueError, OSError) as e:
+            out.append((fn[:-5], str(e), path))
+    return out
+
+
 def resolve(prefix):
     hits = [p for p in pending() if p[0].startswith(prefix)]
     if not hits:
@@ -63,19 +85,44 @@ def resolve(prefix):
 
 def show_list():
     items = pending()
-    if not items:
+    broken = corrupt_entries()
+    if not items and not broken:
         print("nothing waiting for approval.")
         return
-    print(f"{len(items)} proposal(s) waiting:\n")
-    for tid, t, _ in items:
-        print(f"  {tid[:12]}  {str(t.get('reason','pending')):22s}  {t.get('relpath','?')}")
-        body = (t.get("content") or "").strip().replace("\n", " ")
-        print(f"                        {body[:80]}{'...' if len(body) > 80 else ''}")
+    if items:
+        print(f"{len(items)} proposal(s) waiting:\n")
+        for tid, t, _ in items:
+            print(f"  {tid[:12]}  {str(t.get('reason','pending')):22s}  {t.get('relpath','?')}")
+            body = (t.get("content") or "").strip().replace("\n", " ")
+            print(f"                        {body[:80]}{'...' if len(body) > 80 else ''}")
+    else:
+        print("no valid proposals waiting.")
+    if broken:
+        print(f"\n{len(broken)} queue file(s) are CORRUPT and could not be read - "
+              "not silently dropped, needs your attention:")
+        for tid, err, path in broken:
+            print(f"  {tid[:12]}  unreadable ({err[:60]})  fix: inspect or delete {path}")
     print("\ncanon-approve show <id> | yes <id> | no <id>")
+
+
+def mark_approved(t, path):
+    """Rewrite the queue file's status to 'approved' - the ONLY transition canon-propose's
+    --apply-queued will act on. This is the human-tap moment made durable: a discrete write
+    performed by this interactive tool, never by canon-propose itself, so a stray or
+    scripted call to `canon-propose --apply-queued <id>` cannot apply anything nobody
+    reviewed. Atomic (temp file + os.replace, POSIX-atomic per the os.replace docs) so a
+    crash mid-write cannot leave a half-approved file behind."""
+    t["status"] = "approved"
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".canon-approve-", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(t, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def apply_one(tid, t, path):
     """Apply through canon-propose's own writer so the write path stays identical."""
+    mark_approved(t, path)
     r = subprocess.run([PROPOSE, "--apply-queued", tid], text=True, capture_output=True)
     out = (r.stdout or "").strip() or (r.stderr or "").strip()
     if r.returncode == 0:

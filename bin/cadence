@@ -21,12 +21,23 @@ LOG="$STATE_DIR/cadence.log"
 CHAT="$OWNER_CHAT_ID"
 COOLDOWN_SEC=79200   # 22h, so at most one nudge a day
 
+# PORTABILITY FIX (2026-08-01): `find -printf` is GNU-only. On stock macOS (BSD find) it
+# errors, and that error was swallowed by 2>/dev/null, so `newest` was always empty and this
+# fell back to 9999 days for every folder, every time, on every Mac buyer. Staleness was never
+# actually measured on macOS: the review-nudge feature either never fires (thresholds never
+# crossed because nothing is ever "close" the way real ages would be) or, depending on the
+# exact threshold shape, misfires on everything, and both failure modes are silent, no error
+# anywhere. `stat -f` (BSD) / `stat -c` (GNU) per file is the portable replacement; one of the
+# two always succeeds on a given OS, so this works unmodified on macOS and Linux.
 newest_age_days() {
-  local dir="$1"
-  local newest
-  newest=$(find "$VAULT/$dir" -name "*.md" -not -path "*/.obsidian/*" -printf "%T@\n" 2>/dev/null | sort -rn | head -1)
-  [ -z "$newest" ] && { echo 9999; return; }
-  echo $(( ( $(date +%s) - ${newest%.*} ) / 86400 ))
+  local dir="$1" newest=0 f mtime
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    mtime=$(stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null)
+    [ -n "$mtime" ] && [ "$mtime" -gt "$newest" ] && newest="$mtime"
+  done < <(find "$VAULT/$dir" -name "*.md" -not -path "*/.obsidian/*" 2>/dev/null)
+  [ "$newest" -eq 0 ] && { echo 9999; return; }
+  echo $(( ( $(date +%s) - newest ) / 86400 ))
 }
 
 R=$(newest_age_days "09 Reviews")

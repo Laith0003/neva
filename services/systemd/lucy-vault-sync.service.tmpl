@@ -2,4 +2,4 @@
 Description=Vault git sync (agent writes to and from your machine)
 [Service]
 Type=oneshot
-ExecStart=@PREFIX@/bin/vault-sync
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh vault-sync @PREFIX@/bin/vault-sync

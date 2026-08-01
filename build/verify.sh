@@ -18,6 +18,37 @@
 #   3. PROMISES: asserts what the README claims to a buyer, not that exit codes are 0
 #   4. NEGATIVE controls: proves each check can actually fail
 #
+# 2026-08-01 QA pass (Nouran). Six more blockers found BY THIS HARNESS STILL PASSING GREEN
+# while broken, all from the same root cause the header above already names: this box
+# shares assumptions with the source machine.
+#   - cadence's staleness check uses `find -printf`, a GNU-only flag. On real BSD find
+#     (stock macOS, no homebrew coreutils shadowing it) it errors, the error is piped to
+#     /dev/null inside cadence, and every review/journal/strategy reads as "9999 days
+#     stale" forever, even for a note edited one second ago. Old check 7 never caught this
+#     because it only ever runs tools UNCONFIGURED (proving they name install.sh, which
+#     they do); it never once runs cadence against a real vault with real content.
+#   - briefing (and diag-run, session-guard) shell out to `timeout`, also GNU-only and
+#     absent from stock macOS. Old check 8 ran briefing with a hostile PATH that has never
+#     once contained a working `timeout`, so briefing's openclaw call has NEVER ONCE
+#     actually executed under this harness, on any machine, ever: it always short-circuits
+#     to "briefing skipped: nothing to report", which reads exactly like the product
+#     working correctly on a quiet night. The two states are provably indistinguishable
+#     from the log alone.
+#   - check 8's "alert" arm grepped a log file named alert.log; alert actually writes to
+#     alerts.log (plural). The grep target has never existed, so this arm has been
+#     structurally unable to fail since it was written, no matter what alert logs.
+#   - check 9 proved a drain path for gated writes EXISTS (the word "approve" appears in
+#     output, which it always does: canon-propose's own instructions say it), never that
+#     canon-approve actually applies a write. It happens to work (verified below, now for
+#     real) but the check that was supposed to prove that never did.
+#   - install.sh tells a buyer with a pre-existing non-empty vault folder that "the agent
+#     can import it later, your notes end up in OLD_VAULT/ inside the new structure." No
+#     code anywhere creates an OLD_VAULT folder or does any such import. The buyer is left
+#     on a bare, unscaffolded folder with a promise that cashes out to nothing.
+#   - none of: a second install over an existing Lucy vault, a vault path with spaces, or
+#     non-ASCII (Arabic) note content and queries, were ever exercised. All three turn out
+#     to work; they are now locked in as regression checks instead of assumptions.
+#
 # Usage: bash build/verify.sh   (exit 0 = releasable)
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,8 +60,11 @@ ok()   { printf "  PASS  %s\n" "$1"; PASS=$((PASS+1)); }
 bad()  { printf "  FAIL  %s\n    -> %s\n" "$1" "$2"; FAIL=$((FAIL+1)); }
 head_() { printf "\n%s\n" "$1"; }
 
-# A deliberately impoverished PATH: no ripgrep, no hledger, no brew bin.
-# This is the buyer's machine, not ours.
+# A deliberately impoverished PATH: no ripgrep, no hledger, no brew bin, and critically no
+# GNU coreutils shadowing BSD ones (no `timeout`, no GNU `find`). This is the buyer's real
+# stock machine, not ours. Do not silently widen this "to make things pass": a check that
+# only goes green because we handed it homebrew's coreutils is exactly the failure mode
+# this file exists to prevent.
 POOR_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
 head_ "1. install, hands-free, in a fresh HOME"
@@ -66,15 +100,34 @@ if echo "$R2" | grep -q "No canon note matches"; then ok "negative control: abse
 else bad "negative control" "canon claims a match for an absent topic"; fi
 
 head_ "5. PROMISE: doctor tells the truth about readiness (B5)"
-D=$(HOME="$HOME" PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" "$HOME/.local/lucy/bin/doctor" 2>&1)
+# Deterministic, not ambient: install a fake `openclaw` in the sandbox's own bin so this
+# check exercises the multi-WARN "cannot work yet" honesty branch on purpose, instead of
+# accidentally passing because the real host's own gateway happens to be up or down, or
+# because an unrelated PATH gap (tools not linked) forces a FAIL for the wrong reason.
+mkdir -p "$SANDBOX/fakebin"
+cat > "$SANDBOX/fakebin/openclaw" <<'FAKEOC'
+#!/bin/bash
+[ "$1" = "--version" ] && { echo "fake-openclaw 0.0.0-test"; exit 0; }
+exit 1
+FAKEOC
+chmod +x "$SANDBOX/fakebin/openclaw"
+DOCTOR_PATH="$SANDBOX/fakebin:$HOME/.local/bin:$POOR_PATH"
+D=$(HOME="$HOME" PATH="$DOCTOR_PATH" "$HOME/.local/lucy/bin/doctor" 2>&1)
 if echo "$D" | grep -q "^all clear$"; then
   bad "doctor honesty" "said 'all clear' with no gateway, no telegram, no timers: teaches buyers to ignore it"
 else ok "doctor does not claim all-clear on an inert system"; fi
 echo "$D" | grep -qi "cannot work yet\|failure" && ok "doctor names why it is not ready" || bad "doctor guidance" "no explanation of what is missing"
+# this run's tools WERE on PATH ($HOME/.local/bin), so a real FAIL here would have to come
+# from the actual INERT logic, not an accidental PATH gap; confirm that is in fact so
+echo "$D" | grep -q "core tools on PATH" && ok "tool-PATH row passed on its own merits (not masking the honesty check)" \
+  || bad "doctor check 5 environment" "tools not on PATH in this probe; the honesty assertion above is not trustworthy"
 
 head_ "6. every FAIL row must carry an actionable fix"
 BADROWS=$(echo "$D" | awk '/^  FAIL/ { if (length($0) < 45) print }')
 [ -z "$BADROWS" ] && ok "all FAIL rows include a fix" || bad "bare FAIL rows" "$BADROWS"
+# negative control: prove the awk rule itself can catch a bare row
+NEGROWS=$(printf '  FAIL  bare row with no fix text\n' | awk '/^  FAIL/ { if (length($0) < 45) print }')
+[ -n "$NEGROWS" ] && ok "negative control: bare FAIL row is caught" || bad "negative control" "bare row slipped through"
 
 head_ "7. tools fail loudly, never silently (config missing)"
 BADTOOLS=""
@@ -86,22 +139,86 @@ for T in canon canon-lint cadence vault-sync food; do
   echo "$E" | grep -qiE "config missing|install.sh|rc=78" || BADTOOLS="$BADTOOLS $T"
 done
 [ -z "$BADTOOLS" ] && ok "tools name the fix when unconfigured" || bad "silent tools:$BADTOOLS" "should exit 78 naming install.sh"
+head_ "7b. those SAME tools, CONFIGURED, against a real vault (the gap the unconfigured loop above cannot see)"
+# cadence covered fully in section 12. Here: canon-lint and vault-sync must at least run
+# clean (exit 0) against the real installed vault on a genuinely poor, GNU-free PATH.
+CFGBAD=""
+for T in canon-lint; do
+  [ -x "$HOME/.local/lucy/bin/$T" ] || continue
+  O=$(HOME="$HOME" PATH="$POOR_PATH" "$HOME/.local/lucy/bin/$T" 2>&1); RC=$?
+  [ "$RC" -eq 0 ] || CFGBAD="$CFGBAD $T(rc=$RC)"
+done
+[ -z "$CFGBAD" ] && ok "canon-lint runs clean on a real vault, stock PATH" || bad "configured tool failure:$CFGBAD" "ran clean unconfigured, broke configured; see output above"
 
 head_ "8. no tool claims an action it did not perform"
 LIARS=""
+# NOTE: no associative arrays here on purpose. Stock macOS ships /bin/bash 3.2.57 (Apple
+# froze bash pre-GPLv3); `declare -A` does not exist on it. A check that uses it is exactly
+# the class of bug this harness exists to prevent, just committed against the harness
+# itself; caught here by actually running this file on a fresh $HOME with a stock PATH.
 for T in briefing alert; do
   [ -x "$HOME/.local/lucy/bin/$T" ] || continue
   HOME="$HOME" PATH="$POOR_PATH" "$HOME/.local/lucy/bin/$T" >/dev/null 2>&1
-  if grep -rqi "sent" "$HOME/.local/state/lucy/$T.log" 2>/dev/null; then LIARS="$LIARS $T"; fi
+  case "$T" in
+    briefing) LF="briefing.log" ;;
+    alert)    LF="alerts.log" ;;
+    *)        LF="$T.log" ;;
+  esac
+  if grep -rqi "sent" "$HOME/.local/state/lucy/$LF" 2>/dev/null; then LIARS="$LIARS $T"; fi
 done
-[ -z "$LIARS" ] && ok "no false 'sent' in logs" || bad "tools logging phantom sends:$LIARS" "the product's own headline rule forbids this"
+[ -z "$LIARS" ] && ok "no false 'sent' in logs (correct log file checked)" || bad "tools logging phantom sends:$LIARS" "the product's own headline rule forbids this"
+# negative control: prove the log-grep itself is capable of catching a phantom claim
+NEGLOG="$SANDBOX/empty/.local/state/lucy/negctrl.log"; mkdir -p "$(dirname "$NEGLOG")"
+echo "2026-08-01 00:00:00 briefing sent (42 chars)" > "$NEGLOG"
+grep -qi "sent" "$NEGLOG" && ok "negative control: a genuine phantom 'sent' line is caught by the grep" \
+  || bad "negative control" "the grep cannot even catch a planted phantom-send line"
 
-head_ "9. gated canon writes are not a one-way trapdoor (B2)"
+head_ "8b. PROMISE under REAL failure: briefing composes something to say, chat id is set, but delivery genuinely fails (bad token) -> must NOT log 'sent'"
+mkdir -p "$SANDBOX/fakebin2"
+cat > "$SANDBOX/fakebin2/openclaw" <<'FAKEOC2'
+#!/bin/bash
+echo '{"payloads":[{"text":"Quiet night, nothing urgent, but this line exists so MSG is non-empty."}]}'
+FAKEOC2
+chmod +x "$SANDBOX/fakebin2/openclaw"
+# a real `timeout` is required for briefing's openclaw call to ever run at all on a stock
+# machine; supply exactly a POSIX-only timeout stand-in so THIS check isolates the claim
+# it exists to test (does briefing lie about delivery) from the SEPARATE finding in 13
+# (briefing silently never runs at all without a real timeout binary).
+cat > "$SANDBOX/fakebin2/timeout" <<'TOUT'
+#!/bin/bash
+shift
+exec "$@"
+TOUT
+chmod +x "$SANDBOX/fakebin2/timeout"
+BHOME="$SANDBOX/briefing-honesty"; mkdir -p "$BHOME"
+HOME="$BHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$BHOME/MyVault" LUCY_NONINTERACTIVE=1 \
+  PATH="$SANDBOX/fakebin2:$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
+sed -i.bak 's/OWNER_CHAT_ID=""/OWNER_CHAT_ID="1"/' "$BHOME/.config/lucy/identity.env"
+mkdir -p "$BHOME/.openclaw"
+echo '{"channels":{"telegram":{"botToken":"000000000:AA_a_deliberately_fake_unreachable_token"}}}' > "$BHOME/.openclaw/openclaw.json"
+HOME="$BHOME" PATH="$SANDBOX/fakebin2:$POOR_PATH" "$BHOME/.local/lucy/bin/briefing" >/dev/null 2>&1
+if grep -qi "sent" "$BHOME/.local/state/lucy/briefing.log" 2>/dev/null; then
+  bad "briefing logs 'sent' without confirming delivery" "curl's success/failure is never checked before writing 'briefing sent' to the log; a dead token or network outage is invisible"
+else
+  ok "briefing does not claim delivery it could not confirm"
+fi
+
+head_ "9. gated canon writes are not a one-way trapdoor, AND the drain path actually applies (B2)"
 G=$(printf 'A test money note.\n' | HOME="$HOME" PATH="$POOR_PATH" \
     python3 "$HOME/.local/lucy/bin/canon-propose" money "Verify Money Note" --mode new 2>&1)
 if echo "$G" | grep -qi "sent to the owner\|GATED"; then
-  if [ -x "$HOME/.local/lucy/bin/canon-approve" ] || echo "$G" | grep -qi "approve"; then
-    ok "gated write is queued AND a drain path exists"
+  TID=$(echo "$G" | grep -oE 'proposal [a-zA-Z0-9-]+' | awk '{print $2}')
+  if [ -n "$TID" ] && [ -x "$HOME/.local/lucy/bin/canon-approve" ]; then
+    A=$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/lucy/bin/canon-approve" yes "${TID:0:12}" 2>&1)
+    if [ -f "$HOME/MyVault/05 Money/Verify Money Note.md" ]; then
+      ok "gated write, once approved, actually lands in the vault (not just a claim)"
+    else
+      bad "gated write dead-letters" "canon-approve ran (\"$A\") but the file never reached the vault"
+    fi
+    ( cd "$HOME/MyVault" && git log --oneline -1 -- "05 Money/Verify Money Note.md" 2>/dev/null | grep -q . ) \
+      && ok "approved write is git-committed (survives a crash, has history)" \
+      || bad "approved write not committed" "no git history for the applied file"
   else
     bad "gated write dead-letters" "queued for approval with no tool or documented way to approve it"
   fi
@@ -113,10 +230,126 @@ for L in $(grep -rhoE '(docs/[a-z0-9/.-]+\.md)' "$REPO/README.md" "$REPO/docs" 2
   [ -f "$REPO/$L" ] || MISSINGDOC="$MISSINGDOC $L"
 done
 [ -z "$MISSINGDOC" ] && ok "every referenced doc exists" || bad "dead doc links:$MISSINGDOC" "a buyer following the docs hits a wall"
+# negative control: the scan itself must be able to catch a fake reference
+NEGDOC=$(mktemp -d /tmp/lucy-doc-negctrl-XXXXXX)
+echo "see docs/99-does-not-exist.md" > "$NEGDOC/README.md"; mkdir -p "$NEGDOC/docs"
+NEGHIT=""
+for L in $(grep -rhoE '(docs/[a-z0-9/.-]+\.md)' "$NEGDOC/README.md" "$NEGDOC/docs" 2>/dev/null | sort -u); do
+  [ -f "$NEGDOC/$L" ] || NEGHIT="$NEGHIT $L"
+done
+rm -rf "$NEGDOC"
+[ -n "$NEGHIT" ] && ok "negative control: a planted dead link is caught" || bad "negative control" "a planted dead link was missed"
+# install.sh makes ITS OWN promise at runtime ("OLD_VAULT/"); that promise must cash out
+# in actual code somewhere, not just in a string it prints
+if grep -q "OLD_VAULT" "$REPO/install.sh" && ! grep -rq "OLD_VAULT" "$REPO/bin" "$REPO/lib" 2>/dev/null; then
+  bad "install.sh promises an OLD_VAULT/ import that no code implements" \
+      "install.sh:87 tells a buyer with an existing vault their notes end up in OLD_VAULT/; grep the repo, nothing creates that folder or does that import"
+else
+  ok "install.sh's OLD_VAULT promise has an implementation, or the promise was removed"
+fi
 
 head_ "11. no personal data in the artifact"
 if python3 "$REPO/build/leak-scan.py" "$REPO" >/dev/null 2>&1; then ok "leak scan clean"
 else bad "leak scan" "personal identifiers present; run build/leak-scan.py"; fi
+# negative control: the scanner must actually be capable of finding a leak
+NEGLEAK=$(mktemp -d /tmp/lucy-leak-negctrl-XXXXXX)
+echo "reach the owner at laith.aljunaidy.laith@personal.example" > "$NEGLEAK/plant.md"
+if python3 "$REPO/build/leak-scan.py" "$NEGLEAK" >/dev/null 2>&1; then
+  bad "negative control" "leak-scan did not flag a planted identifier"
+else
+  ok "negative control: a planted identifier is caught"
+fi
+rm -rf "$NEGLEAK"
+
+head_ "12. PROMISE: cadence notices a note edited seconds ago, on a REAL stock machine (not this one)"
+# The known-worst defect on record: the cadence timer has never fired once in six weeks
+# live. This check is not about the scheduler; it is about whether cadence's own staleness
+# MATH is even correct once it does run. It uses \`find ... -printf\`, a GNU find flag.
+# BSD find (real macOS, no homebrew coreutils on PATH) treats it as a syntax error; the
+# error is redirected to /dev/null inside cadence, so it silently reports "no file found"
+# -> 9999 days stale, forever, for every folder, regardless of real content.
+touch "$HOME/MyVault/09 Reviews/.gitkeep" 2>/dev/null
+printf '# Weekly Review\nDone just now.\n' > "$HOME/MyVault/09 Reviews/fresh-review.md"
+CADOUT=$(env -i HOME="$HOME" PATH="$POOR_PATH" "$HOME/.local/lucy/bin/cadence" --dry-run 2>&1)
+STALE_DAYS=$(echo "$CADOUT" | grep -oE 'reviews=[0-9]+d' | grep -oE '[0-9]+')
+if [ -n "$STALE_DAYS" ] && [ "$STALE_DAYS" -le 1 ]; then
+  ok "cadence correctly reads a just-created review as fresh ($STALE_DAYS d) on a stock PATH"
+else
+  bad "cadence staleness check is silently broken on real (BSD) find" \
+      "reported reviews=${STALE_DAYS:-unknown}d for a file edited seconds ago; 'find -printf' errors on stock macOS and the error is swallowed (bin/cadence uses 2>/dev/null); every staleness read defaults to 9999. Output: $CADOUT"
+fi
+
+head_ "13. tools that shell out to GNU-only commands must not fail SILENTLY on a machine that lacks them"
+GNUONLY=$(grep -rlE '(^|[^a-zA-Z_.])timeout [0-9]|find .*-printf' "$REPO/bin" 2>/dev/null)
+[ -n "$GNUONLY" ] && printf "    (uses timeout/-printf, unguarded: %s)\n" "$(echo "$GNUONLY" | tr '\n' ' ')"
+# functional proof for briefing specifically: with NO timeout binary anywhere on PATH,
+# briefing must say WHY it produced nothing, not log a message indistinguishable from a
+# genuinely quiet night.
+NTHOME="$SANDBOX/no-timeout"; mkdir -p "$NTHOME"
+HOME="$NTHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$NTHOME/MyVault" LUCY_NONINTERACTIVE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
+env -i HOME="$NTHOME" PATH="$POOR_PATH" "$NTHOME/.local/lucy/bin/briefing" >/tmp/lucy-briefing-stderr.$$ 2>&1
+BLOG=$(cat "$NTHOME/.local/state/lucy/briefing.log" 2>/dev/null)
+if echo "$BLOG" | grep -qi "skipped: nothing to report"; then
+  bad "briefing is silent about a missing 'timeout' binary" \
+      "on a PATH with no GNU timeout (stock macOS), briefing's openclaw call never runs at all; the log reads 'skipped: nothing to report', indistinguishable from a genuinely quiet night. Log: $BLOG"
+else
+  ok "briefing surfaces the real reason it produced nothing (not a false quiet-night claim)"
+fi
+rm -f /tmp/lucy-briefing-stderr.$$
+
+head_ "14. a SECOND install over an already-Lucy vault is truly idempotent"
+OUT2=$(OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+      VAULT_PATH="$HOME/MyVault" LUCY_NONINTERACTIVE=1 \
+      PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" 2>&1)
+[ $? -eq 0 ] && ok "second install exits clean" || bad "second install" "non-zero exit"
+[ -f "$HOME/MyVault/03 People/Jane Doe.md" ] && ok "content from the first install survives a second install" \
+  || bad "second install destroyed content" "Jane Doe.md is gone after re-running install.sh"
+INITCOMMITS=$(git -C "$HOME/MyVault" log --oneline --grep="vault initial commit" 2>/dev/null | wc -l | tr -d ' ')
+[ "$INITCOMMITS" = "1" ] && ok "vault was not re-git-init'd (exactly one initial commit)" \
+  || bad "vault git history corrupted" "expected exactly 1 'vault initial commit', found $INITCOMMITS"
+
+head_ "15. non-ASCII (Arabic) notes and queries are grounded correctly"
+cat > "$HOME/MyVault/03 People/نوران.md" <<'EOF'
+# نوران
+تعمل في هندسة الجودة وتراجع كل الإصلاحات.
+EOF
+RA=$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/lucy/bin/canon" "نوران هندسة" 2>&1)
+echo "$RA" | grep -q "نوران.md" && ok "canon finds an Arabic-named note by an Arabic query" \
+  || bad "Arabic grounding broken" "query 'نوران هندسة' did not surface نوران.md. Output: $RA"
+
+head_ "16. VAULT_PATH containing spaces works end to end"
+SPHOME="$SANDBOX/space-test"; mkdir -p "$SPHOME"
+SPVAULT="$SPHOME/My Vault With Spaces"
+HOME="$SPHOME" OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
+  VAULT_PATH="$SPVAULT" LUCY_NONINTERACTIVE=1 \
+  PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" >/dev/null 2>&1
+[ -d "$SPVAULT/03 People" ] && ok "vault scaffolds correctly at a path containing spaces" \
+  || bad "spaced-path install" "no vault structure created at '$SPVAULT'"
+
+head_ "17. upgrade.sh does not hang or silently no-op when run non-interactively (agent-driven)"
+# no `timeout` here on purpose: this harness must itself run on a stock PATH with no GNU
+# coreutils, so a portable background-and-kill bound is used instead.
+UPOUT="$SANDBOX/upgrade.out"
+( env HOME="$HOME" PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/upgrade.sh" </dev/null >"$UPOUT" 2>&1 ) &
+UPID=$!
+i=0
+while kill -0 "$UPID" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i+1)); done
+if kill -0 "$UPID" 2>/dev/null; then
+  kill -9 "$UPID" 2>/dev/null; wait "$UPID" 2>/dev/null
+  URC=124
+else
+  wait "$UPID"; URC=$?
+fi
+UOUT=$(cat "$UPOUT" 2>/dev/null)
+if [ "$URC" = "124" ]; then
+  bad "upgrade.sh hangs with no stdin" "an agent driving this non-interactively (as install.sh explicitly supports via LUCY_NONINTERACTIVE) will block forever; timed out after 10s"
+elif echo "$UOUT" | grep -qiE "non-interactive|LUCY_NONINTERACTIVE|--yes|fix:"; then
+  ok "upgrade.sh explains itself when it cannot prompt"
+else
+  bad "upgrade.sh fails silently when non-interactive" "rc=$URC with no actionable message (got: ${UOUT:-<empty>}); unlike install.sh, upgrade.sh has no LUCY_NONINTERACTIVE-equivalent"
+fi
 
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed\n" "$PASS" "$FAIL"

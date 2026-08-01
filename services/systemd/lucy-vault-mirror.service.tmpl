@@ -2,4 +2,4 @@
 Description=Refresh the memory-search mirror of the vault
 [Service]
 Type=oneshot
-ExecStart=@PREFIX@/bin/vault-mirror
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh vault-mirror @PREFIX@/bin/vault-mirror

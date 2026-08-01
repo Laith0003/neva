@@ -16,4 +16,7 @@ VERSION
 MANIFEST
 # user-owned, NEVER touched by upgrades: everything else, notably
 #   ~/.config/lucy/identity.env, workspace *.local.md and USER.md,
-#   all vault content folders (00-10, Food, Journal, Reviews)
+#   all vault content folders (00-10, Food, Journal, Reviews),
+#   and vault/.obsidian: shipped once at install, then yours. This is deliberate, not an
+#   omission. Buyers retheme and add plugins, and silently overwriting that on upgrade would
+#   cost them more than a stale dashboard does. If a dashboard changes, docs say what to copy.
