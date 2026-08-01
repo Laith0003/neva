@@ -11,6 +11,10 @@ for. When it has done its job it deletes itself and never comes back.
 - **React before you ask.** After every substantive answer, respond with one specific
   sentence about what they said, then the next question. Specific, never evaluative: name the
   thing they told you. No "great answer", no "love that".
+- **A one- or two-word answer with nothing specific in it does not get a manufactured
+  reaction.** Do not stretch "yeah" or "dunno" into a sentence that pretends it was
+  substantive. Say nothing extra and move on, or ask once if they would rather skip. A fake
+  specific reaction is worse than no reaction at all.
 - **Ask exactly one reactive follow-up** when an answer opens a door (they mention a project,
   a deadline, a person). Generated from their answer, not from this script. Then return to
   the beats.
@@ -53,12 +57,12 @@ This is where the one reactive follow-up belongs.
 **Beat 5, your job.** Ask which one or two things they most want off their plate, offering a
 concrete pick-list: reminders and follow-ups, research, writing drafts, inbox triage, vault
 upkeep, tracking money or food, something else they name.
--> write: `USER.md` use cases; HEARTBEAT checks configured ONLY for what they chose.
+-> write: `USER.md` use cases; proactive check-ins listed ONLY for what they chose.
 
 **Beat 6, boundaries.** Ask when you are allowed to message them first, when you must stay
 quiet, and, mandatory, what kind of unsolicited message would annoy them. The annoyance
 answer is the most valuable sentence in this whole interview; keep it verbatim.
--> write: `identity.env` ACTIVE_HOURS_*, HEARTBEAT config, `SOUL.local.md` Proactivity
+-> write: `identity.env` ACTIVE_HOURS_*, `SOUL.local.md` Proactivity
 (including the verbatim annoyance line).
 
 **Beat 7, the voice mirror.** Do not ask how you should sound. Instead, state two or three
@@ -91,14 +95,22 @@ both saw is a conversation.
   people you mention most, and who are they to you?" -> USER.md People. Remember the
   standing rule: one person, one note; nicknames in frontmatter.
 - **Day 6** (trigger: you sent at least one proactive message this week): "I checked in N
-  times this week. Too much, too little, or right?" -> HEARTBEAT config. Adjust immediately.
+  times this week. Too much, too little, or right?" -> SOUL.local.md Proactivity. Adjust immediately.
 - **Day 7** (always): render everything you believe about them from USER.md and
   SOUL.local.md in plain words and ask one question: "What is wrong in this?" Fixing errors
   beats collecting additions. -> corrections applied, and this is the week-one close.
 
 ## When to delete this file
 
-Only when USER.md, SOUL.local.md, and identity.env contain no placeholder values. Then:
+Not at the end of day one, even if every day-one question got answered and no placeholder
+remains. This file is not done at Beat 8; it still owns the Day 2 through Day 7 questions
+below, and deleting it early silently cancels them with no error anywhere, which is worse than
+never having promised them. Two conditions, both required:
+1. Day 7 (the week-one close) has run and its corrections have been applied.
+2. USER.md, SOUL.local.md, and identity.env contain no placeholder values (if one is still
+   TBD from a day-one skip, this file is also how that gap gets asked again; leave it).
+Then:
 1. Write a completion entry to the daily log with the date.
 2. Delete this file with your file tools.
-3. Never recreate it. The week-one drip schedule lives in HEARTBEAT config, not here.
+3. Never recreate it. Ongoing observation-based check-ins after week one live in HEARTBEAT
+   config, not here; this file's job was only ever the first seven days.

@@ -60,6 +60,53 @@ else
   row fail "openclaw" "install it: https://docs.openclaw.ai/install"
 fi
 
+# 4b. openclaw's own security posture. This deliberately does NOT hardcode a "minimum safe
+# version": a hardcoded number goes stale the day the next CVE lands and gives false
+# confidence forever after. openclaw ships its own maintained audit
+# (docs.openclaw.ai/cli/security, real documented JSON: `.summary`, `.findings[].severity`)
+# and update checker (docs.openclaw.ai/cli/update); doctor calls those instead of guessing.
+if command -v openclaw >/dev/null 2>&1; then
+  AUDIT_JSON=$(timeout 30 openclaw security audit --json 2>/dev/null)
+  if [ -n "$AUDIT_JSON" ]; then
+    AUDIT_COUNTS=$(printf '%s' "$AUDIT_JSON" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("parse-error"); sys.exit()
+findings = d.get("findings") or []
+sev = [str(f.get("severity", "")).lower() for f in findings if isinstance(f, dict)]
+crit = sev.count("critical") + sev.count("high")
+warn = sev.count("medium") + sev.count("warn") + sev.count("warning")
+print(f"{crit} {warn} {len(findings)}")
+' 2>/dev/null)
+    case "$AUDIT_COUNTS" in
+      parse-error|"")
+        row warn "openclaw security audit" "ran but output could not be parsed; run \`openclaw security audit\` yourself and read it" ;;
+      *)
+        CRIT=$(echo "$AUDIT_COUNTS" | awk '{print $1}')
+        WARNC=$(echo "$AUDIT_COUNTS" | awk '{print $2}')
+        if [ "${CRIT:-0}" -gt 0 ]; then
+          row fail "openclaw security audit: $CRIT high/critical finding(s)" "run: openclaw security audit --fix   (then re-run: openclaw security audit --json | jq '.findings[]')"
+        elif [ "${WARNC:-0}" -gt 0 ]; then
+          row warn "openclaw security audit: $WARNC medium/warning finding(s)" "run: openclaw security audit   for detail"
+        else
+          row ok "openclaw security audit (clean)"
+        fi ;;
+    esac
+  else
+    row warn "openclaw security audit" "\`openclaw security audit --json\` produced no output (older openclaw without this subcommand, or it timed out); run \`openclaw security audit\` by hand"
+  fi
+  UPDATE_STATUS=$(timeout 20 openclaw update status 2>/dev/null | head -1)
+  if [ -n "$UPDATE_STATUS" ]; then
+    # informational only: we do not know openclaw's exact wording well enough to assert
+    # ok/fail from it, so this is reported neutrally rather than risking a false claim either way
+    row ok "openclaw update status: ${UPDATE_STATUS:0:60}"
+  else
+    row warn "openclaw update status" "could not check; run \`openclaw update status\` yourself"
+  fi
+fi
+
 # 5. gateway reachable and loopback-only
 if command -v openclaw >/dev/null 2>&1; then
   PORT=18789
@@ -81,6 +128,15 @@ fi
 # 6. telegram token valid (only if configured; never printed)
 OC="$HOME/.openclaw/openclaw.json"
 if [ -f "$OC" ]; then
+  # docs/09-security.md claims openclaw.json is held to the same 600 standard as
+  # identity.env (check 1); doctor never actually verified that claim. It holds the live
+  # Telegram bot token, so a world/group-readable copy is exactly as bad as an exposed
+  # identity.env, and gets the same severity (FAIL, not warn).
+  OC_PERMS=$(stat -f "%Lp" "$OC" 2>/dev/null || stat -c "%a" "$OC" 2>/dev/null)
+  case "$OC_PERMS" in
+    600|400) row ok "openclaw.json perms ($OC_PERMS)" ;;
+    *) row fail "openclaw.json perms are $OC_PERMS, must be 600" "chmod 600 '$OC'" ;;
+  esac
   TOKEN=$(python3 -c 'import json,sys
 try: print(json.load(open("'"$OC"'"))["channels"]["telegram"]["botToken"])
 except Exception: print("")' 2>/dev/null)
@@ -142,21 +198,68 @@ else
   row ok "core tools on PATH"
 fi
 
-# 8. scheduled jobs loaded
+# 8. scheduled jobs: loaded AND actually firing
+# "loaded" only proves launchd/systemd registered the job definition. It does NOT prove the
+# job has ever run: on a real running system (2026-08-01) `systemctl --user list-timers --all`
+# showed two timers loaded with a last-run of "-" for six weeks, because the
+# per-user systemd manager dies when the SSH session ends (no lingering). A job that has never
+# run is invisible to a check that only asks "is it loaded". Every job here now runs through
+# services/heartbeat-wrap.sh, which writes one line per invocation (success, failure, or
+# never-touched) to ~/.local/state/lucy/heartbeat/<job>.status regardless of outcome. That is
+# the signal checked below, cross-referenced against what is actually loaded.
+hb_epoch() { # hb_epoch ISO8601Z -> epoch seconds, or empty on parse failure
+  date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null
+}
 case "$(uname)" in
-  Darwin)
-    N=$(launchctl list 2>/dev/null | grep -c "com.lucy." || true)
-    if [ "${N:-0}" -ge 1 ]; then row ok "scheduled jobs loaded ($N)"; else
-      row warn "scheduled jobs" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
-      INERT="$INERT\n    - no scheduled jobs are running (guards, cadence, sync): docs/03"
-    fi ;;
-  Linux)
-    N=$(systemctl --user list-timers --all 2>/dev/null | grep -c "lucy-" || true)
-    if [ "${N:-0}" -ge 1 ]; then row ok "scheduled timers loaded ($N)"; else
-      row warn "scheduled timers" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
-      INERT="$INERT\n    - no scheduled timers are running (guards, cadence, sync): docs/03"
-    fi ;;
+  Darwin) LOADED=$(launchctl list 2>/dev/null | awk '{print $3}' | grep "^com\.lucy\." | sed 's/^com\.lucy\.//' | sort -u) ;;
+  Linux)  LOADED=$(systemctl --user list-timers --all 2>/dev/null | grep -o "lucy-[a-zA-Z-]*\.timer" | sed -e 's/^lucy-//' -e 's/\.timer$//' | sort -u) ;;
+  *)      LOADED="" ;;
 esac
+if [ -z "$LOADED" ]; then
+  row warn "scheduled jobs" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
+  INERT="$INERT\n    - no scheduled jobs are running (guards, cadence, sync): docs/03"
+else
+  row ok "scheduled jobs loaded ($(echo "$LOADED" | grep -c .))"
+  HB_DIR="$HOME/.local/state/lucy/heartbeat"
+  NOW_EPOCH=$(date -u +%s)
+  # job:max-silence-minutes, matched against LOADED so we only judge jobs this box actually enabled
+  for PAIR in "cadence:1560" "canon-lint:1560" "diag:11520" "lane-guard:10" "session-guard:10" "vault-sync:10" "vault-mirror:100"; do
+    JOB="${PAIR%%:*}"; MAXMIN="${PAIR#*:}"
+    echo "$LOADED" | grep -qx "$JOB" || continue
+    ST="$HB_DIR/${JOB}.status"
+    if [ ! -f "$ST" ]; then
+      row fail "$JOB has NEVER fired" "loaded, zero heartbeats recorded; check $HOME/.local/state/lucy/${JOB}.err.log; on Linux this is almost always missing lingering: loginctl enable-linger \$(id -un)"
+      continue
+    fi
+    LAST=$(tail -n 1 "$ST")
+    LAST_TS=$(echo "$LAST" | awk '{print $1}')
+    LAST_RC=$(echo "$LAST" | awk '{print $2}')
+    LAST_EPOCH=$(hb_epoch "$LAST_TS")
+    if [ -z "$LAST_EPOCH" ]; then
+      row warn "$JOB heartbeat" "recorded but timestamp unparsable ($LAST_TS); check $ST by hand"
+      continue
+    fi
+    AGE_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
+    RUNS=$(wc -l < "$ST" 2>/dev/null | tr -d ' ')
+    FAILS=$(tail -n 5 "$ST" | awk '$2 != 0' | grep -c .)
+    if [ "$AGE_MIN" -gt "$MAXMIN" ]; then
+      row fail "$JOB has not fired in ${AGE_MIN}m (expected every ~${MAXMIN}m)" "check $HOME/.local/state/lucy/${JOB}.err.log; on Linux confirm the timer is still active: systemctl --user list-timers lucy-${JOB}.timer"
+    elif [ "${FAILS:-0}" -ge 3 ]; then
+      row fail "$JOB failing repeatedly ($FAILS of its last 5 runs, last exit $LAST_RC)" "tail $ST and $HOME/.local/state/lucy/${JOB}.err.log"
+    elif [ "$LAST_RC" != "0" ]; then
+      row warn "$JOB last run exited $LAST_RC" "tail $HOME/.local/state/lucy/${JOB}.err.log"
+    else
+      row ok "$JOB firing on schedule (last run ${AGE_MIN}m ago, $RUNS recorded)"
+    fi
+  done
+  # the README's flagship promise: called out on its own, not buried in the aggregate count above
+  if echo "$LOADED" | grep -qx "cadence"; then
+    :  # already covered by the loop above with its own row
+  else
+    row warn "review-nudge (cadence) not enabled" "the README promise 'drafts reviews when you go quiet' will not happen; docs/03-scheduled-jobs.md, or answer yes to the cadence question on your next install.sh re-run"
+    INERT="$INERT\n    - review nudges are off (the README promise 'drafts reviews when you go quiet'): docs/03"
+  fi
+fi
 
 # 9. optional integrations, presence only
 for PAIR in "hledger:money ledger" "syncthing:vault sync" "rg:vault search"; do

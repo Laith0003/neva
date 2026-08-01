@@ -37,7 +37,7 @@ One person, one note. Nicknames in frontmatter, never separate files:
 ```yaml
 ---
 tags: [person]
-nicknames: [Abu Omar]
+aliases: [Abu Omar]
 distinct_from: []        # verified different people who look related
 borrowed_numbers: []     # numbers listed here that belong to someone else
 ---

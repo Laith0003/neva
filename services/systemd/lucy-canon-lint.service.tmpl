@@ -2,4 +2,4 @@
 Description=Daily canon content lint (people identifiers, duplicates)
 [Service]
 Type=oneshot
-ExecStart=@PREFIX@/bin/canon-lint
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh canon-lint @PREFIX@/bin/canon-lint

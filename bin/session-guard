@@ -29,9 +29,21 @@ COOLDOWN_SEC=1800
 MAX_TOKENS=95000      # a fresh session is ~55-60k (system prompt + workspace files)
 MAX_AGE_HOURS=24
 
-J=$(journalctl -u openclaw-gateway --since "-${WINDOW_MIN}m" --no-pager 2>/dev/null)
-ABORTS=$(echo "$J" | grep -c "turn failed.*error=AbortError" || true)
-STALLS=$(echo "$J" | grep -c "stalled session.*${SESSION_KEY}" || true)
+# PARTIAL PLATFORM GAP (2026-08-01): the stall-streak branch below depends on
+# `journalctl -u openclaw-gateway`, i.e. systemd/journald, which does not exist on macOS
+# (this guard is still scheduled there: services/launchd/com.lucy.session-guard.plist.tmpl).
+# Unlike lane-guard, session-guard also has a platform-independent branch (token/age bloat via
+# `openclaw sessions list --json`), so this does not bail out entirely; it just says plainly,
+# once per run, that the stall-detection half cannot see anything here, instead of silently
+# reporting the same "ok" a working stall check would.
+if command -v journalctl >/dev/null 2>&1; then
+  J=$(journalctl -u openclaw-gateway --since "-${WINDOW_MIN}m" --no-pager 2>/dev/null)
+  ABORTS=$(echo "$J" | grep -c "turn failed.*error=AbortError" || true)
+  STALLS=$(echo "$J" | grep -c "stalled session.*${SESSION_KEY}" || true)
+else
+  echo "$(date '+%F %T') stall-streak detection UNSUPPORTED on this platform ($(uname), no journalctl); bloat/age detection below still runs" >> "$LOG"
+  ABORTS=0; STALLS=0
+fi
 
 # live stats straight from the official session store
 STATS=$(timeout 60 openclaw sessions list --json 2>/dev/null \

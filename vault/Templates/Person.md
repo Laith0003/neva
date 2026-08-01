@@ -1,6 +1,6 @@
 ---
 tags: [person]
-nicknames: []
+aliases: []
 distinct_from: []
 borrowed_numbers: []
 date: {{date}}

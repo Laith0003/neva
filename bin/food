@@ -175,4 +175,9 @@ def cmd_undo():
 cmds = {"log": lambda a: cmd_log(a), "today": lambda a: cmd_today(), "gap": lambda a: cmd_gap(),
         "week": lambda a: cmd_week(), "undo": lambda a: cmd_undo()}
 c = sys.argv[1] if len(sys.argv) > 1 else "today"
-(cmds.get(c, lambda a: cmd_today()))(sys.argv[2:])
+if c not in cmds:
+    # Never fall through to `today`: an unknown verb that prints the day view looks exactly
+    # like a successful log of nothing, which is the failure this product exists to prevent.
+    sys.exit("food: no such command '" + c + "'.\nfix: use one of " + ", ".join(sorted(cmds)) +
+             " (to record a meal it is `food log \"<meal>\" [kcal] [protein]`)")
+cmds[c](sys.argv[2:])

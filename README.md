@@ -12,34 +12,41 @@ Most self-hosted assistants die two deaths: they hallucinate about your life, or
 (sessions bloat, syncs wedge silently, gateways end up exposed). This template exists
 because both are preventable with structure, not with hope.
 
+Every claim below is asserted by `build/verify.sh`, which installs the product from scratch
+in a stripped-down sandbox that deliberately withholds the optional dependencies, then checks
+the outcome a buyer would care about rather than an exit code. Every check is also proven able
+to fail. If a promise here stops being true, that harness goes red before you ever see it.
+
 ## What you get
 
 - **Grounded answers.** People, clients, money, dates: asserted only from vault notes, with
-  the source named. Money figures come only from a plain-text ledger; an amount that is not
-  in the ledger does not exist.
-- **A real setup interview.** Your agent's first conversation configures it: six questions,
-  one at a time, and it learns your writing voice from how you type rather than asking you
-  to describe it.
-- **Self-healing by default.** Guard timers catch session bloat, locked channels, and sync
-  wedges, fix them, and tell you. A weekly self-test messages you its score.
+  the source named. Money is read live from your ledger on every question, never from a
+  cached total, so a figure it cannot find in the ledger is one it tells you it cannot find.
+- **A real setup interview.** Your agent's first conversation configures it. If an AI reads
+  START.md, that agent runs the interview. If you install manually, your assistant runs the
+  same interview itself the first time you talk to it. Either way it is one interview, six
+  questions, once. It is never run twice.
+  Either way, the agent learns your writing voice from how you type, not from asking.
+- **Guards that watch the assistant itself.** Scheduled checks catch session bloat, locked
+  channels, and wedged syncs. Some repair themselves; the rest tell you what broke and what
+  to run. You turn them on during setup, one at a time, and `doctor` shows which are live.
 - **Closed by default.** Loopback-only gateway, Telegram locked to your id, tokens never in
   tracked files. `doctor` fails loudly on the two mistakes that get self-hosters burned.
 - **A vault that is yours.** Plain markdown in Obsidian. One person one note, enforced.
-  hledger for money, a food log the agent can total, reviews it drafts when you go quiet.
+  hledger for money, and a food log the agent can total.
 
 ## Quick start: say "start"
 
-Open this folder with your AI (Claude Code, or openclaw itself) and say **start**. What
-happens next is a conversation, not an installation: it interviews you about your work,
-your year, your projects, and how you like to be spoken to, and quietly builds the whole
-system behind your answers. Your goals file, project notes, and your assistant's
-personality all come out of that one conversation. It ends by doing a real task for you.
+**For AI agents:** Open this folder and say **start**. The agent reads START.md, interviews you
+with six questions about your work, what you want off your plate, and how you like to be spoken to,
+then silently builds the whole system behind your answers. Your goals, projects, and
+personality all come from that one conversation. It ends by doing a real task for you.
 
-Prefer doing it yourself? The manual path is the same four steps:
+**For manual setup:** Follow these four steps.
 1. Install [openclaw](https://docs.openclaw.ai/install) and [Obsidian](https://obsidian.md)
-2. `./install.sh` and answer three questions
+2. `./install.sh` and answer three identity questions
 3. Fix anything `doctor` marks FAIL (each row names its fix)
-4. Talk to your agent in the terminal; its first conversation sets it up
+4. Talk to your agent in the terminal; its first conversation is the interview
 Then, and only then: [docs/02-telegram.md](docs/02-telegram.md)
 
 macOS and Linux. Windows via WSL2 only.

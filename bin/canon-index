@@ -2,8 +2,10 @@
 """canon-index: write a LIVE table of contents of the vault into the workspace, so
 the agent always knows what canon exists and looks it up with `canon` instead of denying it.
 Regenerated (not pinned): titles reflect the current vault. Run on vault sync + bootstrap."""
+import glob
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
 from config import load
@@ -22,5 +24,36 @@ for d in DIRS:
         lines.append(f"## {d} ({len(names)})")
         lines.append(", ".join(sorted(set(names))))
         lines.append("")
-open(OUT,"w",encoding="utf-8").write("\n".join(lines))
+
+# Money and Food ground truth is NOT markdown (hledger journal, per-day JSON logs), so it
+# never shows up in the walk above. Say so explicitly, or the index looks like it does not
+# exist - `canon` still answers these live, see money_block()/food_block() there.
+journals = sorted(glob.glob(os.path.join(VAULT, "05 Money", "*.journal")))
+if journals:
+    lines.append(f"## 05 Money - ledger ({len(journals)} journal file(s), not listed by name above)")
+    lines.append(", ".join(os.path.basename(j) for j in journals))
+    lines.append("`canon \"balance\"` (or any money query) reads these live.")
+    lines.append("")
+food_dir = CFG.get("FOOD_DIR", os.path.join(VAULT, "Food"))
+food_days = sorted(glob.glob(os.path.join(food_dir, "*.json")))
+if food_days:
+    lines.append(f"## Food log ({len(food_days)} logged day(s), not listed by name above)")
+    lines.append("`canon \"what did I eat\"` (or any food query) reads these live.")
+    lines.append("")
+
+# Atomic write: same directory, then os.replace() (POSIX-atomic per the os.replace docs).
+# A crash mid-write used to leave whatever bytes had landed as CANON-INDEX.md, which the
+# agent reads as its map of what exists - a truncated file there is a silent grounding hole.
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(OUT), prefix=".canon-index-", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    os.replace(tmp, OUT)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
 print("canon index written to", OUT)

@@ -16,7 +16,8 @@ Checks:
      contained in another note's name (e.g. "Smith" in "John Smith") is a WARNING,
      not an error: families share surnames. The warning is silenced when either note declares
      the other in frontmatter `distinct_from: ["Other Name"]` (a father/son sharing a surname,
-     confirmed by the owner). Nicknames belong in `nicknames:`/`aliases:` frontmatter on the
+     confirmed by the owner). Nicknames belong in `aliases:` frontmatter (Obsidian-native, so the quick switcher
+     finds the person by nickname for free; `nicknames:` is still accepted) on the
      ONE canonical note, never as separate files.
 
 Exit 1 if any ERROR found. Usage: canon-lint [--quiet]

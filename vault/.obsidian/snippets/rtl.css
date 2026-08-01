@@ -1,0 +1,45 @@
+/*
+  Per-note RTL. Add `cssclasses: [rtl]` to a note's properties (not a global vault
+  setting) so English and Arabic notes live side by side without fighting each other.
+
+  Obsidian's built-in reading-direction toggle guesses direction line by line and gets
+  it wrong on mixed content; this snippet is the documented workaround the Obsidian
+  forum settled on, and it holds the whole note to one direction on purpose.
+
+  If a note looks unstyled after adding cssclasses: [rtl], check Settings > Appearance >
+  CSS snippets: "rtl" should be turned on. This file ships enabled by default.
+*/
+
+.rtl .markdown-source-view.mod-cm6 .cm-scroller,
+.rtl .markdown-source-view.mod-cm6 .cm-line,
+.rtl .markdown-preview-view,
+.rtl .markdown-rendered,
+.rtl .metadata-properties-heading,
+.rtl .metadata-property {
+  direction: rtl;
+  text-align: right;
+}
+
+/* Code, inline code, and math stay left-to-right even inside an RTL note. */
+.rtl pre,
+.rtl code,
+.rtl .cm-inline-code,
+.rtl .math {
+  direction: ltr;
+  text-align: left;
+}
+
+/* Wikilinks and tags read naturally in either direction; do not force them. */
+.rtl .cm-hashtag,
+.rtl a.internal-link,
+.rtl a.tag {
+  direction: rtl;
+  unicode-bidi: isolate;
+}
+
+/* Tables follow the note direction so RTL notes do not end up with an LTR table
+   fighting an RTL paragraph above it. */
+.rtl table {
+  direction: rtl;
+  text-align: right;
+}
