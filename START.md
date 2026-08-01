@@ -91,9 +91,43 @@ day as you see them work, never before.
 
 Then ask for one real task, and do it. The first session ends in value, not in setup.
 
-## Afterwards, when they raise it (not today)
+## Phase 5: Telegram, guided (only after Phase 4 succeeded)
 
-- Telegram: walk docs/02 yourself, LOCKING allowFrom to their numeric id before the first
-  message.
-- Scheduled jobs: docs/03, one at a time, watching each once.
-- Never enable timers during install day. Never touch an existing vault's content.
+Do not start this until they have had one working conversation in the terminal. When they
+are ready, YOU walk them through it. They will have to leave the chat and do two things in
+the Telegram app; everything else is yours.
+
+Say what they are about to do and why in one line: Telegram is how their assistant reaches
+them when they are away from the machine, and it needs a bot of their own.
+
+**Step 1, the bot.** Tell them, exactly:
+- Open Telegram and search for **@BotFather**. Confirm the handle is exactly that; there are
+  imitations.
+- Send `/newbot`. It asks for a display name, then a username that must end in `bot`.
+- It replies with a token that looks like `1234567890:AA...`. Ask them to paste it here.
+
+Treat that token like a password from the moment it arrives: write it straight into
+`~/.openclaw/openclaw.json` under `channels.telegram.botToken`, and never repeat it back in
+the chat, not even partially, not even to confirm it.
+
+**Step 2, their id.** Tell them to message **@userinfobot** in Telegram, which replies with
+their numeric id. Ask them to paste that.
+
+**Step 3, lock it before the first message.** This is not optional and you do it yourself:
+set `channels.telegram.dmPolicy` to `"allowlist"` and `channels.telegram.allowFrom` to
+`[<their numeric id>]`, and write the id into `OWNER_CHAT_ID` in
+`~/.config/lucy/identity.env`. Without the allowlist, anyone who finds or guesses the bot
+username can talk to their assistant and reach their notes. The default is `pairing`, which
+is weaker than an explicit allowlist and is not what this product promises.
+
+**Step 4, verify, do not assume.** Restart the gateway, run `doctor`, and confirm two rows
+read ok: the token (`getMe 200`) and `telegram allowFrom locked`. Then ask them to message
+the bot and tell you what came back. If `getMe` returns 401 the token is wrong or was
+regenerated; ask them to send the current one from BotFather.
+
+Only when they have a reply in Telegram is this phase done. Say so plainly, then stop.
+
+## Phase 6: scheduled jobs, one at a time
+
+docs/03. Enable one, watch it run once, then the next. Never enable them all at once, and
+never during install day. Never touch an existing vault's content.

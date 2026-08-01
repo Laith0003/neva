@@ -12,8 +12,10 @@ import sys
 CONFIG_PATH = os.environ.get(
     "LUCY_CONFIG", os.path.expanduser("~/.config/lucy/identity.env"))
 LINE = re.compile(r'^([A-Z_]+)="([^"]*)"\s*$')
-REQUIRED = ("OWNER_NAME", "AGENT_NAME", "OWNER_CHAT_ID",
-            "TIMEZONE", "VAULT_PATH", "WORKSPACE_PATH")
+# OWNER_CHAT_ID is deliberately NOT required: it is empty until Telegram setup, and a
+# placeholder string there would satisfy every non-empty check while sending to nowhere.
+# Tools that actually send must call can_send() instead of assuming it is populated.
+REQUIRED = ("OWNER_NAME", "AGENT_NAME", "TIMEZONE", "VAULT_PATH", "WORKSPACE_PATH")
 
 
 def _die(msg, fix):
@@ -53,3 +55,8 @@ def load():
         if key in cfg and cfg[key].startswith("$HOME"):
             cfg[key] = cfg[key].replace("$HOME", home, 1)
     return cfg
+
+
+def can_send(cfg):
+    """True only when a real chat id exists. Never post to an unset/placeholder id."""
+    return bool(cfg.get("OWNER_CHAT_ID"))

@@ -94,8 +94,15 @@ except Exception: print("")' 2>/dev/null)
     ALLOW=$(python3 -c 'import json
 c=json.load(open("'"$OC"'"))
 print(c.get("channels",{}).get("telegram",{}).get("allowFrom") or "")' 2>/dev/null)
-    if [ -n "$ALLOW" ]; then row ok "telegram allowFrom locked"; else
-      row fail "telegram allowFrom UNSET" "anyone who finds the bot can talk to it; set channels.telegram.allowFrom to your numeric id; docs/02-telegram.md"
+    POLICY=$(python3 -c 'import json
+c=json.load(open("'"$OC"'"))
+print(c.get("channels",{}).get("telegram",{}).get("dmPolicy") or "pairing (default)")' 2>/dev/null)
+    if [ -n "$ALLOW" ] && [ "${POLICY%% *}" = "allowlist" ]; then
+      row ok "telegram locked to your id (allowlist)"
+    elif [ -n "$ALLOW" ]; then
+      row warn "telegram allowFrom set, policy is $POLICY" "set channels.telegram.dmPolicy to \"allowlist\" so only your id can talk to the bot"
+    else
+      row fail "telegram not locked to your id (policy: $POLICY)" "set channels.telegram.dmPolicy=\"allowlist\" and allowFrom=[your numeric id] (get it from @userinfobot); docs/02-telegram.md"
     fi
   else
     row warn "telegram" "no bot token yet; fine before docs/02-telegram.md"

@@ -21,6 +21,10 @@ echo "$NOW" > "$STATEDIR/$KEY"
 find "$STATEDIR" -type f -mtime +2 -delete 2>/dev/null
 TOKEN=$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['channels']['telegram']['botToken'])" 2>/dev/null)
 [ -z "$TOKEN" ] && exit 0
+if [ -z "${OWNER_CHAT_ID:-}" ]; then
+  echo "alert not sent (no chat id configured yet): $*" >&2
+  exit 0
+fi
 curl -s --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
   --data-urlencode "chat_id=${OWNER_CHAT_ID}" \
   --data-urlencode "text=System alert: ${MSG}" >/dev/null 2>&1 || true
