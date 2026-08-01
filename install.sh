@@ -203,6 +203,15 @@ mkdir -p "$WORKSPACE_PATH/skills"
 for F in AGENTS.base.md SOUL.base.md; do
   cp "$REPO/workspace/$F" "$WORKSPACE_PATH/$F"     # base layers always update
 done
+
+# Compose the files openclaw ACTUALLY injects. Without this the base layers sit in the
+# workspace being read by nobody: openclaw's bootstrap files are AGENTS.md and SOUL.md, and
+# until 2026-08-01 this product shipped only the .base.md layers and never built them.
+if [ -x "$REPO/bin/compose-persona" ]; then
+  "$REPO/bin/compose-persona" "$WORKSPACE_PATH" >/dev/null 2>&1 \
+    && say "composed AGENTS.md and SOUL.md (generated: edit the .local.md files, not these)" \
+    || say "note: could not compose AGENTS.md/SOUL.md. fix: run bin/compose-persona $WORKSPACE_PATH"
+fi
 # BOOTSTRAP only if the interview never ran (its self-deletion is the marker)
 if [ ! -f "$WORKSPACE_PATH/USER.md" ] && [ ! -f "$WORKSPACE_PATH/BOOTSTRAP.md" ]; then
   WRITE_BOOTSTRAP=1

@@ -248,6 +248,32 @@ else
   ok "install.sh's OLD_VAULT promise has an implementation, or the promise was removed"
 fi
 
+head_ "10b. PROMISE: the behavioural rules actually reach the agent"
+# Until 2026-08-01 they did not. openclaw injects AGENTS.md and SOUL.md; this product shipped
+# only AGENTS.base.md and SOUL.base.md and never composed them, so every rule in the product
+# was read by nobody while the docs described them as governing behaviour.
+if [ -f "$HOME/ws-rules/AGENTS.md" ] || [ -f "$HOME/.openclaw/workspace/AGENTS.md" ]; then :; fi
+RW="$SANDBOX/rulews"; mkdir -p "$RW"
+cp "$REPO/workspace/AGENTS.base.md" "$REPO/workspace/SOUL.base.md" "$RW/" 2>/dev/null
+printf '## A LOCAL RULE\nlocal-marker-string\n' > "$RW/AGENTS.local.md"
+PATH="$POOR_PATH" "$REPO/bin/compose-persona" "$RW" >/dev/null 2>&1
+if [ -f "$RW/AGENTS.md" ] && grep -q "GROUNDING" "$RW/AGENTS.md"; then
+  ok "AGENTS.md is generated and carries the shipped rules"
+else
+  bad "rules never reach the agent" "openclaw injects AGENTS.md, not AGENTS.base.md; bin/compose-persona must build it during install"
+fi
+grep -q "local-marker-string" "$RW/AGENTS.md" 2>/dev/null \
+  && ok "the owner's own local rules survive the compose" \
+  || bad "local layer dropped" "AGENTS.local.md must be appended, and must win on conflict"
+# negative control: a foreign AGENTS.md must NOT be overwritten
+FW="$SANDBOX/foreignws"; mkdir -p "$FW"
+cp "$REPO/workspace/AGENTS.base.md" "$FW/" 2>/dev/null
+echo "someone elses agent" > "$FW/AGENTS.md"
+PATH="$POOR_PATH" "$REPO/bin/compose-persona" "$FW" >/dev/null 2>&1
+grep -q "someone elses agent" "$FW/AGENTS.md" \
+  && ok "negative control: a foreign AGENTS.md is left untouched" \
+  || bad "clobbered a foreign persona" "compose-persona overwrote an AGENTS.md it did not generate"
+
 head_ "11. no personal data in the artifact"
 if python3 "$REPO/build/leak-scan.py" "$REPO" >/dev/null 2>&1; then ok "leak scan clean"
 else bad "leak scan" "personal identifiers present; run build/leak-scan.py"; fi

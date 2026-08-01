@@ -204,12 +204,12 @@ print(("MISSING:" + ",".join(missing) + ":" + default) if missing else ("OK:" + 
       MISSING:*)
         MR="${MODEL_RESULT#MISSING:}"; MISSING_PROVIDERS="${MR%:*}"; DEFAULT_MODEL="${MR##*:}"
         FIRST_PROVIDER="${MISSING_PROVIDERS%%,*}"
-        # docs for model auth are hala's (in progress, 2026-08-01); doctor points at the doc,
-        # does not duplicate its content here.
+        # docs for model auth are hala's; doctor points at the doc (docs/01a-model.md), does
+        # not duplicate its content here.
         # a FAIL (not INERT/WARN): FAILS>0 skips the INERT summary entirely at the bottom of
         # this script (see the final if/elif/else), so this needs its own fix text inline,
         # which it has, rather than relying on a list that would never print alongside it.
-        row fail "no usable model route ($DEFAULT_MODEL, missing auth: $MISSING_PROVIDERS)" "run: openclaw models auth login --provider $FIRST_PROVIDER   (or: openclaw configure); see docs/12-model-auth.md"
+        row fail "no usable model route ($DEFAULT_MODEL, missing auth: $MISSING_PROVIDERS)" "run: openclaw models auth login --provider $FIRST_PROVIDER   (or: openclaw configure); see docs/01a-model.md"
         ;;
       OK:*)
         row ok "model auth (default: ${MODEL_RESULT#OK:})" ;;

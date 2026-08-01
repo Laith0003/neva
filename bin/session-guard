@@ -96,4 +96,24 @@ if [ -n "$TOKEN" ]; then
     --data-urlencode "chat_id=${OWNER_CHAT}" \
     --data-urlencode "text=I rotated my session before it bloated and hurt my accuracy. My memory is intact (anchor and handoff preserved)." >/dev/null 2>&1
 fi
+# A rotation leaves the agent IDLE. /new zeroes the session and nothing then speaks to it, so an
+# agent partway through a task simply stops until a human types. Rule 14 (AFTER A RESET, RESUME)
+# cannot fire because no resume event ever happens. Found live 2026-08-01: the agent went quiet
+# mid-task and its owner assumed it had crashed.
+#
+# Poke it, but ONLY when there is unfinished work, or a rotation on a quiet evening becomes a
+# message about nothing.
+TASKFILE="${TASK_FILE:-$WORKSPACE_PATH/TASK.md}"
+if [ -f "$TASKFILE" ] && ! head -3 "$TASKFILE" | grep -qiE "^#* *DONE|STATUS: *DONE"; then
+  # --deliver AND --reply-to are BOTH required. Without them the turn runs headless and the reply
+  # is discarded: the work happens and nobody, including the owner, ever sees it.
+  neva_timeout 120 openclaw agent --agent main --session-key "$SESSION_KEY" \
+    --deliver --channel telegram --reply-to "$OWNER_CHAT" \
+    -m "Your session was rotated to keep you accurate. Read $TASKFILE and continue from where it says. Say one line naming the step you are resuming, then carry on. Do not ask for instructions that are already in that file." \
+    --json >> "$LOG" 2>&1
+  echo "$(date '+%F %T') resume nudge sent ($TASKFILE unfinished)" >> "$LOG"
+else
+  echo "$(date '+%F %T') no unfinished task, no nudge" >> "$LOG"
+fi
+
 echo "$(date '+%F %T') rotation done ($REASON) + owner notified" >> "$LOG"
