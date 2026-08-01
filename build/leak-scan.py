@@ -90,6 +90,21 @@ SKIP_EXT = {".png", ".jpg", ".gif", ".ico", ".woff", ".woff2", ".zip"}
 T1 = re.compile("|".join(f"({p})" for p in TIER1), re.I)
 
 
+
+# The ONE place the author's real name must appear: the copyright and trademark lines.
+# A licence without a named holder grants nothing, and a trademark notice without an owner
+# names no owner. This exemption is scoped to those two files AND to lines that actually
+# carry an attribution keyword. It is deliberately NOT a substring allowlist: that design
+# is what let a real secret hide beside a placeholder and it is not coming back. A real
+# leak anywhere else in these files, or on any other line in them, still fails the scan.
+LEGAL_FILES = {"NOTICE", "LICENSE", "TRADEMARK.md"}
+_ATTRIB = re.compile(r"(?i)\b(copyright|\(c\)|©|trademark|licensed to|author)\b")
+
+
+def _legal_attribution(rel, line):
+    return rel in LEGAL_FILES and _ATTRIB.search(line) is not None
+
+
 def scan(root):
     findings = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -105,7 +120,7 @@ def scan(root):
                 continue
             for n, line in enumerate(text.splitlines(), 1):
                 m = T1.search(line)
-                if m:
+                if m and not _legal_attribution(rel, line):
                     findings.append(("TIER1", rel, n, m.group(0)))
                 for label, rx in TIER2:
                     for m2 in rx.finditer(line):

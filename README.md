@@ -56,3 +56,14 @@ macOS and Linux. Windows via WSL2 only.
 This connects an LLM to your notes and your Telegram. Read
 [docs/09-security.md](docs/09-security.md) before exposing anything to the internet; it says
 plainly what the defaults protect against and what they cannot.
+
+## Licence
+
+Apache-2.0. Fork it, change it, run it, sell it. See [LICENSE](LICENSE).
+
+The name is separate: the licence covers the code, not the word "Neva". See
+[TRADEMARK.md](TRADEMARK.md). A fork may do anything except present itself as this one.
+
+Contributions welcome, including ones that change how this works. Sign commits with
+`git commit -s`; that one line is the whole legal process. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
