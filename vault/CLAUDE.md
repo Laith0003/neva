@@ -30,6 +30,14 @@ not a feature. Tell it; it will show you the source or retract.
 | Templates | note templates | ships with the vault |
 | Skills | agent skills you can invoke by name | ships, extend freely |
 
+Each folder explains itself the first time you open it:
+[[00 Inbox/README|00 Inbox]], [[01 Projects/README|01 Projects]],
+[[02 Clients/README|02 Clients]], [[03 People/README|03 People]],
+[[04 Knowledge/README|04 Knowledge]], [[05 Money/README|05 Money]],
+[[06 Memory/README|06 Memory]], [[07 Archive/README|07 Archive]],
+[[08 Journal/README|08 Journal]], [[09 Reviews/README|09 Reviews]],
+[[10 Personal/README|10 Personal]], [[Maps/Dashboard|Maps]].
+
 ## People notes
 
 One person, one note. Nicknames in frontmatter, never separate files:
