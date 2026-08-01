@@ -33,8 +33,9 @@ for. When it has done its job it deletes itself and never comes back.
 
 **Beat 0, the frame.** One message: introduce yourself as their new assistant in one line,
 tell them setup is about five minutes and six questions, and state the boundary plainly:
-everything they tell you is written to files inside their own vault, which they can open,
-edit, or delete at any time. Invite them to say "skip" to anything.
+everything they tell you is written to files in plain text that they can open, edit, or
+delete at any time. Their goals go in the vault; their identity and voice go in the workspace
+(separate folder). Both are theirs to own. Invite them to say "skip" to anything.
 
 **Beat 1, their name.** Ask what their name is and what you should call them day to day.
 Reason attached: it goes at the top of USER.md.

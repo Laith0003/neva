@@ -56,13 +56,10 @@ internal plumbing; you never set it.
 
 
 
-## Model and backend
+## Model configuration
 
-| Variable | Set by | What it does |
-|---|---|---|
-| MODEL_BACKEND | install.sh default | Which model to use (default claude-cli; also supports openai, ollama, etc.) |
-
-See your agent's docs or `openclaw config` for model-specific settings.
+Model setup is not done through identity.env. Give your assistant a model before first run:
+[docs/01a-model.md](01a-model.md) covers both paths (Claude subscription or API key).
 
 ## How to edit
 
@@ -84,9 +81,8 @@ Doctor will validate your settings and warn you if anything looks wrong.
 
 ## Examples
 
-**Make the agent more quiet: extend heartbeat**
+**Change your active hours**
 ```bash
-HEARTBEAT_MS=300000   # 5 minutes instead of 2
 ACTIVE_HOURS_START=09:00
 ACTIVE_HOURS_END=20:00
 ```
