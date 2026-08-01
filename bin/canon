@@ -15,6 +15,7 @@ content term frequency. Fast (ripgrep), exact, and always current. Ground truth 
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -47,20 +48,40 @@ def all_notes():
     return out
 
 
+_HAVE_RG = shutil.which("rg") is not None
+
+
 def score(path, toks):
     name = os.path.basename(path)[:-3].lower()
     s = 0
     for t in toks:
         if t in name:
             s += 12  # filename hit = strong signal (the note IS about this)
-    # content term frequency via ripgrep count-matches (fast)
-    try:
-        r = subprocess.run(["rg", "-c", "-i", "|".join(re.escape(t) for t in toks), path],
-                           capture_output=True, text=True, timeout=5)
-        if r.stdout.strip():
-            s += min(int(r.stdout.strip()), 20)
-    except Exception:
-        pass
+    # Content term frequency. ripgrep when present (fast), pure-python otherwise.
+    # NEVER silently skip content matching: a missing rg used to make this return
+    # filename-only hits, so the agent answered "I don't have that" about notes that
+    # plainly contained the words. A wrong "I don't know" is indistinguishable from
+    # the product working correctly, which makes it the worst possible failure here.
+    pat = "|".join(re.escape(t) for t in toks)
+    counted = False
+    if _HAVE_RG:
+        try:
+            r = subprocess.run(["rg", "-c", "-i", pat, path],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode in (0, 1):          # 1 = no match, still a valid answer
+                counted = True
+                if r.stdout.strip():
+                    s += min(int(r.stdout.strip()), 20)
+        except Exception:
+            counted = False
+    if not counted:
+        try:
+            txt = open(path, encoding="utf-8", errors="replace").read().lower()
+            hits = sum(txt.count(t) for t in toks)
+            if hits:
+                s += min(hits, 20)
+        except OSError:
+            pass
     return s
 
 

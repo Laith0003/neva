@@ -5,6 +5,9 @@ set -u
 
 BOLD=$(tput bold 2>/dev/null || true); RESET=$(tput sgr0 2>/dev/null || true)
 FAILS=0
+# Conditions that are not "broken config" but DO mean the assistant cannot yet work.
+# Reporting "all clear" over these taught buyers to ignore the nine things that matter.
+INERT=""
 
 row() { # status name fix
   local st="$1" name="$2" fix="${3:-}"
@@ -33,7 +36,8 @@ else
 fi
 
 # 2. required keys
-for KEY in OWNER_NAME AGENT_NAME OWNER_CHAT_ID TIMEZONE VAULT_PATH WORKSPACE_PATH; do
+# OWNER_CHAT_ID intentionally excluded: empty is correct until Telegram setup (row 6b)
+for KEY in OWNER_NAME AGENT_NAME TIMEZONE VAULT_PATH WORKSPACE_PATH; do
   if [ -z "${!KEY:-}" ]; then
     row fail "config key $KEY" "edit $CONFIG or re-run install.sh"
   fi
@@ -51,7 +55,7 @@ fi
 
 # 4. openclaw
 if command -v openclaw >/dev/null 2>&1; then
-  row ok "openclaw installed ($(openclaw --version 2>/dev/null | head -c 24))"
+  row ok "openclaw installed ($(openclaw --version 2>/dev/null | awk '{print $2}' | head -c 16))"
 else
   row fail "openclaw" "install it: https://docs.openclaw.ai/install"
 fi
@@ -63,6 +67,7 @@ if command -v openclaw >/dev/null 2>&1; then
     row ok "gateway on 127.0.0.1:$PORT"
   else
     row warn "gateway" "not responding on 127.0.0.1:$PORT; start it (openclaw gateway) or check its service"
+    INERT="$INERT\n    - the gateway is not running (start it: openclaw gateway)"
   fi
   # exposed to the world is a FAIL, not a warn: this is the documented #1 self-hosting disaster
   LISTEN=$( (command -v ss >/dev/null && ss -tln 2>/dev/null || netstat -an 2>/dev/null) | grep -E "[.:]$PORT[[:space:]]" | grep -vE "127\.0\.0\.1|::1|localhost" | head -1)
@@ -99,6 +104,22 @@ else
   row warn "openclaw config" "no $OC yet; run openclaw once"
 fi
 
+# 6b. can it reach you at all?
+if [ -z "${OWNER_CHAT_ID:-}" ]; then
+  row warn "no chat id yet" "expected before Telegram setup; docs/02-telegram.md fills it"
+  INERT="$INERT\n    - it has no way to message you (docs/02-telegram.md)"
+else
+  row ok "chat id configured"
+fi
+
+# 6c. is the vault under version control (vault-sync depends on it)
+VP2="${VAULT_PATH:-}"; VP2="${VP2/#\$HOME/$HOME}"
+if [ -n "$VP2" ] && [ -d "$VP2/.git" ]; then
+  row ok "vault is a git repo"
+else
+  row fail "vault is not a git repo" "cd '$VP2' && git init && git add -A && git commit -m init  (vault-sync needs this)"
+fi
+
 # 7. tools installed and reachable: distinguish "not installed" from "not on PATH"
 MISSING=""; UNPATHED=""
 for T in canon canon-propose canon-lint cadence vault-sync doctor; do
@@ -120,11 +141,13 @@ case "$(uname)" in
     N=$(launchctl list 2>/dev/null | grep -c "com.lucy." || true)
     if [ "${N:-0}" -ge 1 ]; then row ok "scheduled jobs loaded ($N)"; else
       row warn "scheduled jobs" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
+      INERT="$INERT\n    - no scheduled jobs are running (guards, cadence, sync): docs/03"
     fi ;;
   Linux)
     N=$(systemctl --user list-timers --all 2>/dev/null | grep -c "lucy-" || true)
     if [ "${N:-0}" -ge 1 ]; then row ok "scheduled timers loaded ($N)"; else
       row warn "scheduled timers" "none loaded; docs/03-scheduled-jobs.md (enable one at a time)"
+      INERT="$INERT\n    - no scheduled timers are running (guards, cadence, sync): docs/03"
     fi ;;
 esac
 
@@ -137,8 +160,14 @@ for PAIR in "hledger:money ledger" "syncthing:vault sync" "rg:vault search"; do
 done
 
 echo
-if [ "$FAILS" -eq 0 ]; then
+if [ "$FAILS" -eq 0 ] && [ -z "$INERT" ]; then
   echo "${BOLD}all clear${RESET}"
+  exit 0
+elif [ "$FAILS" -eq 0 ]; then
+  echo "${BOLD}config is healthy, but your assistant cannot work yet:${RESET}"
+  printf "$INERT\n"
+  echo
+  echo "Nothing above is broken. Each is a setup step you have not done yet."
   exit 0
 else
   echo "${BOLD}$FAILS failure(s) above, each with its fix${RESET}"
