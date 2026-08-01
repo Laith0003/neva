@@ -56,9 +56,10 @@ Asking for something you can already see is the fastest way to feel like a form.
 
 **4. Their work.** What they do, and the one project that matters most right now. This is the
 mandatory reactive-follow-up moment: pull the thread they hand you (a deadline, a client, a
-fear) with exactly one follow-up. This single project seeds GOALS.md today; the deeper "why"
-and what a won year looks like is Day 2's question, triggered by whatever they actually ask
-you about tomorrow, not guessed at cold before you've done a single thing together.
+fear) with exactly one follow-up. This single project seeds GOALS.md today; the deeper "why,"
+the real target, where they stand today, the plan, and the risks are Days 2 through 4's
+questions in `workspace/BOOTSTRAP.md`, each triggered by something they actually raised, not
+guessed at cold before you've done a single thing together.
 
 **5. The plate.** Which one or two things do they most want off their plate, from a concrete
 list: reminders and follow-ups, research, writing drafts, inbox triage, vault upkeep, money
@@ -77,10 +78,13 @@ about who they are. Say you will write the way they read. Ask what to correct.
 
 Two things are deliberately not asked today: the rest of their active projects beyond the one
 above, and the two or three people in their life. Both surface in week one, tied to something
-that actually happened (Day 2 and Day 5 in `workspace/BOOTSTRAP.md`), not extracted cold from
-someone who has nothing yet to earn the question.
+that actually happened (Day 2 and Day 8 in `workspace/BOOTSTRAP.md`), not extracted cold from
+someone who has nothing yet to earn the question. Two more things are also deliberately not
+asked today and never will be, on any day: what they are good at, and what should be the one
+thing you are excellent at for them. Both are worth more once you have actually worked
+together: see `workspace/BOOTSTRAP.md`'s Day 5 and Day 10.
 
-## Phase 3: build it (quiet, fast, behind one message)
+## Phase 3: install the machinery (quiet, fast, behind one message)
 
 Tell them in one line you are setting everything up now. Then:
 
@@ -95,40 +99,67 @@ Tell them in one line you are setting everything up now. Then:
    folder at the vault path, relay and ask: use as-is, or new path. If they punted on
    question 2 (your name), pass the literal placeholder `"Assistant"`; do not invent a name
    on their behalf, and say plainly that they can rename it whenever they pick one.
-4. **Write the interview into the system** (this is what makes it personal):
-   The workspace (default `~/.openclaw/workspace`) holds the agent's files: USER.md, SOUL.local.md,
-   BOOTSTRAP.md, and the vault folder holds your notes. Together they form your complete
-   personalized system.
-   - `USER.md` in the workspace: name, work, the one active project, use cases, from their
-     words.
-   - `SOUL.local.md`: their agent's name, the voice-mirror observations (note they are
-     scoped to this setup conversation only), the proactivity rules with the verbatim
-     annoyance line.
-   - `GOALS.md` in the vault: the one project from question 4, seeded plainly. Leave its
-     "why" and done-means for Day 2, when they've actually asked you about it again.
-   - Update `identity.env` ACTIVE_HOURS_* from question 6.
-   - Do not create project notes beyond the one project above, and do not create people
-     notes today. Both are week-one work: see step 5.
-5. **Leave `BOOTSTRAP.md` in the workspace.** This conversation covered its day-one beats,
-   but its week-one section (the Day 2 through Day 7 questions: goal depth, people, the
-   correction pass) is not leftover scaffolding, it is the rest of the interview, and it is
-   what actually creates the project notes and people notes this conversation deliberately
-   skipped. Never delete this file at the end of this conversation, whether every question
-   got answered or not; it deletes itself on Day 7, per its own instructions, and only then.
-   If you skipped a day-one question, the resident agent also resumes that specific gap,
-   one per day, per `BOOTSTRAP.md`'s own resumable rule.
-6. Run `doctor`. Fix every FAIL yourself and re-run until zero. Telegram and scheduled-job
+
+Nothing personal gets written yet. Phase 3 only builds the shell the interview will live in.
+
+## Phase 4: compose, review, confirm, then write
+
+Draft the content their answers become. Do not write any of it to a file until they have
+seen it and said it is right.
+
+- `USER.md`: name, work, the one active project (with whatever the reactive follow-up
+  surfaced), the one or two things off their plate, in their own words, not sanitized.
+- `SOUL.local.md`: their agent's name, the voice-mirror observations (scoped to this
+  setup conversation), the proactivity rules with the verbatim annoyance line.
+- `GOALS.md`: the one project from question 4, seeded plainly. Its "why" and done-means
+  wait for the week-one questions, when they have actually raised it again.
+- `identity.env` ACTIVE_HOURS_* from question 6.
+
+Then show all of it, in full, as one message a person can actually read, grouped by what
+it is for, not by which file it will land in. Use the voice you just described in item 7,
+not a default one: if they type short and lowercase, show it back as short lines they can
+scan in five seconds, not one dense paragraph that reads like the form you promised this
+wasn't. If they type in full sentences, prose is fine. Content is identical either way,
+only the shape changes:
+
+> Here's what I've got, before I write anything down. Who you are and what to call you.
+> What you do and the one thing that matters right now [with the specific detail the
+> follow-up surfaced]. What's coming off your plate. When I can reach out, and what would
+> annoy you if I get it wrong ["their verbatim annoyance line"]. How I'll sound writing back
+> to you [the voice-mirror observations, stated plainly].
+>
+> Anything wrong, missing, or you'd say differently?
+
+**Revisions:** make a targeted edit to only the part they flag. Do not regenerate the whole
+thing over one correction. Loop until they say it is right: "looks good" and silence both
+count as confirmation; do not ask twice.
+
+Only after confirmation:
+
+1. Write `USER.md`, `SOUL.local.md`, `GOALS.md`, `identity.env` as confirmed. Do not create
+   project notes beyond the one project above, and do not create people notes today: both
+   are week-one work, driven by `BOOTSTRAP.md` after this conversation ends.
+2. **Leave `BOOTSTRAP.md` in the workspace.** This conversation covered its day-one beats,
+   but its week-one section (the Day 2 through Day 10 questions: goal depth in real numbers,
+   a read on how they work, people, the correction pass, the prime directive) is not
+   leftover scaffolding, it is the rest of the interview, and it is what actually creates
+   the project notes and people notes this conversation deliberately skipped. Never delete
+   this file at the end of this conversation, whether every question got answered or not;
+   it deletes itself on the week-one close, per its own instructions, and only then. If you
+   skipped a day-one question, the resident agent also resumes that specific gap, one per
+   day, per `BOOTSTRAP.md`'s own resumable rule.
+3. Run `doctor`. Fix every FAIL yourself and re-run until zero. Telegram and scheduled-job
    WARNs are expected; say so in one line.
 
-## Phase 4: show, then serve
+## Phase 5: confirm, then serve
 
-Show a five-line summary of what now exists and where: the vault in Obsidian, the files
-their answers became, doctor all clear. Mention the week-one rhythm: one small question a
-day as you see them work, never before.
+Tell them in one line it is written and where: the vault in Obsidian, the files their
+answers became, doctor all clear. Mention the rhythm ahead: one small, earned question at a
+time as you see them work, never asked cold, and never a repeat of the review they just did.
 
 Then ask for one real task, and do it. The first session ends in value, not in setup.
 
-## Phase 5: Telegram, guided (only after Phase 4 succeeded)
+## Phase 6: Telegram, guided (only after Phase 5 succeeded)
 
 Do not start this until they have had one working conversation in the terminal. When they
 are ready, YOU walk them through it. They will have to leave the chat and do two things in
@@ -164,7 +195,7 @@ regenerated; ask them to send the current one from BotFather.
 
 Only when they have a reply in Telegram is this phase done. Say so plainly, then stop.
 
-## Phase 6: scheduled jobs, one at a time
+## Phase 7: scheduled jobs, one at a time
 
 docs/03. Enable one, watch it run once, then the next. Never enable them all at once, and
 never during install day. Never touch an existing vault's content.
