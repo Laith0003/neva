@@ -52,12 +52,17 @@
 # Usage: bash build/verify.sh   (exit 0 = releasable)
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIPPED=0; SKIP_NAMES=""
 SANDBOX="$(mktemp -d /tmp/neva-verify-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
 ok()   { printf "  PASS  %s\n" "$1"; PASS=$((PASS+1)); }
 bad()  { printf "  FAIL  %s\n    -> %s\n" "$1" "$2"; FAIL=$((FAIL+1)); }
+# A third state, added 2026-08-14. Some promises can only be proven with a live model, and on a
+# machine without one the honest answer is "not verified", never "passed". Skips are counted and
+# named in the summary so an unverified promise can never hide inside a green run.
+skip_() { printf "  SKIP  %s\n    -> %s\n" "$1" "$2"; SKIPPED=$((SKIPPED+1)); SKIP_NAMES="${SKIP_NAMES}
+    - $1 ($2)"; }
 head_() { printf "\n%s\n" "$1"; }
 
 # A deliberately impoverished PATH: no ripgrep, no hledger, no brew bin, and critically no
@@ -594,7 +599,101 @@ else
 fi
 rm -f "$NEG_INJ_MARK" 2>/dev/null
 
+
+head_ "23. PROMISE: an answer is GROUNDED in the vault and CITES it (the core promise, 2026-08-14)"
+# Every other check proves a mechanism. This one proves the sentence the README sells:
+# "grounded answers from your own notes". It was the last check missing, and it is the hardest,
+# because the honest version needs a fact no model could possibly know.
+#
+# So it plants one. A random token in a note in the sandbox vault. If the token comes back, the
+# answer came from the vault and nowhere else. If a plausible-sounding answer comes back WITHOUT
+# the token, that is the failure this whole product exists to prevent, and it would have looked
+# like success to every other check in this file.
+VTOKEN="NV$(od -An -tx1 -N6 /dev/urandom 2>/dev/null | tr -d ' \n' | tr 'a-f' 'A-F')"
+[ -z "$VTOKEN" ] && VTOKEN="NVFALLBACK$$"
+VNOTE="$HOME/MyVault/02 Clients/Aldebaran Logistics.md"
+mkdir -p "$(dirname "$VNOTE")"
+cat > "$VNOTE" <<VEOF
+# Aldebaran Logistics
+
+Warehouse access code: $VTOKEN
+
+Contact: Mira Vantaa. Contract runs to 2027. Payment terms net 45.
+VEOF
+
+# 39a. The grounding layer itself, which needs no model and therefore always runs.
+CANON_OUT="$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/neva/bin/canon" \
+  "Aldebaran Logistics warehouse access code" 2>/dev/null)"
+if printf '%s' "$CANON_OUT" | grep -q "$VTOKEN"; then
+  ok "canon returns the planted fact verbatim from the vault"
+else
+  bad "canon grounding" "the planted token was not returned; the agent has nothing true to answer from"
+fi
+if printf '%s' "$CANON_OUT" | grep -qi "Aldebaran"; then
+  ok "canon names the note the fact came from (a citation is possible)"
+else
+  bad "canon citation" "the fact came back with no note name, so no answer can cite its source"
+fi
+
+# 39b. Negative control on absence. A question with no answer in the vault must say so, because
+# "I don't have that" is the behaviour that makes the grounded answers worth trusting.
+ABSENT_OUT="$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/neva/bin/canon" \
+  "Betelgeuse Shipping demurrage schedule" 2>/dev/null)"
+if printf '%s' "$ABSENT_OUT" | grep -q "$VTOKEN"; then
+  bad "canon precision" "an unrelated query returned the planted token; grounding is matching noise"
+elif printf '%s' "$ABSENT_OUT" | grep -qiE "nothing|no match|not found|don.t have|no notes"; then
+  ok "canon says plainly that it has nothing, rather than returning something adjacent"
+else
+  bad "canon absence signal" "an absent query neither declined nor matched; the agent cannot tell absence from silence"
+fi
+
+# 39c. Proof this check can fail. Remove the note and assert the token stops coming back. Without
+# this, 39a would pass on a cached or hardcoded response and nobody would know.
+mv "$VNOTE" "$VNOTE.hidden"
+GONE_OUT="$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/neva/bin/canon" \
+  "Aldebaran Logistics warehouse access code" 2>/dev/null)"
+if printf '%s' "$GONE_OUT" | grep -q "$VTOKEN"; then
+  bad "negative control" "the token still came back after the note was deleted; canon is reading a cache, not the vault"
+else
+  ok "negative control: deleting the note removes the fact, so 39a really is reading the live vault"
+fi
+mv "$VNOTE.hidden" "$VNOTE"
+
+# 39d. The live agent. This is the half that needs a model, and it is the half that has never
+# been verified. It SKIPS rather than passes when no model is reachable, and the summary says so:
+# a check that could not run must never be counted as a check that passed.
+AGENT_BIN="$(command -v openclaw 2>/dev/null || true)"
+if [ -z "$AGENT_BIN" ]; then
+  skip_ "live agent answers from the vault and cites the note" "openclaw is not installed on this machine"
+else
+  AOUT="$(IS_SANDBOX=1 HOME="$HOME" timeout 180 "$AGENT_BIN" agent --local --json \
+      --session-key "verify:grounded:$$" \
+      -m "What is the warehouse access code for Aldebaran Logistics? Use canon to look it up. Name the note you got it from." 2>/dev/null \
+    | python3 -c "import sys,json
+try:
+    d=json.load(sys.stdin); p=d.get('payloads') or []
+    print((p[0].get('text','') if p else '').strip())
+except Exception:
+    print('')" 2>/dev/null)"
+  if [ -z "$AOUT" ]; then
+    skip_ "live agent answers from the vault and cites the note" "the agent returned nothing (no model configured, or it failed to boot)"
+  elif printf '%s' "$AOUT" | grep -q "$VTOKEN"; then
+    if printf '%s' "$AOUT" | grep -qi "Aldebaran"; then
+      ok "live agent answered with the planted fact AND named the note it came from"
+    else
+      bad "live agent citation" "the answer was correct but cited nothing; a right answer with no source is not grounding"
+    fi
+  else
+    bad "live agent grounding" "the agent answered without the planted token; it invented rather than looked up"
+  fi
+fi
+rm -f "$VNOTE"
+
 printf "\n%s\n" "-----------------------------------------"
-printf "verify: %s passed, %s failed\n" "$PASS" "$FAIL"
+printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"
+if [ "$SKIPPED" -gt 0 ]; then
+  printf "UNVERIFIED on this machine:%s\n" "$SKIP_NAMES"
+  printf "%s\n" "Those promises were not tested. Green here does not mean they hold."
+fi
 [ "$FAIL" -eq 0 ] && echo "RELEASABLE" || echo "NOT RELEASABLE"
 exit $([ "$FAIL" -eq 0 ] && echo 0 || echo 1)
