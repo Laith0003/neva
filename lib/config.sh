@@ -17,7 +17,13 @@ if [ ! -f "$NEVA_CONFIG" ]; then
 fi
 
 # refuse world/group-readable config: it holds a chat id and personal identity
-PERMS=$(stat -f "%Lp" "$NEVA_CONFIG" 2>/dev/null || stat -c "%a" "$NEVA_CONFIG" 2>/dev/null)
+# stat -f is BSD's format flag but GNU's FILESYSTEM flag, and GNU's version SUCCEEDS, so a
+# BSD-first `stat -f ... || stat -c ...` never falls through on Linux: it returns filesystem
+# info, this guard compares that to 600, and every bash tool that sources this file dies with
+# exit 78 before doing anything. Neva was unusable on Linux for that one reason. GNU first,
+# BSD second: `stat -c` fails cleanly on macOS so the fallback actually fires there.
+# Found 2026-08-14 by running verify.sh on Linux for the first time.
+PERMS=$(stat -c "%a" "$NEVA_CONFIG" 2>/dev/null || stat -f "%Lp" "$NEVA_CONFIG" 2>/dev/null)
 case "$PERMS" in
   600|400) : ;;
   *) echo "config perms are $PERMS, must be 600: chmod 600 '$NEVA_CONFIG'" >&2; exit 78 ;;

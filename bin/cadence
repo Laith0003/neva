@@ -33,7 +33,12 @@ newest_age_days() {
   local dir="$1" newest=0 f mtime
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    mtime=$(stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null)
+    # stat -f is BSD's format flag but GNU's FILESYSTEM flag, and GNU's version SUCCEEDS,
+# so a BSD-first `stat -f ... || stat -c ...` never falls through on Linux: it returns
+# filesystem info and the caller compares that to a mode. Found 2026-08-14 by running
+# verify.sh on Linux for the first time. GNU first, BSD second: `stat -c` fails cleanly
+# on macOS, so the fallback actually fires there.
+mtime=$(stat -c "%Y" "$f" 2>/dev/null || stat -f "%m" "$f" 2>/dev/null)
     [ -n "$mtime" ] && [ "$mtime" -gt "$newest" ] && newest="$mtime"
   done < <(find "$VAULT/$dir" -name "*.md" -not -path "*/.obsidian/*" 2>/dev/null)
   [ "$newest" -eq 0 ] && { echo 9999; return; }
