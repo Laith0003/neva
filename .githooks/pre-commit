@@ -1,2 +1,5 @@
 #!/bin/bash
-exec python3 "$(git rev-parse --show-toplevel)/build/leak-scan.py"
+# Two gates, both cheap, both catching things that only hurt after they are public.
+ROOT="$(git rev-parse --show-toplevel)"
+python3 "$ROOT/build/leak-scan.py"    || exit 1
+python3 "$ROOT/build/licence-guard.py" || exit 1
