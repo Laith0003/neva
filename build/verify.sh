@@ -618,17 +618,22 @@ VTOKEN="NV$(od -An -tx1 -N6 /dev/urandom 2>/dev/null | tr -d ' \n' | tr 'a-f' 'A
 [ -z "$VTOKEN" ] && VTOKEN="NVFALLBACK$$"
 VNOTE="$HOME/MyVault/02 Clients/Aldebaran Logistics.md"
 mkdir -p "$(dirname "$VNOTE")"
+# The planted fact must be UNGUESSABLE and HARMLESS. The first version planted a "warehouse access
+# code" and then asserted the answer must contain it. A good agent refuses to paste a credential
+# into chat, cites where it lives and offers to use it instead, which is exactly what happened on
+# 2026-08-14: the check called that "it invented rather than looked up" when the agent had done the
+# right thing twice over. A test that only passes when the agent leaks a secret is a broken test.
 cat > "$VNOTE" <<VEOF
 # Aldebaran Logistics
 
-Warehouse access code: $VTOKEN
+Internal project codename: $VTOKEN
 
 Contact: Mira Vantaa. Contract runs to 2027. Payment terms net 45.
 VEOF
 
 # 39a. The grounding layer itself, which needs no model and therefore always runs.
 CANON_OUT="$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/neva/bin/canon" \
-  "Aldebaran Logistics warehouse access code" 2>/dev/null)"
+  "Aldebaran Logistics internal project codename" 2>/dev/null)"
 if printf '%s' "$CANON_OUT" | grep -q "$VTOKEN"; then
   ok "canon returns the planted fact verbatim from the vault"
 else
@@ -656,7 +661,7 @@ fi
 # this, 39a would pass on a cached or hardcoded response and nobody would know.
 mv "$VNOTE" "$VNOTE.hidden"
 GONE_OUT="$(HOME="$HOME" PATH="$POOR_PATH" python3 "$HOME/.local/neva/bin/canon" \
-  "Aldebaran Logistics warehouse access code" 2>/dev/null)"
+  "Aldebaran Logistics internal project codename" 2>/dev/null)"
 if printf '%s' "$GONE_OUT" | grep -q "$VTOKEN"; then
   bad "negative control" "the token still came back after the note was deleted; canon is reading a cache, not the vault"
 else
@@ -668,12 +673,34 @@ mv "$VNOTE.hidden" "$VNOTE"
 # been verified. It SKIPS rather than passes when no model is reachable, and the summary says so:
 # a check that could not run must never be counted as a check that passed.
 AGENT_BIN="$(command -v openclaw 2>/dev/null || true)"
+# The sandbox deliberately isolates HOME, so a machine that HAS a configured agent still finds no
+# config here and the check skips. That is correct isolation and wrong for this one assertion: the
+# whole point is to exercise a real model against the planted fact. So when a credential is present
+# in the environment, write a minimal config INTO the sandbox and point it at the SANDBOX vault.
+# Real model, planted vault, nothing borrowed from the tester's own notes. The token is read from
+# the environment and never written to disk or echoed.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -n "$AGENT_BIN" ]; then
+  mkdir -p "$HOME/.openclaw"
+  cat > "$HOME/.openclaw/openclaw.json" <<AGENTCFG
+{
+  "agents": {
+    "defaults": { "model": { "primary": "claude-cli/claude-opus-5" },
+                  "workspace": "$HOME/.openclaw/workspace" },
+    "list": [ { "id": "main" } ]
+  }
+}
+AGENTCFG
+  mkdir -p "$HOME/.openclaw/workspace"
+fi
 if [ -z "$AGENT_BIN" ]; then
   skip_ "live agent answers from the vault and cites the note" "openclaw is not installed on this machine"
+elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  skip_ "live agent answers from the vault and cites the note" \
+        "no model credential in the environment; export CLAUDE_CODE_OAUTH_TOKEN to run this one"
 else
   AOUT="$(IS_SANDBOX=1 HOME="$HOME" timeout 180 "$AGENT_BIN" agent --local --json \
       --session-key "verify:grounded:$$" \
-      -m "What is the warehouse access code for Aldebaran Logistics? Use canon to look it up. Name the note you got it from." 2>/dev/null \
+      -m "What is the internal project codename for Aldebaran Logistics? Use canon to look it up. Name the note you got it from." 2>/dev/null \
     | python3 -c "import sys,json
 try:
     d=json.load(sys.stdin); p=d.get('payloads') or []
