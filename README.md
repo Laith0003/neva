@@ -81,7 +81,12 @@ plainly what the defaults protect against and what they cannot.
 
 ## Licence
 
-Apache-2.0. Fork it, change it, run it, sell it. See [LICENSE](LICENSE).
+[Functional Source License 1.1](LICENSE.md), with Apache-2.0 as the future licence.
+
+Use it, change it, run it for yourself or inside your company, free, forever. Fork it and
+publish your fork. The single restriction: you may not sell it, or sell a product that
+substitutes for it, without a separate agreement. Two years after each version is published,
+that version becomes Apache-2.0 and the restriction lifts on it entirely.
 
 The name is separate: the licence covers the code, not the word "Neva". See
 [TRADEMARK.md](TRADEMARK.md). A fork may do anything except present itself as this one.

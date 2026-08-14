@@ -768,7 +768,15 @@ if [ "$LIC_COUNT" = "1" ]; then
     [ -f "$REPO/$DOC" ] || continue
     CLAIMS=""
     grep -qi "Functional Source License\|FSL-1\|FSL 1" "$REPO/$DOC" 2>/dev/null && CLAIMS="FSL"
-    grep -qi "Apache" "$REPO/$DOC" 2>/dev/null && CLAIMS="${CLAIMS:+$CLAIMS+}Apache-2.0"
+    # FSL-1.1-ALv2 says the code BECOMES Apache-2.0 after two years, so a correct FSL document
+    # mentions Apache on purpose. Only count Apache as a CLAIM when it is stated as the current
+    # terms, not as the future licence. Without this the check failed the very restore it was
+    # written to protect, which would have taught everyone to ignore it.
+    if grep -i "Apache" "$REPO/$DOC" 2>/dev/null \
+         | grep -viE "future licence|future license|becomes Apache|second anniversary|two years|ALv2" \
+         | grep -qi "Apache"; then
+      CLAIMS="${CLAIMS:+$CLAIMS+}Apache-2.0"
+    fi
     if [ -z "$CLAIMS" ]; then
       ok "$DOC names no licence, so it cannot contradict the licence file"
     elif [ "$CLAIMS" = "$ACTUAL" ]; then
