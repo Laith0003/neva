@@ -79,7 +79,12 @@ OUT=$(OWNER_NAME="Test Buyer" AGENT_NAME="Vera" TIMEZONE="Europe/Lisbon" \
       PATH="$POOR_PATH:/usr/local/bin:/opt/homebrew/bin" bash "$REPO/install.sh" 2>&1)
 if [ $? -eq 0 ]; then ok "installer completes non-interactively"; else bad "installer" "exit non-zero"; fi
 [ -f "$HOME/.config/neva/identity.env" ] && ok "identity file written" || bad "identity file" "missing"
-P=$(stat -f "%Lp" "$HOME/.config/neva/identity.env" 2>/dev/null || stat -c "%a" "$HOME/.config/neva/identity.env" 2>/dev/null)
+# stat -f is BSD's format flag but GNU's FILESYSTEM flag, and GNU's version SUCCEEDS,
+# so a BSD-first `stat -f ... || stat -c ...` never falls through on Linux: it returns
+# filesystem info and the caller compares that to a mode. Found 2026-08-14 by running
+# verify.sh on Linux for the first time. GNU first, BSD second: `stat -c` fails cleanly
+# on macOS, so the fallback actually fires there.
+P=$(stat -c "%a" "$HOME/.config/neva/identity.env" 2>/dev/null || stat -f "%Lp" "$HOME/.config/neva/identity.env" 2>/dev/null)
 [ "$P" = "600" ] && ok "identity file is 600" || bad "identity perms" "got $P, want 600"
 
 head_ "2. the placeholder-identity trap (B4)"

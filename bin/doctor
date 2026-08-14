@@ -44,7 +44,12 @@ echo "${BOLD}doctor${RESET}"
 # 1. config
 CONFIG="$HOME/.config/neva/identity.env"
 if [ -f "$CONFIG" ]; then
-  PERMS=$(stat -f "%Lp" "$CONFIG" 2>/dev/null || stat -c "%a" "$CONFIG" 2>/dev/null)
+  # stat -f is BSD's format flag but GNU's FILESYSTEM flag, and GNU's version SUCCEEDS,
+# so a BSD-first `stat -f ... || stat -c ...` never falls through on Linux: it returns
+# filesystem info and the caller compares that to a mode. Found 2026-08-14 by running
+# verify.sh on Linux for the first time. GNU first, BSD second: `stat -c` fails cleanly
+# on macOS, so the fallback actually fires there.
+PERMS=$(stat -c "%a" "$CONFIG" 2>/dev/null || stat -f "%Lp" "$CONFIG" 2>/dev/null)
   if [ "$PERMS" = "600" ] || [ "$PERMS" = "400" ]; then
     row ok "identity config"
     # shellcheck disable=SC1090
@@ -245,7 +250,7 @@ if [ "$OC_EXISTS" = "1" ]; then
   # identity.env (check 1); doctor never actually verified that claim. It holds the live
   # Telegram bot token, so a world/group-readable copy is exactly as bad as an exposed
   # identity.env, and gets the same severity (FAIL, not warn).
-  OC_PERMS=$(stat -f "%Lp" "$OC" 2>/dev/null || stat -c "%a" "$OC" 2>/dev/null)
+  OC_PERMS=$(stat -c "%a" "$OC" 2>/dev/null || stat -f "%Lp" "$OC" 2>/dev/null)
   case "$OC_PERMS" in
     600|400) row ok "openclaw.json perms ($OC_PERMS)" ;;
     *) row fail "openclaw.json perms are $OC_PERMS, must be 600" "chmod 600 '$OC'" ;;
