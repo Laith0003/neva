@@ -721,6 +721,79 @@ except Exception:
 fi
 rm -f "$VNOTE"
 
+
+head_ "24. the licence the repo SAYS it has is the licence it HAS (2026-08-14)"
+# On 2026-08-14 this repo was believed to be FSL 1.1, "nobody resells this without an agreement".
+# It was Apache-2.0, and README.md line 84 said "Fork it, change it, run it, sell it." The
+# relicense commit was real and correct; its effect was undone afterwards as collateral in an
+# unrelated change, and nothing announced it. The repo was publicly resellable for weeks and the
+# harness had nothing to say about it.
+#
+# This check does NOT assert which licence is right: that is a commercial decision, not a test.
+# It asserts the three places that state the licence AGREE, and it PRINTS the detected licence on
+# every run, so nobody has to remember what they think it is.
+LIC_FILES=""
+[ -f "$REPO/LICENSE" ] && LIC_FILES="$LIC_FILES LICENSE"
+[ -f "$REPO/LICENSE.md" ] && LIC_FILES="$LIC_FILES LICENSE.md"
+LIC_COUNT=$(printf '%s' "$LIC_FILES" | wc -w | tr -d ' ')
+
+if [ "$LIC_COUNT" = "1" ]; then
+  ok "exactly one licence file ($LIC_FILES)"
+elif [ "$LIC_COUNT" = "0" ]; then
+  bad "no licence file" "neither LICENSE nor LICENSE.md exists; the repo states no terms at all"
+else
+  bad "two licence files" "both LICENSE and LICENSE.md exist, so which one governs is ambiguous: a half-finished relicense looks exactly like this"
+fi
+
+detect() {   # prints a short licence name for a file
+  if grep -qi "Functional Source License" "$1" 2>/dev/null; then echo "FSL"
+  elif grep -qi "Apache License" "$1" 2>/dev/null; then echo "Apache-2.0"
+  elif grep -qi "MIT License" "$1" 2>/dev/null; then echo "MIT"
+  else echo "unknown"; fi
+}
+
+if [ "$LIC_COUNT" = "1" ]; then
+  LIC_PATH="$REPO/$(printf '%s' "$LIC_FILES" | tr -d ' ')"
+  ACTUAL="$(detect "$LIC_PATH")"
+  printf "        detected licence: %s (from %s)\n" "$ACTUAL" "$(basename "$LIC_PATH")"
+
+  if [ "$ACTUAL" = "unknown" ]; then
+    bad "licence file is unrecognisable" "$(basename "$LIC_PATH") matches no known licence text; a buyer cannot tell what they are agreeing to"
+  else
+    ok "the licence file contains recognisable $ACTUAL text"
+  fi
+
+  # README and NOTICE must name the SAME licence the file actually contains.
+  for DOC in README.md NOTICE; do
+    [ -f "$REPO/$DOC" ] || continue
+    CLAIMS=""
+    grep -qi "Functional Source License\|FSL-1\|FSL 1" "$REPO/$DOC" 2>/dev/null && CLAIMS="FSL"
+    grep -qi "Apache" "$REPO/$DOC" 2>/dev/null && CLAIMS="${CLAIMS:+$CLAIMS+}Apache-2.0"
+    if [ -z "$CLAIMS" ]; then
+      ok "$DOC names no licence, so it cannot contradict the licence file"
+    elif [ "$CLAIMS" = "$ACTUAL" ]; then
+      ok "$DOC says $CLAIMS, and that is what the licence file contains"
+    else
+      bad "$DOC contradicts the licence file" \
+          "$DOC says $CLAIMS but $(basename "$LIC_PATH") is $ACTUAL. Whichever is wrong, a reader is being told something untrue about what they may do with this code."
+    fi
+  done
+fi
+
+# negative control: prove this check can actually catch a mismatch
+NEG_DIR="$SANDBOX/licprobe"; mkdir -p "$NEG_DIR"
+printf 'Apache License\nVersion 2.0\n' > "$NEG_DIR/LICENSE"
+printf '## Licence\n\nFunctional Source License 1.1. Nobody resells this.\n' > "$NEG_DIR/README.md"
+NEG_ACTUAL="$(detect "$NEG_DIR/LICENSE")"
+NEG_CLAIMS=""
+grep -qi "Functional Source License" "$NEG_DIR/README.md" && NEG_CLAIMS="FSL"
+if [ "$NEG_CLAIMS" != "$NEG_ACTUAL" ]; then
+  ok "negative control: a README claiming FSL over an Apache LICENSE is detected as a mismatch"
+else
+  bad "negative control" "could not detect an obvious licence mismatch; this check cannot fail and proves nothing"
+fi
+rm -rf "$NEG_DIR"
+
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then
