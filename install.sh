@@ -101,9 +101,29 @@ if [ ! -d "$VAULT_PATH" ] || [ -z "$(ls -A "$VAULT_PATH" 2>/dev/null)" ]; then
 fi
 # vault-sync needs a repo; without one it fails every 2 minutes into a log nobody reads
 if [ ! -d "$VAULT_PATH/.git" ] && command -v git >/dev/null 2>&1; then
-  ( cd "$VAULT_PATH" && git init -q && git add -A 2>/dev/null \
-    && git -c user.email="agent@local" -c user.name="${OWNER_NAME:-owner}" \
-       commit -q -m "vault initial commit" 2>/dev/null ) && say "vault is now a git repo (history for every change)"
+  # The identity is written into the REPO, not passed with -c for one commit. Passing it per
+  # command works for the initial commit and nothing after it: on a machine with no global git
+  # identity (a fresh Linux box, which is exactly the buyer we test for) every later commit dies
+  # with "Author identity unknown", so approved writes never land in history and vault-sync fails
+  # silently every run. Found 2026-08-14 running verify.sh on Linux.
+  ( cd "$VAULT_PATH" && git init -q \
+    && git config user.email "agent@local" \
+    && git config user.name "${OWNER_NAME:-owner}" \
+    && git add -A 2>/dev/null \
+    && git commit -q -m "vault initial commit" 2>/dev/null ) && say "vault is now a git repo (history for every change)"
+fi
+
+# Repair an EXISTING vault repo that predates the identity fix. Anyone who installed before
+# 2026-08-14 on a machine without a global git identity has a repo where every commit fails,
+# so approved writes never reach history and vault-sync loses every run into a log nobody reads.
+# Only writes when nothing is resolvable, so a real identity is never overwritten.
+if [ -d "$VAULT_PATH/.git" ] && command -v git >/dev/null 2>&1; then
+  if ! ( cd "$VAULT_PATH" && git config user.email >/dev/null 2>&1 ); then
+    ( cd "$VAULT_PATH" \
+      && git config user.email "agent@local" \
+      && git config user.name "${OWNER_NAME:-owner}" ) \
+      && say "vault git identity set (commits would have failed without it)"
+  fi
 fi
 
 # ---------- 4. identity interview (only the undetectable) ----------
