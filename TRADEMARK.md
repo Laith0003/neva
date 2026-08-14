@@ -1,7 +1,9 @@
 # The Neva name
 
-The code in this repository is Apache-2.0. You may fork it, change it, run it, and sell
-it. That freedom is deliberate and it is not going to be taken back.
+The code in this repository is under the Functional Source License. You may fork it, change
+it, run it for yourself or your company, and publish your fork. What you may not do is sell it,
+or sell something that substitutes for it, without a separate agreement. Two years after a
+version is published, that version becomes Apache-2.0 and even that lifts.
 
 The name is separate, and it is not covered by that licence.
 
