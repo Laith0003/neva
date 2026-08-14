@@ -18,6 +18,20 @@ usage:
   report --stdout        just the markdown, for piping
 """
 import os
+
+
+def _version():
+    """Version, or a loud 'unknown'. A blank here silently costs every bug report its most
+    useful field, which is exactly what happened before VERSION shipped with the install."""
+    import os as _os
+    for base in (_os.path.dirname(HERE), HERE):
+        f = _os.path.join(base, "VERSION")
+        if _os.path.exists(f):
+            try:
+                return open(f).read().strip() or "unknown"
+            except Exception:
+                pass
+    return "unknown (VERSION file not found next to the install)"
 import platform
 import re
 import shutil
@@ -86,7 +100,7 @@ def main():
         note = a + (("\n\nWould change: " + b) if b else "")
 
     md = (f"## Install report\n\nNeva "
-          f"{open(os.path.join(os.path.dirname(HERE), 'VERSION')).read().strip() if os.path.exists(os.path.join(os.path.dirname(HERE), 'VERSION')) else ''}\n\n"
+          f"{_version()}\n\n"
           f"### What happened\n\n{note or '(fill this in)'}\n\n"
           + section("Environment", env)
           + section("doctor", doc)

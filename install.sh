@@ -61,6 +61,11 @@ command -v rg >/dev/null 2>&1 || say "note: ripgrep (rg) recommended for fast va
 # ---------- 2. tools ----------
 mkdir -p "$PREFIX" "$BIN" "$STATE"
 cp -R "$REPO/bin" "$REPO/lib" "$PREFIX/"
+# VERSION travels with the install. Without it `report` looks for ../VERSION relative to bin/,
+# finds nothing, and every bug report a user sends back says "Neva " with the version blank:
+# the single most useful field in the report, always empty. Found 2026-08-14 by running report
+# in a fresh install rather than from the repo.
+cp "$REPO/VERSION" "$PREFIX/VERSION" 2>/dev/null || true
 # tools resolve lib relative to the repo; installed copies use the fixed prefix instead
 for F in "$PREFIX/bin/"*; do
   [ -f "$F" ] || continue

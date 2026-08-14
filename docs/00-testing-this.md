@@ -92,18 +92,23 @@ you spend an hour, know what that proof covers and what it does not.
 
 ## How to report a bug
 
-Open an issue on GitHub (or, if you are testing privately, send the information to the
-author). Include:
+**Run `report`.** That is the whole ask.
 
-1. Your OS (`uname -a`).
-2. The command you ran.
-3. The exact error or output.
-4. What you expected instead.
-5. The output of `doctor` (copy the whole thing).
-6. The output of `bash build/verify.sh` (from the repo root; if you cloned it, this should
-   pass). If it fails, that is the bug report right there; tell us which check failed.
+```
+report
+```
 
-The more specific you are, the faster we can fix it.
+It writes the bug report for you: your OS and versions, everything `doctor` says, what the
+acceptance harness says, and a space to describe what you were doing. Then it scans its own
+draft with the same leak checker that gates this repository and refuses to print anything that
+fails, so you are not left deciding what is safe to send.
+
+It deliberately never collects the contents of your notes, your name, your paths, or any token.
+It reads status, not content.
+
+Send the file it produces, or use the prefilled issue link it prints. If you would rather write
+it yourself, the four things that actually help are: what you ran, what happened, what you
+expected, and the whole of `doctor` rather than the one line that looked relevant.
 
 ## First week expectations
 
