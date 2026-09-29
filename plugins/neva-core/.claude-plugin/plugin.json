@@ -1,0 +1,6 @@
+{
+  "name": "neva-core",
+  "version": "0.10.0",
+  "description": "Process, memory and learning core: plan, test, implement, review, verify, remember, improve. Always on.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+}

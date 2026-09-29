@@ -1,0 +1,6 @@
+{
+  "name": "neva-backend-langs",
+  "version": "0.10.0",
+  "description": "Python, Django, FastAPI, Go, Rust, Java, Spring, Quarkus, C++, C#, F#, Perl, Rails.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+}

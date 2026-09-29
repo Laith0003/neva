@@ -1,0 +1,6 @@
+{
+  "name": "neva-web",
+  "version": "0.10.0",
+  "description": "PHP/Laravel, TypeScript, React, Next, Vue, Nuxt, Astro, databases, frontend patterns.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+}

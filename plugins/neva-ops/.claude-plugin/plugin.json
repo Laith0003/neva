@@ -1,0 +1,6 @@
+{
+  "name": "neva-ops",
+  "version": "0.10.0",
+  "description": "Docker, Kubernetes, deployment, homelab, networking, terminal ops.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+}
