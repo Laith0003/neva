@@ -1,0 +1,20 @@
+{
+  "_adapted": "Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.",
+  "statusLine": {
+    "type": "command",
+    "command": "python3 \"<neva-core>/statusline/statusline.py\""
+  },
+  "_comments": {
+    "setup": "A plugin cannot register a statusLine, so this is opt-in. Replace <neva-core> with the absolute path of the installed neva-core plugin, then copy the statusLine object into ~/.claude/settings.json.",
+    "display": "Model, current task, session cost, tool count, files modified, session duration, directory, and a context usage bar.",
+    "colors": {
+      "green": "Context used under 50%",
+      "yellow": "Context used under 65%",
+      "orange": "Context used under 80%",
+      "red": "Context used 80% or more: you are in the last 20%, write state to a file and compact at the next milestone"
+    },
+    "output_example": "Opus | Fixing auth bug | $1.23 47t 5f 15m | myproject [#######...] 68%",
+    "dependencies": "Reads the per-session bridge file written by the neva-core post_tool metrics_bridge hook. Without that hook the bar still shows context, but cost, tool and file counts are blank.",
+    "status": "The Python statusline module is ported by the hooks agent. Until plugins/neva-core/statusline/statusline.py exists, this example does nothing."
+  }
+}

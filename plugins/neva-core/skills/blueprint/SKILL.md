@@ -1,0 +1,344 @@
+---
+name: blueprint
+description: "Use when a spec or objective needs a written implementation plan before code, from one multi-task PR to a multi-PR roadmap. Produces cold-start steps with exact paths and complete code, a dependency graph with parallel lanes, and an adversarial review gate."
+argument-hint: "<project> \"<objective>\" [--spec <path>]"
+metadata:
+  origin: neva (adapted from ECC)
+---
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. Merged with obra/superpowers writing-plans (MIT, Jesse Vincent). Merged with garrytan/gstack plan-eng-review and autoplan (MIT, Garry Tan). -->
+
+# Blueprint: Construction Plan Generator
+
+Turn a one-line objective or an approved spec into a step-by-step construction
+plan that any coding agent can execute cold.
+
+Write for an engineer with zero context for this codebase and questionable
+taste: skilled, but new to the toolset, the problem domain, and good test
+design. Document everything they need: which files to touch, the code, the
+tests, the docs to check, how to verify. DRY. YAGNI. TDD. Frequent commits.
+
+**Announce at start:** "I'm using the blueprint skill to write the plan."
+
+## When to Use
+
+- Breaking a large feature into multiple PRs with clear dependency order
+- Planning a refactor or migration that spans multiple sessions
+- Coordinating parallel workstreams across sub-agents
+- Any task where context loss between sessions would cause rework
+- A spec or design (from `intent-driven-development`) is approved and the work
+  has 2 or more tasks: write the plan before touching code
+
+**Do not use** for tasks completable in fewer than 3 tool calls, or when the
+user says "just do it."
+
+Scale: a single-PR job produces a plan with one step and several tasks. A
+roadmap produces 3-12 steps, each one PR, each with its own tasks.
+
+## How It Works
+
+Five phases. Each phase ends with its output written down, not held in context.
+
+```
+Research → Design → Draft → Review → Register
+   │          │                 │
+   │          │                 └─ strongest-model adversarial review; fix all critical findings
+   │          └─ steps, dependency graph, parallel lanes, model tier, rollback
+   └─ pre-flight, scope check, scope challenge (may STOP for the user)
+```
+
+Blueprint detects git/gh availability automatically. With git + GitHub CLI it
+writes full branch/PR/CI workflow into every step. Without them it switches to
+**direct mode** (edit in place, no branches, verification commands still required).
+
+### Phase 1: Research
+
+1. **Pre-flight:** `git rev-parse --is-inside-work-tree`, `gh auth status`,
+   `git remote -v`, default branch (`git symbolic-ref refs/remotes/origin/HEAD`).
+   Any failure selects direct mode; say so in one line.
+2. **Read context:** project structure, `CLAUDE.md`, existing plans under
+   `plans/`, `TODOS.md`, the spec or design doc if one exists (it is the source
+   of truth for problem, constraints, and chosen approach; if it has a
+   `Supersedes:` field, read the prior version for what changed and why), and
+   any memory files the project keeps.
+3. **Scope check:** if the objective covers multiple independent subsystems,
+   propose one plan per subsystem. Each plan must produce working, testable
+   software on its own.
+4. **Scope challenge.** Answer before designing anything:
+   1. What existing code already partially or fully solves each sub-problem?
+      Can outputs from existing flows be captured instead of building parallel ones?
+   2. What is the minimum set of changes that achieves the stated goal? Flag
+      work that could be deferred without blocking the core objective.
+   3. **Complexity check:** the plan touches more than 8 files or introduces
+      more than 2 new classes/services → treat it as a smell.
+   4. **Search check:** for each architectural pattern, infrastructure
+      component, or concurrency approach: does the runtime or framework have a
+      built-in? Is it current best practice? Known footguns? If search is
+      unavailable, note "Search unavailable; proceeding with in-distribution
+      knowledge only." A custom solution where a built-in exists is a scope
+      reduction opportunity.
+   5. **TODOS cross-reference:** deferred items that block this plan, items that
+      can be bundled without expanding scope, new work to capture.
+   6. **Completeness check:** with AI-assisted implementation the full version
+      (complete edge cases, error paths, tests) costs minutes more, not days.
+      Prefer it over a shortcut that only saves human-hours.
+   7. **Distribution check:** a new artifact type (CLI binary, library,
+      container image, mobile app) needs its build/publish pipeline in the plan,
+      or an explicit entry in "NOT in scope".
+
+   **If the complexity check triggers, STOP.** Ask the user: name what is
+   overbuilt, propose the minimal version, ask whether to reduce or proceed
+   as-is. Do not draft steps until they answer. Once they accept or reject the
+   reduction, commit to it; do not re-argue scope later.
+
+### Phase 2: Design
+
+1. **File structure first.** Map which files will be created or modified and
+   what each one is responsible for. Units get clear boundaries and one
+   responsibility each; files that change together live together; split by
+   responsibility, not technical layer. In existing codebases follow
+   established patterns; a split of a file that has grown unwieldy is in scope
+   only when this plan modifies it.
+2. **Steps** (one PR each, 3-12 typical): assign each step
+   - dependency edges (which steps must merge first),
+   - parallel or serial ordering,
+   - model tier: strongest for interface and design steps, default for
+     implementation from complete code,
+   - rollback strategy (revert commit, feature flag, migration down path).
+3. **Tasks** inside each step. A task is the smallest unit that carries its own
+   test cycle and is worth a fresh reviewer's gate. Fold setup, configuration,
+   scaffolding, and docs into the task whose deliverable needs them. Split only
+   where a reviewer could reject one task while approving its neighbor. Each
+   task ends with an independently testable deliverable.
+4. **Parallel lanes.** Skip when all steps touch the same primary module or
+   there are fewer than 2 independent workstreams; write "Sequential
+   implementation, no parallelization opportunity." Otherwise:
+
+   | Step | Modules touched | Depends on |
+   |------|-----------------|------------|
+   | (step) | (directories/modules, not files) | (steps, or none) |
+
+   - steps with no shared modules and no dependency → separate lanes (parallel);
+   - steps sharing a module directory → same lane (sequential);
+   - dependent steps → later lanes.
+
+   Write `Lane A: step1 → step2 (sequential, shared models/)`, `Lane B: step3
+   (independent)`, the launch order ("Launch A + B in parallel worktrees. Merge
+   both. Then C."), and a conflict flag wherever two parallel lanes touch the
+   same module directory.
+
+### Phase 3: Draft
+
+Write the plan to `plans/<project>-<objective-slug>.md` (a user or repo
+preference for plan location overrides this default). Every plan starts with
+this header:
+
+```markdown
+# [Objective] Construction Plan
+
+> **For agentic workers:** execute with the `orch-pipeline` skill (subagent task
+> loop recommended, inline mode otherwise). Steps and tasks use checkbox
+> (`- [ ]`) syntax for tracking.
+
+**Goal:** [one sentence]
+**Architecture:** [2-3 sentences]
+**Tech Stack:** [key technologies]
+**Spec:** [path to the spec/design doc; executors read both]
+**Mode:** [git+gh | direct]
+
+## Global Constraints
+
+[Project-wide requirements from the spec: version floors, dependency limits,
+naming and copy rules, platform requirements. One line each, exact values
+copied verbatim. Every task implicitly includes this section.]
+
+## Invariants
+
+[Checks that must hold after every step, e.g. "all existing tests pass",
+"no provider imports in core".]
+
+## Dependency Graph and Lanes
+
+[table + lanes from Phase 2]
+```
+
+**Each step** carries a self-contained context brief, so a fresh agent can
+execute it without reading prior steps:
+
+````markdown
+## Step N: [title]
+
+**Context brief:** [what exists after steps it depends on, the relevant files,
+the decisions already made; everything a cold agent needs]
+**Depends on:** [steps] **Lane:** [A] **Model tier:** [strongest | default]
+**Branch / PR:** `feat/<slug>` → PR into `<default-branch>` (direct mode: none)
+**Rollback:** [how to undo]
+**Exit criteria:** [observable conditions, including the Invariants]
+
+### Task N.1: [component]
+
+**Files:**
+- Create: `exact/path/to/file.py`
+- Modify: `exact/path/to/existing.py:123-145`
+- Test: `tests/exact/path/to/test_file.py`
+
+**Interfaces:**
+- Consumes: [exact signatures used from earlier tasks]
+- Produces: [exact names, parameter and return types later tasks rely on.
+  An implementer sees only their own task; this block is how they learn
+  neighboring names.]
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_specific_behavior():
+    result = function(input)
+    assert result == expected
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+  Run: `pytest tests/exact/path/to/test_file.py::test_specific_behavior -v`
+  Expected: FAIL with "function not defined"
+
+- [ ] **Step 3: Write the minimal implementation**
+
+```python
+def function(input):
+    return expected
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+  Run: `pytest tests/exact/path/to/test_file.py::test_specific_behavior -v`
+  Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/exact/path/to/test_file.py src/exact/path/to/file.py
+git commit -m "feat(scope): add specific behavior"
+```
+````
+
+Each checkbox step is one action of 2-5 minutes: write the failing test; run
+it; implement minimally; run the tests; commit.
+
+**No placeholders.** These are plan failures; never write them:
+- "TBD", "TODO", "implement later", "fill in details"
+- "Add appropriate error handling" / "add validation" / "handle edge cases"
+- "Write tests for the above" without the test code
+- "Similar to Task N" (repeat the code; tasks get read out of order)
+- a step that says what to do without showing how (code steps need code blocks)
+- a type, function, or method referenced but defined in no task
+
+**Required closing sections:**
+- **NOT in scope:** work considered and deferred, one-line rationale each.
+- **What already exists:** code and flows that already solve sub-problems, and
+  whether the plan reuses them or rebuilds them (and why).
+- **Failure modes:** for each new codepath, one realistic production failure
+  (timeout, nil reference, race, stale data) and whether a test covers it, error
+  handling exists, and the user would see a clear error or a silent failure. No
+  test AND no handling AND silent = **critical gap**; fix it in the plan.
+- **Plan Log:** the mutation table (see "Plan mutation protocol"), empty at birth.
+
+### Phase 4: Review
+
+**4a. Self-review** (a checklist you run, not a dispatch). Look at the spec with
+fresh eyes:
+1. **Spec coverage:** point to a task for every requirement. Add a task for any gap.
+2. **Placeholder scan:** search for every pattern in "No placeholders". Fix them.
+3. **Type consistency:** names, signatures, and properties match across tasks.
+   `clearLayers()` in Task 3 and `clearFullLayers()` in Task 7 is a bug.
+
+**4b. Adversarial review gate.** Dispatch one reviewer subagent on the
+strongest available model with [plan-reviewer-prompt.md](plan-reviewer-prompt.md).
+It checks completeness, spec alignment, dependency correctness, task
+decomposition, buildability, and the anti-pattern catalog below, and it scores
+every finding with a confidence of 1-10.
+
+**Anti-pattern catalog:** a step that cannot be verified; a dependency edge
+missing where two steps write the same module; parallel lanes that share a
+module; a step whose context brief needs prior steps to make sense; a rollback
+of "revert" for a data migration; tests described but not written; a
+regression (changed existing behavior on an uncovered path) without a
+regression test; distribution silently dropped.
+
+**Fix every critical finding before finalizing.** Classify each finding:
+
+| Class | Meaning | Action |
+|-------|---------|--------|
+| Mechanical | one clearly right answer | fix silently, log it in the Plan Log |
+| Taste | reasonable people could disagree (close approaches, borderline scope) | pick with the principles below, surface at the final gate |
+| User challenge | the review says the user's stated direction should change (merge, split, add, remove) | never auto-decided; present what the user said, what the review recommends, why, what context may be missing, and the cost if the review is wrong |
+
+Decision principles for mechanical and taste calls: choose completeness; fix
+everything in the blast radius (files the plan modifies plus direct importers)
+when it costs under a day and no new infrastructure; of two options that fix
+the same thing, pick the cleaner; reject anything that duplicates existing
+functionality; explicit over clever; bias toward action (flag concerns, do not
+stall).
+
+**Iron rule, regressions:** a change to existing behavior on a path the suite
+does not cover gets a regression test task. No question, no skip.
+
+### Phase 5: Register
+
+1. Save the plan. Update the project's plan or memory index if it keeps one.
+2. Present: step count, task count, lanes (how many parallel, how many
+   sequential), critical gaps fixed, and every taste decision and user
+   challenge for the user's call.
+3. **Execution handoff.** Offer:
+   - **Subagent task loop (recommended):** `orch-pipeline` subagent mode: a
+     fresh implementer per task, two-stage review between tasks.
+   - **Inline:** `orch-pipeline` inline mode in this session, with stops on any
+     blocker.
+   - **Parallel lanes:** independent lanes in isolated worktrees (`git-workflow`
+     "Isolated workspace"), or through `plan-orchestrate` for per-step agent chains.
+
+## Plan mutation protocol
+
+Plans change during execution. Every mutation appends one row to the Plan Log:
+
+| Date | Mutation | Steps affected | Reason | Downstream check |
+|------|----------|----------------|--------|------------------|
+
+- **Split:** step N becomes N.a and N.b; keep the parent number so references stay stable; each half gets its own context brief and exit criteria.
+- **Insert:** new step takes a suffix (`N.a`) instead of renumbering; add its dependency edges.
+- **Skip:** only with a reason; confirm no later step consumes what it produced, or re-point that consumer.
+- **Reorder:** re-check every dependency edge and lane conflict flag.
+- **Abandon:** mark the step `abandoned`, record what is salvaged, and re-check every step downstream of it.
+
+Never edit a completed step's text; append a correcting step instead.
+
+## Examples
+
+```
+/blueprint myapp "migrate database to PostgreSQL"
+```
+
+Produces `plans/myapp-migrate-database-to-postgresql.md`:
+- Step 1: Add PostgreSQL driver and connection config
+- Step 2: Create migration scripts for each table
+- Step 3: Update repository layer to use new driver
+- Step 4: Add integration tests against PostgreSQL
+- Step 5: Remove old database code and config
+
+```
+/blueprint chatbot "extract LLM providers into a plugin system"
+```
+
+Parallel steps where possible ("implement provider A plugin" and "implement
+provider B plugin" run in parallel lanes after the plugin interface step
+merges), strongest tier for the interface step, default tier for
+implementation, and invariants checked after every step ("all existing tests
+pass", "no provider imports in core").
+
+## Requirements
+
+- Claude Code (for the `/blueprint` entry)
+- Git + GitHub CLI optional: enables branch/PR/CI steps; absent means direct mode.
+
+## Source
+
+Inspired by antbotlab/blueprint. Task format, no-placeholder rule, self-review,
+and execution handoff from obra/superpowers writing-plans. Scope challenge,
+parallel lanes, failure modes, and review sections from garrytan/gstack
+plan-eng-review; decision classification and principles from gstack autoplan.

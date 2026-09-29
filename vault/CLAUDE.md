@@ -14,13 +14,13 @@ not a feature. Tell it; it will show you the source or retract.
 
 | Folder | What lives there | Who writes |
 |---|---|---|
-| 00 Inbox | quick captures, unsorted | you, and the agent when unsure |
+| 00 Inbox | quick captures, unsorted; `inbox.md` holds the Open actions list read at every session start, and instinct proposals wait here for your tick | you, and the agent when unsure |
 | 01 Projects | one note per active project | both, gated |
 | 02 Clients | one note per client or engagement | both, gated |
 | 03 People | ONE note per person, never two | both, gated |
 | 04 Knowledge | reference material, methods | both, gated |
 | 05 Money | the hledger journal + money notes | gated, ledger is the only source of figures |
-| 06 Memory | the agent's distillations and observations | agent |
+| 06 Memory | the agent's distillations; `instincts/` holds what it learned from its own sessions | agent (global instincts only after your approval) |
 | 07 Archive | finished things | both |
 | 08 Journal | daily notes | you, agent drafts if asked |
 | 09 Reviews | weekly, quarterly, yearly reviews | agent drafts, you edit |

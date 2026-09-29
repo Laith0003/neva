@@ -1,6 +1,11 @@
 {
   "name": "neva-domains",
   "version": "0.10.0",
-  "description": "Healthcare, supply chain, machine learning, finance and prediction-market domains.",
-  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+  "description": "Healthcare and HIPAA, supply chain and manufacturing, ML engineering and recsys, bioinformatics lookups, DeFi/EVM security, agent payments, prediction markets.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
 }

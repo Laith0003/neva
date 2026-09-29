@@ -1,6 +1,11 @@
 {
   "name": "neva-business",
   "version": "0.10.0",
-  "description": "Research, content, investor materials, social publishing, email and messaging ops.",
-  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+  "description": "Research, content, SEO and marketing, brand, investor materials, social publishing, email and messaging ops, billing, agreements, workspace and GitHub/Jira ops.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
 }

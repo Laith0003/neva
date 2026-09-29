@@ -1,0 +1,110 @@
+---
+description: "Generate a local Claude Code cost report from the Neva cost-tracker metrics log."
+argument-hint: "[csv]"
+---
+
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# Cost Report
+
+Summarize local Claude Code spend by day, model, and session from the metrics log that the neva-core `cost_tracker` Stop hook writes.
+
+## Where the data lives
+
+The tracker appends one JSON object per response to `$NEVA_METRICS_DIR/costs.jsonl`, default `~/.local/share/neva/metrics/costs.jsonl` (when unset, `NEVA_DATA_DIR` or `XDG_DATA_HOME` move the default the same way they move all Neva data). Each row is a **cumulative snapshot for that session**, so the report takes the **latest row per `session_id`** and sums across sessions. Summing every row would count sessions several times.
+
+Row schema:
+`{ timestamp, session_id, transcript_path, project, model, input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, estimated_cost_usd }`
+
+## What this command does
+
+1. Check that the log exists. If it does not, tell the user the tracker is not set up yet: it fills after the first response ends with the neva-core `cost_tracker` hook enabled (standard or strict profile).
+2. Reduce rows to the latest snapshot per session and aggregate.
+3. Present a compact report, or export recent rows as CSV when the argument is `csv`.
+
+Python 3 standard library only, so this runs the same on macOS, Linux, and Windows.
+
+## Report
+
+```bash
+python3 - <<'PY'
+import json, os, datetime
+d = os.environ.get("NEVA_METRICS_DIR") or os.path.join(os.environ.get("NEVA_DATA_DIR") or os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "neva"), "metrics")
+f = os.path.join(os.path.expanduser(d), "costs.jsonl")
+if not os.path.exists(f):
+    print(f"Cost tracker not set up: {f} not found. Fix: enable the neva-core cost_tracker hook (standard profile) and finish a response first.")
+    raise SystemExit(0)
+rows = []
+for line in open(f, encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        rows.append(json.loads(line))
+    except ValueError:
+        pass
+latest = {}
+for r in rows:
+    k = r.get("session_id") or r.get("transcript_path") or r.get("timestamp")
+    if k not in latest or str(r.get("timestamp", "")) > str(latest[k].get("timestamp", "")):
+        latest[k] = r
+latest = list(latest.values())
+cost = lambda r: float(r.get("estimated_cost_usd") or 0)
+day = lambda r: str(r.get("timestamp", ""))[:10]
+today = datetime.datetime.now(datetime.timezone.utc).date()
+yday = today - datetime.timedelta(days=1)
+fmt = lambda n: f"${n:.4f}"
+print("=== Cost summary ===")
+print("today:     " + fmt(sum(cost(r) for r in latest if day(r) == today.isoformat())))
+print("yesterday: " + fmt(sum(cost(r) for r in latest if day(r) == yday.isoformat())))
+print("total:     " + fmt(sum(cost(r) for r in latest)) + f"  ({len(latest)} sessions)")
+by_model = {}
+for r in latest:
+    m = r.get("model") or "(unknown)"
+    by_model[m] = by_model.get(m, 0) + cost(r)
+print("\n=== By model ===")
+for m, v in sorted(by_model.items(), key=lambda kv: -kv[1]):
+    print(fmt(v).rjust(12) + "  " + m)
+by_day = {}
+for r in latest:
+    by_day[day(r)] = by_day.get(day(r), 0) + cost(r)
+print("\n=== Last 7 days ===")
+for d, v in sorted(by_day.items(), reverse=True)[:7]:
+    print(d + "  " + fmt(v))
+PY
+```
+
+## CSV export (`/cost-report csv`)
+
+```bash
+python3 - <<'PY'
+import json, os
+d = os.environ.get("NEVA_METRICS_DIR") or os.path.join(os.environ.get("NEVA_DATA_DIR") or os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "neva"), "metrics")
+f = os.path.join(os.path.expanduser(d), "costs.jsonl")
+if not os.path.exists(f):
+    print(f"no data: {f} not found")
+    raise SystemExit(0)
+rows = []
+for line in open(f, encoding="utf-8"):
+    line = line.strip()
+    if line:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass
+cols = ["timestamp", "session_id", "project", "model", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "estimated_cost_usd"]
+print(",".join(cols))
+for r in rows[-100:]:
+    print(",".join(str(r.get(c, "")) for c in cols))
+PY
+```
+
+## Report format
+
+1. Summary: today, yesterday, total, session count.
+2. By model: models ranked by total cost.
+3. Last seven days: date and cost.
+
+Rely on the precomputed `estimated_cost_usd` values written by the tracker. Do not re-estimate pricing from raw tokens here.

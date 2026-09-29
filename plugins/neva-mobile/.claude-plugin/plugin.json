@@ -1,6 +1,11 @@
 {
   "name": "neva-mobile",
   "version": "0.10.0",
-  "description": "Flutter/Dart, Swift/SwiftUI, Kotlin/Compose, React Native.",
-  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)"
+  "description": "Mobile: Flutter/Dart, Swift/SwiftUI, Kotlin/Android and Compose Multiplatform, React Native/Expo, HarmonyOS/ArkTS.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
 }

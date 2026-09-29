@@ -1,0 +1,46 @@
+---
+name: promote
+description: "Propose moving project instincts to global scope; apply only when the owner asked for that promotion"
+command: true
+---
+
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# Promote Command
+
+Proposal first. `/promote` files promote-global blocks for the owner to approve. It writes a global instinct only when the owner, in this conversation, asked for that exact promotion.
+
+## Implementation
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cli.py" promote [instinct-id] [--dry-run] [--apply]
+```
+
+The vault comes from `NEVA_VAULT`, else `VAULT_PATH` in `~/.config/neva/identity.env`. If the CLI exits 2, show its message: it names the fix.
+
+## Usage
+
+```
+/promote                      # file every qualifying candidate as a proposal block
+/promote --dry-run            # print the blocks, write nothing
+/promote grep-before-edit     # file a block for one instinct from the current project
+```
+
+## What happens
+
+1. Candidates, when no id is given:
+   - the same instinct id active in 2 or more projects with average confidence 0.8 or more, or
+   - one project instinct with `scope_hint: global` at confidence 0.7 or more,
+   - and not already global.
+2. Each becomes a `promote-global` block in `Instinct promotions YYYY-MM-DD.md` in the proposals folder, with a pointer under `## Open actions` in the inbox note. The block names the destination `vault:06 Memory/instincts/global/<id>.md`, the source notes, and the exact text.
+3. Nothing global is written yet.
+
+## Applying
+
+| The owner | Run |
+|---|---|
+| ticks `approve` in the block | nothing now: the nightly job applies it, or run `instinct-cli.py apply-promotions` |
+| says "promote <id> now" for one named instinct | `promote <id> --apply` |
+| says "apply instinct promotions" | `apply-promotions --all` |
+
+On apply the global note is created (never overwritten), and each source note gets `status: promoted` and `promoted_to`. Without one of those three, do not pass `--apply` or `--all`, and never tick a box yourself.

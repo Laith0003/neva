@@ -11,42 +11,42 @@
     {
       "name": "neva-core",
       "source": "./plugins/neva-core",
-      "description": "Process, memory and learning core: plan, test, implement, review, verify, remember, improve. Always on."
+      "description": "Process, memory and learning core: plan, test, implement, review, verify, remember, improve. Agent orchestration, eval and security harnesses. Always on."
     },
     {
       "name": "neva-web",
       "source": "./plugins/neva-web",
-      "description": "PHP/Laravel, TypeScript, React, Next, Vue, Nuxt, Astro, databases, frontend patterns."
+      "description": "Web stack: PHP/Laravel, TypeScript, React, Next, Vue, Nuxt, Angular, NestJS, Bun, Vite; Postgres, MySQL, Redis, ClickHouse, Prisma; API design, accessibility, design systems, motion, slides."
     },
     {
       "name": "neva-mobile",
       "source": "./plugins/neva-mobile",
-      "description": "Flutter/Dart, Swift/SwiftUI, Kotlin/Compose, React Native."
+      "description": "Mobile: Flutter/Dart, Swift/SwiftUI, Kotlin/Android and Compose Multiplatform, React Native/Expo, HarmonyOS/ArkTS."
     },
     {
       "name": "neva-backend-langs",
       "source": "./plugins/neva-backend-langs",
-      "description": "Python, Django, FastAPI, Go, Rust, Java, Spring, Quarkus, C++, C#, F#, Perl, Rails."
+      "description": "Server languages: Python (Django, FastAPI, Celery), Go, Rust, Java (Spring Boot, Quarkus, JPA), Kotlin server (Ktor, Exposed), C++, C#/.NET, F#, Perl, Rails."
     },
     {
       "name": "neva-ops",
       "source": "./plugins/neva-ops",
-      "description": "Docker, Kubernetes, deployment, homelab, networking, terminal ops."
+      "description": "Docker, Kubernetes, deployment and canary checks, homelab and network engineering (VLAN, WireGuard, DNS, BGP, Cisco IOS), Flox, PM2, terminal ops."
     },
     {
       "name": "neva-business",
       "source": "./plugins/neva-business",
-      "description": "Research, content, investor materials, social publishing, email and messaging ops."
+      "description": "Research, content, SEO and marketing, brand, investor materials, social publishing, email and messaging ops, billing, agreements, workspace and GitHub/Jira ops."
     },
     {
       "name": "neva-media",
       "source": "./plugins/neva-media",
-      "description": "Video, motion, slides, document processing."
+      "description": "Video editing and generation (Remotion, Manim, VideoDB, fal.ai), Blender motion, taste and style packs, UI demo recordings, document processing and translation."
     },
     {
       "name": "neva-domains",
       "source": "./plugins/neva-domains",
-      "description": "Healthcare, supply chain, machine learning, finance and prediction-market domains."
+      "description": "Healthcare and HIPAA, supply chain and manufacturing, ML engineering and recsys, bioinformatics lookups, DeFi/EVM security, agent payments, prediction markets."
     }
   ]
 }

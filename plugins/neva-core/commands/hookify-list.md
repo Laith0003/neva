@@ -1,0 +1,27 @@
+---
+description: "List all configured hookify rules"
+---
+
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+Find and display all hookify rules in a formatted table.
+
+## Steps
+
+1. Find all `.claude/hookify.*.local.md` files
+2. Read each file's frontmatter:
+   - `name`
+   - `enabled`
+   - `event`
+   - `action`
+   - `pattern`
+3. Display them as a table:
+
+| Rule | Enabled | Event | Pattern | File |
+|------|---------|-------|---------|------|
+
+4. Show the rule count and remind the user that `/hookify-configure` can change state later.
+
+## Enforcement
+
+The neva-core hook runtime reads `.claude/hookify.*.local.md` on every matching event (modules `hookify_pre_tool`, `hookify_prompt`, `hookify_stop`, every profile). Changes apply on the next tool call, no restart. If the user runs without neva-core's hooks, or disabled those ids in `NEVA_DISABLED_HOOKS`, rules are inert: say so when creating or toggling them. A malformed rule is reported once per session and skipped, never enforced.

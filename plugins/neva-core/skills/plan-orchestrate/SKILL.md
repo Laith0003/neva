@@ -1,0 +1,260 @@
+---
+name: plan-orchestrate
+description: "Use when a multi-step plan document (PRD, RFC, blueprint plan) should be driven through per-step agent chains without picking agents by hand. Emits one ready-to-run agent dispatch chain per step from the Neva agent catalogue. Generative only."
+metadata:
+  origin: neva (adapted from ECC)
+---
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# Plan Orchestrate
+
+Bridge a plan document to sequential agent chains by emitting one ready-to-run dispatch list per step. The skill is generative only: it never executes the chains. The user (or the conductor session) runs each list when ready.
+
+## When to Activate
+
+- User has a multi-step plan document (PRD, RFC, `blueprint` plan) and wants to drive it through agent chains.
+- User says "orchestrate this plan", "give me agent chains for each step", "compose chains for this plan".
+- A step-by-step plan exists but the user does not want to manually pick agents per step.
+
+Skip when:
+- The work is one ad-hoc step: call the chain directly.
+- The plan is unreadable or empty. Lack of explicit numbering alone is not a skip condition; see the "No clear steps" edge case below.
+- The user wants one fresh implementer per task with two-stage review: that is `orch-pipeline` subagent mode, not a chain.
+
+## Inputs
+
+```
+<plan-doc-path> [--lang=python|typescript|go|rust|cpp|java|kotlin|flutter|auto] [--scope=all|step:<n>|range:<a>-<b>] [--dry-run]
+```
+
+- `<plan-doc-path>`: required; relative or absolute path (`@docs/...` accepted).
+- `--lang`: reviewer language variant; defaults to `auto` (detected from project).
+- `--scope`: limits emitted steps; defaults to `all`.
+- `--dry-run`: print decomposition + chain rationale only; do not emit final prompts.
+
+## Authoritative chain shape (do not deviate)
+
+Neva ships no `orchestrate` command, so every chain is rendered as an ordered list of Agent dispatches:
+
+```
+1. Agent <agent1>: "<task description>"
+2. Agent <agent2>: "<task description>" + HANDOFF from 1
+...
+N. Agent <agentN>: "<task description>" + HANDOFF from N-1
+```
+
+- The chain is sequential; each agent's HANDOFF feeds the next.
+- Each line is one dispatch: `subagent_type` = the namespaced agent, prompt = the task description plus the previous agent's HANDOFF.
+- No `--mode` / `--gate` / `--agents=...` fields exist. Never invent them.
+- Agent names come from the catalogue in this skill, always fully namespaced. Embedded double quotes in the task description are escaped as `\"`.
+
+## Neva namespacing
+
+Neva ships as Claude Code plugins, so every agent resolves as `neva-<plugin>:<name>`. Bare names force fuzzy matching, which fails intermittently under parallel calls. Always emit the namespaced form. The plugin that owns each agent:
+
+| Plugin | Agents |
+|---|---|
+| `neva-core` | `planner`, `architect`, `tdd-guide`, `code-reviewer`, `security-reviewer`, `refactor-cleaner`, `doc-updater`, `docs-lookup`, `e2e-runner`, `harness-optimizer`, `loop-operator`, `build-error-resolver` |
+| `neva-web` | `database-reviewer`, `typescript-reviewer` |
+| `neva-backend-langs` | `python-reviewer`, `go-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `cpp-build-resolver`, `go-build-resolver`, `java-build-resolver`, `rust-build-resolver`, `pytorch-build-resolver` |
+| `neva-mobile` | `kotlin-reviewer`, `flutter-reviewer`, `kotlin-build-resolver` |
+| `neva-business` | `chief-of-staff` |
+
+`{AGENT(name)}` = `neva-<owning plugin>:<name>`.
+
+## Available agent catalogue (must pick from these)
+
+General:
+- `planner`: requirement restatement, risk decomposition, step planning
+- `architect`: architecture, system design, refactor proposals
+- `tdd-guide`: write tests → implement → 80%+ coverage
+- `code-reviewer`: generic code review
+- `security-reviewer`: security audit, OWASP, secret leakage
+- `refactor-cleaner`: dead code, duplicates, knip-class cleanup
+- `doc-updater`: documentation, codemap, README
+- `docs-lookup`: third-party library API lookups (Context7)
+- `e2e-runner`: end-to-end test orchestration
+- `database-reviewer`: PostgreSQL schema, migration, performance
+- `harness-optimizer`: local agent harness configuration
+- `loop-operator`: long-running autonomous loops
+- `chief-of-staff`: multi-channel triage (rarely a fit for plan steps)
+
+Build error resolvers:
+- `build-error-resolver` (generic) / `cpp-build-resolver` / `go-build-resolver` / `java-build-resolver` / `kotlin-build-resolver` / `rust-build-resolver` / `pytorch-build-resolver`
+
+Code reviewers:
+- `python-reviewer` / `typescript-reviewer` / `go-reviewer` / `rust-reviewer` / `cpp-reviewer` / `java-reviewer` / `kotlin-reviewer` / `flutter-reviewer`
+
+A misspelled agent name fails the chain. Cross-check against this list before emitting.
+
+## How It Works
+
+### Phase 0: Detect installed plugins and language
+
+1. Read `<plan-doc-path>`. If missing or empty, report and stop.
+2. Detect installed Neva plugins once: run `claude agents` and collect the `neva-<plugin>:` prefixes present. If the command is unavailable, look for `neva-<plugin>` directories under the Claude Code plugins directory (`~/.claude/plugins/` on macOS/Linux, `%USERPROFILE%\.claude\plugins\` on Windows; resolve the home the way the host platform does). Freeze the set as `NEVA_PLUGINS`.
+   - An agent whose owning plugin is absent falls back at composition time: `<lang>-reviewer` → `code-reviewer`, `<lang>-build-resolver` → `build-error-resolver`, `database-reviewer` → `code-reviewer`. Note every fallback under "Chain rationale".
+   - `neva-core` absent: stop and report `neva-core is not installed; install it before running plan-orchestrate.`
+3. Resolve `--lang`. When `auto`, run a polyglot-aware detection:
+   - Probe markers: `pyproject.toml` / `uv.lock` / `requirements.txt` → python; `package.json` → typescript; `go.mod` → go; `Cargo.toml` → rust; `CMakeLists.txt` or top-level `*.cpp` → cpp; `pom.xml` / `build.gradle` (Java) → java; `build.gradle.kts` or top-level Kotlin → kotlin; `pubspec.yaml` → flutter.
+   - **Polyglot tie-break**: if more than one marker matches, pick the language whose source files outnumber the others (count via `git ls-files`, excluding `vendor/`, `node_modules/`, `dist/`, `build/`, `.venv/`, generated files, and obvious test fixtures). On a tie or when no language exceeds 60% of source files, set `lang=unknown`.
+   - No marker matched → set `lang=unknown`.
+   - `lang=unknown` is a sentinel. It is **not** an agent name. Phase 2 rules 5 and 6 turn it into `code-reviewer` / `build-error-resolver` at chain composition time.
+4. Detect a **PyTorch sub-profile**: when `lang=python` and any of `pyproject.toml` / `requirements.txt` / `uv.lock` declares a dependency on `torch`, set `pytorch=true`. This only affects `build` chain selection (Phase 2 rule 6); the reviewer remains `python-reviewer`.
+5. **Normalize any agent names declared in the plan**: if the plan text references agents by a prefixed form (`neva-core:tdd-guide`, or another marketplace prefix such as `other-plugin:tdd-guide`), strip the prefix to get the bare catalogue name before validating or composing chains. Re-prefixing happens only at output time (Phase 4). Never let a pre-prefixed name flow into chain composition: it would double-prefix.
+
+### Phase 1: Decompose steps
+
+Identify "step units" in priority order:
+
+1. Explicit numbering: `## Step N` / `### Phase N` / `## N. ...` / top-level ordered list.
+2. A "Step" column in a table.
+3. `---`-separated blocks with verb-led headings.
+4. Otherwise treat each H2 as one step.
+
+Per step extract `id` (1-based), `title` (≤ 80 chars), `intent` (1-3 sentences), `tags`.
+
+### Phase 2: Tag and pick chain
+
+Tag by intent (multi-tag allowed; chain built from primary + stacked secondaries):
+
+Trigger words below are matched case-insensitively. Multilingual plans are supported by matching the word stems in any language as long as the meaning aligns with the listed English trigger words.
+
+| Tag | Trigger words | Default chain |
+|---|---|---|
+| `design` | architecture, design, choose, evaluate, RFC | `planner,architect` |
+| `plan` | plan, breakdown, milestone | `planner` |
+| `impl` | implement, build, add, create, port | `tdd-guide,<lang>-reviewer` |
+| `test` | test, coverage, e2e, integration | `tdd-guide,e2e-runner` |
+| `refactor` | refactor, cleanup, dedupe, split | `architect,refactor-cleaner,<lang>-reviewer` |
+| `migration` | migrate, upgrade, rewrite, port | `architect,tdd-guide,<lang>-reviewer` |
+| `db` | schema, migration, index, SQL, Postgres, alembic, sqlmodel | `database-reviewer,<lang>-reviewer` |
+| `security` | encrypt, auth, secret, OWASP, PII | `security-reviewer,<lang>-reviewer` |
+| `build` | build, compile, lint failure, CI | `<lang>-build-resolver` (falls back to `build-error-resolver`) |
+| `docs` | docs, readme, codemap, changelog | `doc-updater` |
+| `lookup` | lookup, reference, API usage | `docs-lookup` |
+| `review` | review, audit, verify | `<lang>-reviewer,code-reviewer` |
+| `loop` | loop, autonomous, watchdog | `loop-operator` |
+
+Chain composition rules:
+1. **Primary tag selection**: when a step matches multiple tags, the **first one in table order** (top of the table = highest priority) is the primary; the rest are secondaries. Composition rules 2 and 3 below handle specific multi-tag combinations explicitly; otherwise, append secondary chains in tag table order.
+2. `impl` + `security` → `tdd-guide,<lang>-reviewer,security-reviewer`.
+3. `impl` + `db` → `tdd-guide,database-reviewer,<lang>-reviewer`.
+4. **Deduplicate** the resulting chain (preserve first occurrence). E.g. `review` + `lang=unknown` would yield `code-reviewer,code-reviewer` after rule 5; deduplication collapses it to `code-reviewer`.
+5. `<lang>-reviewer` resolves to `code-reviewer` when `lang=unknown`.
+6. `<lang>-build-resolver` resolves to `build-error-resolver` when `lang=unknown`. **Special case**: if Phase 0 set `pytorch=true`, use `pytorch-build-resolver` for `build` chains regardless of `<lang>`. There is no `python-build-resolver`; `--lang=python` without `pytorch=true` resolves to `build-error-resolver`.
+7. **Zero-tag steps**: if no trigger word matches, set chain to `code-reviewer` and write `no tag matched; default review-only chain` under "Chain rationale".
+8. Chain length ≤ 4 after deduplication. If exceeded, drop weakest tag (`lookup` and `docs` first).
+9. Do not pair `planner` and `architect` in an `impl` chain (token waste). Pair them only on `design` steps.
+10. Steps tagged `impl`, `refactor`, or `migration` end with a **reviewer-class** agent: any of `<lang>-reviewer`, `code-reviewer`, `security-reviewer`, or `database-reviewer`. The most domain-specific reviewer wins the tail position (e.g. rule 2's `impl+security` ends with `security-reviewer`; rule 3's `impl+db` ends with `<lang>-reviewer` because `database-reviewer` already gates the migration earlier in the chain). `test` and `build` steps are gated by their own validators (`e2e-runner` and the build resolver respectively) and do not require an additional reviewer.
+
+### Phase 3: Compress task description
+
+Each emitted `<task description>` must:
+- Be self-contained (the first agent does not need the plan document open).
+- Start with `[Plan: <path>#step-<id>]`.
+- Include 1-3 verifiable Acceptance criteria.
+- Include a Scope guard (`Out of scope: ...`) **only if the plan declares one for this step**. Inherit verbatim. If the plan has no out-of-scope statement, omit the clause entirely: do not invent one.
+- Be 200-600 characters; one line; embedded `"` escaped as `\"`; no literal newlines.
+
+### Phase 4: Output
+
+Every agent is rendered as `{AGENT(name)}` (namespaced per the plugin table, after Phase 0 fallbacks). Per-step blocks contain only the dispatch list. No "strip the prefix" instructions.
+
+Output structure:
+
+````markdown
+# Plan-Orchestrate Result
+
+**Plan**: `<path>`
+**Lang**: `<detected-or-given>`
+**Plugins**: `<NEVA_PLUGINS>`
+**Steps**: <N>
+**Scope**: <all | step:n | range:a-b>
+
+## Steps overview
+
+| # | Title | Tags | Chain |
+|---|---|---|---|
+| 1 | ... | impl, db | `neva-core:tdd-guide,neva-web:database-reviewer,neva-backend-langs:python-reviewer` |
+| ... | | | |
+
+---
+
+## Step 1: <title>
+
+**Intent**: <1-3 sentences>
+**Tags**: <a, b>
+**Chain rationale**: <why this chain; which agent closes the loop; any Phase 0 fallback>
+
+1. Agent neva-core:tdd-guide: "[Plan: docs/foo.md#step-1] <compressed task description>; Acceptance: <1-3 items>; Out of scope: <...>"
+2. Agent neva-web:database-reviewer: same task description + HANDOFF from 1
+3. Agent neva-backend-langs:python-reviewer: same task description + HANDOFF from 2
+````
+
+Append a final "Batch execution" block aggregating every step's dispatch list in order so the user can run them all in sequence. **Skip the Batch block in overview-only mode** (see "Large plan" edge case).
+
+### Phase 5: Self-check (run before emitting)
+
+- [ ] Every agent in every chain comes from the catalogue (after stripping any prefix that appeared in the plan; see Phase 0 step 5).
+- [ ] Every agent is namespaced with its owning plugin; no bare names; no agent from a plugin missing from `NEVA_PLUGINS` (fallbacks applied and noted).
+- [ ] Every chain is a numbered dispatch list; no slash-command runner lines.
+- [ ] No invented `--mode` / `--gate` / `--agents=...` fields.
+- [ ] Each task description is single-line, double-quoted, with embedded `"` escaped.
+- [ ] Each task description begins with `[Plan: <path>#step-<id>]` and includes Acceptance (1-3 items). The `Out of scope:` clause is present only when inherited from the plan.
+- [ ] No duplicate agent in any chain after Phase 2 dedup.
+- [ ] Chain length ≤ 4.
+- [ ] Steps tagged `impl`/`refactor`/`migration` end with a reviewer-class agent (`<lang>-reviewer`, `code-reviewer`, `security-reviewer`, or `database-reviewer`). `test` and `build` are exempt; see Phase 2 rule 10.
+- [ ] Zero-tag steps emit `code-reviewer` with the rationale `no tag matched; default review-only chain`.
+- [ ] Overview table lists every step in the plan, regardless of `--scope`.
+- [ ] Per-step detail block count matches the resolved `--scope` (full plan when `--scope=all`; one block for `step:n`; range size for `range:a-b`). In overview-only mode, no per-step blocks and no Batch block are emitted.
+
+## Edge cases
+
+- **No clear steps**: prefer H2/H3 splitting; if still ambiguous, report "no structured steps detected" with the document outline and ask the user to confirm running by outline.
+- **Large plan (>1500 lines)**: enter **overview-only mode**: emit only the overview table and ask the user to narrow with `--scope` before re-running for details. Skip per-step detail blocks and the Batch execution block.
+- **Step too broad** (e.g. "complete all backend work"): do not force a single chain. Suggest splitting into N.a and N.b and propose a split.
+- **Plan declares agents** (rare): strip any prefix to get the bare catalogue name (Phase 0 step 5), then validate against the catalogue. Replace invalid agents and explain under "Chain rationale". The bare name is re-namespaced at output time.
+- **Polyglot project where `--lang=auto` cannot pick a winner**: set `lang=unknown`; reviewer resolves to `code-reviewer` and build resolver to `build-error-resolver`. Mention the fallback under "Chain rationale".
+- **Blueprint plan with lanes**: keep the plan's lane order in the Batch block; steps in parallel lanes are marked `(parallel with step N)` in the overview table. Never merge two lanes into one chain.
+
+## Examples
+
+### Example 1: Python plan, all plugins installed
+
+Input:
+```
+plan-orchestrate @docs/plan/example-feature.md --lang=python
+```
+
+Excerpt of expected output:
+````markdown
+## Step 2: Encrypt sensitive UserProfile fields
+
+**Intent**: Introduce an `EncryptedString` SQLAlchemy type and AES-GCM encrypt `birth_datetime` / `location` before persistence; load the key from an environment variable.
+**Tags**: impl, security, db
+**Chain rationale**: Security-sensitive write path, so `security-reviewer` closes the chain; `database-reviewer` validates the alembic migration; `python-reviewer` covers typing and PEP 8.
+
+1. Agent neva-core:tdd-guide: "[Plan: docs/plan/example-feature.md#step-2] Implement EncryptedString SQLAlchemy type and migrate UserProfile.birth_datetime/location columns; key from ENV APP_DB_KEY; Acceptance: encrypt/decrypt roundtrip tests pass; alembic upgrade/downgrade clean on empty DB; no plaintext in DB after migrate; Out of scope: cross-tenant profile sharing logic"
+2. Agent neva-web:database-reviewer: same task description + HANDOFF from 1
+3. Agent neva-backend-langs:python-reviewer: same task description + HANDOFF from 2
+4. Agent neva-core:security-reviewer: same task description + HANDOFF from 3
+````
+
+### Example 2: Same step, only neva-core installed
+
+`neva-web` and `neva-backend-langs` are absent, so both reviewers fall back and dedup collapses them:
+
+```
+1. Agent neva-core:tdd-guide: "[Plan: docs/plan/example-feature.md#step-2] ..."
+2. Agent neva-core:code-reviewer: same task description + HANDOFF from 1
+3. Agent neva-core:security-reviewer: same task description + HANDOFF from 2
+```
+
+Chain rationale notes: `database-reviewer` and `python-reviewer` unavailable (plugins not installed), fell back to `code-reviewer`.
+
+## Notes
+
+- Generative only. Never run the chains from inside this skill.
+- Match the language of the plan document for task descriptions (agent names always remain English).
+- Do not insert "Co-Authored-By" lines in the output unless the user explicitly asks.
