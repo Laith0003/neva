@@ -13,7 +13,7 @@ Prunes session files older than NEVA_SESSION_RETENTION_DAYS (default 30, `off` k
 per-session hook state older than COMPACT_STATE_TTL_DAYS (default 14) and observation archives
 older than 30 days.
 
-Controls: NEVA_SESSION_START_CONTEXT=off, NEVA_SESSION_START_MAX_CHARS (default 8000, 0 = none).
+Controls: NEVA_SESSION_START_CONTEXT=off, NEVA_SESSION_START_VAULT=off (skip journal and inbox), NEVA_SESSION_START_MAX_CHARS (default 8000, 0 = none).
 """
 import os
 import re
@@ -189,7 +189,9 @@ def run(ctx):
     parts = []
     if source != "resume":
         parts.append(instinct_block(ctx))
-        if ctx.vault:
+        # NEVA_SESSION_START_VAULT=off keeps instincts and the prior session but skips the journal
+        # and inbox blocks, for setups where another hook already injects them.
+        if ctx.vault and c.env("NEVA_SESSION_START_VAULT").strip().lower() not in c.FALSE_VALUES:
             parts.append(journal_block(ctx))
             parts.append(inbox_block(ctx))
     if source == "startup":

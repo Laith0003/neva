@@ -238,6 +238,16 @@ class TestSessionStart(HookTest):
         self.assertLessEqual(len(ctx), 8000)
         self.assertFalse(os.path.exists(old), "session file older than 30 days should be pruned")
 
+    def test_vault_off_keeps_instincts_and_prior_session_but_skips_journal(self):
+        self.seed()
+        r = self.s.dispatch("SessionStart", self.base(source="startup", hook_event_name="SessionStart"),
+                            NEVA_SESSION_START_VAULT="off")
+        ctx = r.context
+        self.assertIn("Run the tests before committing", ctx)
+        self.assertIn("PRIOR-SUMMARY-MARK", ctx)
+        self.assertNotIn("JOURNAL-LINE-MARK", ctx)
+        self.assertNotIn("Call the plumber about the leak", ctx)
+
     def test_resume_skips_prior_summary_and_journal(self):
         self.seed()
         r = self.s.dispatch("SessionStart", self.base(source="resume"))
