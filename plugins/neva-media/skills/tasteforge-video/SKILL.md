@@ -79,7 +79,7 @@ dry-run/dry_run semantics, say "dry-run spec" or "deterministic plan", never
 ## Canonical Implementation
 
 - Package directory `skills/taste-application/scripts/tasteforge/` in the
-  `neva-media` plugin (upstream Python distribution name `ecc-tasteforge`,
+  `neva-media` plugin (upstream Python distribution name `neva-tasteforge`,
   MIT). Install from the plugin root with
   `python3 -m pip install ./skills/taste-application/scripts`.
 - CLI: `python3 -m tasteforge <command>`, `provenance`, `inspect`, `validate`,
@@ -97,7 +97,7 @@ its JSON. Install the packaged engine if absent; do not reconstruct its logic
 inline. `taste.resolve` is a compatibility import of `tasteforge.resolve`, so
 the creative scripts and example project share one verified Resolve adapter.
 
-The `python3 -m tasteforge` CLI uses the installed `ecc-tasteforge` distribution. The standalone `taste-distillation` and `taste-application`
+The `python3 -m tasteforge` CLI uses the installed `neva-tasteforge` distribution. The standalone `taste-distillation` and `taste-application`
 scripts ship in the `neva-media` plugin with their own Python
 requirements. Neither path requires publishing the user's repository or media.
 

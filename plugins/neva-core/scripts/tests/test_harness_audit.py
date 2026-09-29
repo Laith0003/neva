@@ -67,11 +67,11 @@ def build_core(sb, root):
         w(f"agents/agent-{i}.md", agent("opus" if i % 2 else "sonnet"))
     w("agents/security-reviewer.md", agent("opus"))
     for name in ("strategic-compact", "continuous-learning-v2", "eval-harness", "verification-loop",
-                 "security-review", "cost-aware-llm-pipeline"):
+                 "security-review", "cost-aware-llm-pipeline", "security-scan"):
         w(f"skills/{name}/SKILL.md", skill("Use when testing the audit."))
     for i in range(16):
         w(f"skills/extra-{i}/SKILL.md", skill('"Use when a quoted description: with a colon."'))
-    for name in ("checkpoint", "model-route", "security-scan"):
+    for name in ("checkpoint", "model-route"):
         w(f"commands/{name}.md", "---\ndescription: x\n---\n")
     w("commands/runner.md", '---\ndescription: x\n---\n\n```bash\npython3 "${CLAUDE_PLUGIN_ROOT}/scripts/ok.py" --flag\n```\n')
     for r in ("coding-style.md", "security.md", "testing.md"):

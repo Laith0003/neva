@@ -1,6 +1,6 @@
 # Reusable TasteForge engine
 
-Install with `python3 -m pip install ./skills/taste-application/scripts` from the `neva-media` plugin root. The Python distribution is `ecc-tasteforge` (upstream name, MIT); the CLI remains `python3 -m tasteforge`.
+Install with `python3 -m pip install ./skills/taste-application/scripts` from the `neva-media` plugin root. The Python distribution is `neva-tasteforge` (upstream name, MIT); the CLI remains `python3 -m tasteforge`.
 
 ## Repeatable taste-driven video workflow
 
@@ -12,7 +12,7 @@ the skill's `SOURCE.md` for recovered-source lineage.
 
 ## Install
 
-Requires Python 3.9 or newer. Install the `ecc-tasteforge` distribution as shown above, then run the CLI from any directory. Core commands have
+Requires Python 3.9 or newer. Install the `neva-tasteforge` distribution as shown above, then run the CLI from any directory. Core commands have
 no third-party runtime dependencies. Optional media helpers use FFmpeg and
 the libraries listed in the skill instructions.
 

@@ -141,3 +141,12 @@ Delete and rewrite any:
 - `crosspost`: multi-platform distribution
 - `market-research`: audience and competitive intelligence
 - `seo`: on-page optimisation for landing page copy
+
+## Invocation modes
+
+```
+/neva-business:marketing-campaign                          # Prompt for brief interactively
+/neva-business:marketing-campaign [product brief]          # Full campaign from inline brief
+/neva-business:marketing-campaign copy [type]              # Single deliverable only
+/neva-business:marketing-campaign review [file-or-brief]   # Copy audit for conversion and brand consistency
+```
