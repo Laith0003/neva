@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""neva: one entry point. Subcommands are modules in lib/neva_cli/commands/<name>.py exposing
+HELP (one line), add_arguments(parser) and run(args) -> int. Python standard library only."""
+import argparse, importlib, os, pkgutil, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "lib"))
+
+
+def commands():
+    import neva_cli.commands as pkg
+    return sorted(m.name for m in pkgutil.iter_modules(pkg.__path__) if not m.name.startswith("_"))
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="neva", description="Neva: second brain and coding harness.")
+    sub = p.add_subparsers(dest="cmd", metavar="<command>")
+    mods = {}
+    for name in commands():
+        mod = importlib.import_module(f"neva_cli.commands.{name}")
+        sp = sub.add_parser(name.replace("_", "-"), help=getattr(mod, "HELP", ""))
+        if hasattr(mod, "add_arguments"):
+            mod.add_arguments(sp)
+        mods[name.replace("_", "-")] = mod
+    args = p.parse_args(argv)
+    if not args.cmd:
+        p.print_help()
+        return 0
+    return int(mods[args.cmd].run(args) or 0)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
