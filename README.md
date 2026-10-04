@@ -13,10 +13,10 @@ human.
 > upgrade adds openclaw so the same assistant answers on Telegram while your laptop is shut. Start
 > simple; the upgrade is there when you want it.
 >
-> **First public release, and testers are the point.** The macOS path is proven: 38 checks
-> install it from scratch in a stripped sandbox and assert the outcomes you would actually
-> notice, and each check is proven able to fail. Linux has never been run end to end, not once,
-> so on Linux you are the first. Read [docs/00-testing-this.md](docs/00-testing-this.md) before
+> **Early, and testers are the point.** `build/verify.sh` installs it from scratch in a stripped
+> sandbox and asserts the outcomes you would actually notice, and each check is proven able to
+> fail. It passes on macOS, and on Linux in CI on every push; no person has yet reported a real
+> Linux install, so on Linux you are among the first. Read [docs/00-testing-this.md](docs/00-testing-this.md) before
 > you spend an hour, and tell us what broke: that is worth more to this project right now than
 > a star.
 
@@ -46,6 +46,12 @@ to fail. If a promise here stops being true, that harness goes red before you ev
   tracked files. `doctor` fails loudly on the two mistakes that get self-hosters burned.
 - **A vault that is yours.** Plain markdown in Obsidian. One person one note, enforced.
   hledger for money, and a food log the agent can total.
+- **A disciplined coding harness (new in 0.10).** A Claude Code plugin marketplace: one process
+  loop (research, plan with a confirm gate, tests first, implement, review from a fresh context,
+  verify with evidence, remember, improve), reviewers and planners that run in their own
+  context, and a Python hook runtime that enforces what reminders cannot. It learns: tool use
+  is observed, a nightly job distils lessons into notes in your vault, and nothing becomes
+  durable memory until you approve it. See [The coding harness](#the-coding-harness).
 
 ## Start here
 
@@ -60,18 +66,47 @@ then silently builds the whole system behind your answers. Your goals, projects,
 personality all come from that one conversation. It ends by doing a real task for you.
 
 **For manual setup:** Follow these four steps.
-1. Install [openclaw](https://docs.openclaw.ai/install) and [Obsidian](https://obsidian.md)
+1. Install [Claude Code](https://claude.com/claude-code) and [Obsidian](https://obsidian.md)
+   (add [openclaw](https://docs.openclaw.ai/install) only for the always-on Telegram upgrade)
 2. `./install.sh` and answer three identity questions
 3. Fix anything `doctor` marks FAIL (each row names its fix)
 4. Talk to your agent in the terminal; its first conversation is the interview
 Then, and only then: [docs/02-telegram.md](docs/02-telegram.md)
 
-**macOS: proven.** Tested end to end in a real install (see `build/verify.sh`, 38 checks).
-**Linux: untested.** The install script has a Linux branch, and 14 systemd unit/timer
-templates exist for it, but neither has ever been run - not once, by anyone, on a real Linux
-machine. If you install on Linux, you are the first. Read
-[docs/00-testing-this.md](docs/00-testing-this.md) before you start, and report what breaks.
+**macOS: proven.** Tested end to end in a real install (see `build/verify.sh`).
+**Linux: the harness passes, real installs unreported.** `build/verify.sh` passes on Linux in
+CI on every push and passed on a Linux machine on 2026-08-14 after two GNU-vs-BSD fixes. No
+person has reported a real Linux install yet. Read [docs/00-testing-this.md](docs/00-testing-this.md)
+before you start, and report what breaks.
 **Windows:** WSL2 only, and inherits the Linux caveat above (WSL2 is Linux).
+
+## The coding harness
+
+Neva ships a Claude Code plugin marketplace in this repo. Add it once, then install what you use:
+
+```
+claude plugin marketplace add /path/to/neva
+claude plugin install neva-core@neva
+```
+
+| Plugin | What it holds |
+|---|---|
+| `neva-core` | The process loop, planner, architect, code and security reviewers, TDD guide, the learning engine (instincts), session memory, compaction discipline, orchestration, the Python hook runtime |
+| `neva-web` | PHP and Laravel, TypeScript, React, Next, Vue, Nuxt, Angular, databases, frontend patterns |
+| `neva-mobile` | Flutter and Dart, Swift and SwiftUI, Kotlin and Compose, React Native |
+| `neva-backend-langs` | Python, Django, FastAPI, Go, Rust, Java, Spring, Quarkus, Kotlin server, C++, C#, F#, Perl, Rails |
+| `neva-ops` | Docker, Kubernetes, deployment with a production gate, homelab, networking |
+| `neva-business` | Research, content, investor materials, social publishing; every outbound action stops for your yes |
+| `neva-media` | Video, motion, document processing |
+| `neva-domains` | Healthcare, supply chain, machine learning, scientific and market domains |
+
+Keep `neva-core` on everywhere and enable the others per project, so the skill list stays small.
+Hook profiles: `NEVA_HOOK_PROFILE=minimal|standard|strict`; switch any module off with
+`NEVA_DISABLED_HOOKS`. Details: [docs/harness/](docs/harness/).
+
+Much of the harness is adapted from Affaan Mustafa's
+[Everything Claude Code](https://github.com/affaan-m/ECC) (MIT), merged with Neva's brain and
+rewritten to run on Python's standard library. See [NOTICE](NOTICE).
 
 ## The honest part
 

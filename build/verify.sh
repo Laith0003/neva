@@ -802,6 +802,62 @@ else
 fi
 rm -rf "$NEG_DIR"
 
+head_ "25. the plugin harness (neva-core and the domain plugins) installs, validates and passes its suites"
+# Added 2026-10-04 with the ECC-derived harness. A marketplace that validates but whose hooks crash,
+# or whose hooks pass tests but never register, ships nothing. Each check below can fail.
+if python3 -c "import json,sys; d=json.load(open('$REPO/.claude-plugin/marketplace.json')); sys.exit(0 if len(d['plugins'])==8 else 1)" 2>/dev/null; then
+  ok "marketplace.json parses and lists 8 plugins"
+else
+  bad "marketplace.json" "missing, invalid, or not 8 plugins; fix .claude-plugin/marketplace.json"
+fi
+if python3 - "$REPO" <<'PYEOF'
+import json, sys, os
+root = sys.argv[1]
+hooks = json.load(open(os.path.join(root, "plugins/neva-core/hooks/hooks.json")))
+meta = json.load(open(os.path.join(root, "plugins/neva-core/hooks/hooks.meta.json")))
+pj = json.load(open(os.path.join(root, "plugins/neva-core/.claude-plugin/plugin.json")))
+assert "hooks" not in pj, "plugin.json must not declare hooks (Claude auto-loads hooks/hooks.json)"
+events = set(hooks.get("hooks", {}))
+mods = meta["modules"] if isinstance(meta, dict) and "modules" in meta else meta
+need = {e for m in mods for e in m.get("events", [])}
+missing = need - events
+assert not missing, f"events with modules but no registration: {sorted(missing)}"
+PYEOF
+then ok "every hook module's event is registered in hooks.json, and plugin.json does not double-declare hooks"
+else bad "hook registration" "a module listens to an event hooks.json never registers, or plugin.json declares hooks; see the python error above"
+fi
+HT_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks.py 2>&1 | tail -3)"
+if printf '%s' "$HT_OUT" | grep -q '^OK'; then
+  ok "hook runtime suite: $(printf '%s' "$HT_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "hook runtime suite" "$(printf '%s' "$HT_OUT" | tr '\n' ' ')"
+fi
+ST_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/scripts/tests 2>&1 | tail -3)"
+if printf '%s' "$ST_OUT" | grep -q '^OK'; then
+  ok "harness scripts suite: $(printf '%s' "$ST_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "harness scripts suite" "$(printf '%s' "$ST_OUT" | tr '\n' ' ')"
+fi
+if command -v claude >/dev/null 2>&1; then
+  if (cd "$REPO" && claude plugin validate . 2>&1 | grep -q 'Validation passed'); then
+    ok "claude plugin validate passes on the marketplace"
+  else
+    bad "claude plugin validate" "run: claude plugin validate . from the repo root and fix what it names"
+  fi
+else
+  skip_ "claude plugin validate" "claude CLI not on PATH"
+fi
+BAD_HOOKS_DIR="$(mktemp -d)"
+cp -R "$REPO/plugins/neva-core/hooks" "$BAD_HOOKS_DIR/"
+printf 'raise RuntimeError("deliberately broken")\n' > "$BAD_HOOKS_DIR/hooks/neva_hooks/session_start.py"
+BAD_RC=0; echo '{"session_id":"x","source":"startup","hook_event_name":"SessionStart","cwd":"/tmp"}' | HOME="$BAD_HOOKS_DIR" python3 "$BAD_HOOKS_DIR/hooks/dispatch.py" SessionStart >/dev/null 2>&1 || BAD_RC=$?
+if [ "$BAD_RC" -eq 0 ]; then
+  ok "negative control: a crashing hook module does not break the session (dispatcher exits 0)"
+else
+  bad "crash isolation" "a broken module made dispatch.py exit $BAD_RC; one bad module would block every session"
+fi
+rm -rf "$BAD_HOOKS_DIR"
+
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then

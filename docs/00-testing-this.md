@@ -20,12 +20,10 @@ you spend an hour, know what that proof covers and what it does not.
 
 ## What is not proven (and might be rough)
 
-- **Linux, end-to-end: genuinely untested, not just "less tested."** `install.sh` has a
-  non-Darwin branch and 14 systemd unit/timer templates exist under `services/systemd/`, both
-  written to the same contract as the macOS path - but neither has ever actually executed.
-  Not the full flow, not a partial run, not once, by anyone, on a real Linux machine. Everything
-  Linux-specific in this repo is reviewed and believed correct, not proven. If you are on
-  Linux, you are the first real run it has ever had. Expect the class of bug that only shows
+- **Linux, a real install by a real person: unreported.** `build/verify.sh` passes on Linux in
+  CI on every push and passed on a Linux machine on 2026-08-14, after two GNU-vs-BSD bugs were
+  fixed (`stat -f`, and a vault git identity that never persisted). What no one has reported
+  yet is a person installing it on their own Linux machine and living with it. Expect the class of bug that only shows
   up live: file paths, permissions, `systemctl --user` needing `loginctl enable-linger` to
   survive an SSH logout, timers not firing on first boot. Report all of it, including things
   that work - a confirmed-working Linux install is itself useful information nobody has yet.

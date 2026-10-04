@@ -21,8 +21,8 @@ Run the harness:
     bash build/verify.sh
 
 It installs the product from scratch in a throwaway sandbox with a deliberately stripped
-PATH, then asserts the outcomes a buyer would notice. It must read `33 passed, 0 failed,
-RELEASABLE`. If your change adds a promise, add the check that proves it, and prove the
+PATH, then asserts the outcomes a buyer would notice. It must end with `0 failed` and
+`RELEASABLE`. If your change adds a promise, add the check that proves it, and prove the
 check can fail by breaking the thing on purpose and watching it go red. A check that
 cannot fail is worse than no check: four of those shipped here once and hid five real bugs.
 

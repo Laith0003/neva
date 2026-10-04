@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0 (2026-10-04) - the coding harness
+
+Neva becomes two things in one repo: the honest second brain, and a disciplined coding harness
+for Claude Code, shipped as a plugin marketplace with eight plugins.
+
+### Added
+- `neva-core`: one canonical process loop (`rules/process.md`), merged planner, architect,
+  code reviewer, security reviewer and TDD guide, 60 commands, and about 110 skills covering
+  research-first, verification, compaction, orchestration and learning.
+- A Python standard-library hook runtime: one dispatcher per event, profiles
+  `minimal|standard|strict`, per-module switches, crash isolation. It blocks `--no-verify`,
+  protects lint and format configs, nudges compaction from real token counts, trips a circuit
+  breaker on failing MCP servers, writes session summaries and a pre-compact note, and logs
+  cost. Transcript parsing is incremental, so a long session costs milliseconds per response.
+- Instincts: tool use is observed, a nightly job distils lessons into markdown notes in the
+  vault, and promotion to durable memory waits for your approval in the inbox.
+- Seven domain plugins (web, mobile, backend languages, ops, business, media, domains), meant to
+  be enabled per project.
+- `build/verify.sh` section 25: the marketplace, hook registration, both test suites, plugin
+  validation, and a negative control proving one broken module cannot break a session.
+- CI on macOS and Linux (leak scan, licence guard, acceptance harness) plus gitleaks.
+
+### Credit
+Much of the harness is adapted from Everything Claude Code by Affaan Mustafa (MIT). Sponsor,
+paid-service and account-bound pieces were dropped; every outbound action stops for a human yes.
+
 ## 0.9.0 (2026-08-01) - first public release
 
 Not 1.0, and the reason is specific: the macOS path is proven and the Linux path has never
