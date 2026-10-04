@@ -1,0 +1,235 @@
+---
+name: verification-loop
+description: "Use before claiming work is done, fixed, or passing, before committing or opening a PR, and after a feature or refactor: run build, types, lint, tests with coverage, security grep, and diff review fresh, then report with evidence."
+license: MIT
+metadata:
+  origin: neva (adapted from ECC)
+---
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. Merged with obra/superpowers verification-before-completion (MIT, Jesse Vincent). -->
+
+# Verification Loop
+
+Evidence before claims, always. Six phases of fresh verification, then a report. No success claim leaves this session without output that proves it.
+
+**Violating the letter of this rule is violating the spirit of this rule.**
+
+## The Iron Law
+
+```
+NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
+```
+
+If you have not run the verification command in this message, you cannot claim it passes.
+
+## The Gate Function
+
+Apply to every claim, including each phase below:
+
+```
+BEFORE claiming any status or expressing satisfaction:
+
+1. IDENTIFY: What command proves this claim?
+2. RUN: Execute the FULL command (fresh, complete)
+3. READ: Full output, check exit code, count failures
+4. VERIFY: Does output confirm the claim?
+   - If NO: State actual status with evidence
+   - If YES: State claim WITH evidence
+5. ONLY THEN: Make the claim
+
+Skip any step = lying, not verifying
+```
+
+## When to Use
+
+**Always before:**
+- Any variation of a success or completion claim
+- Any expression of satisfaction about work state
+- Committing, pushing, creating a PR, marking a task complete
+- Moving to the next task
+- Delegating to agents, and again after they report back
+
+**Also run the full loop:**
+- After completing a feature or significant code change
+- After refactoring
+- When quality gates must pass
+
+The rule applies to exact phrases, paraphrases, synonyms, and any implication of success.
+
+## Verification Phases
+
+Detect the project's real commands first (package manager, test runner, linter). The commands below are defaults; substitute the project's own. Run every phase fresh: a result from an earlier message does not count.
+
+### Phase 1: Build Verification
+```bash
+# Check if project builds
+npm run build 2>&1 | tail -20
+# OR
+pnpm build 2>&1 | tail -20
+```
+
+If build fails, STOP and fix before continuing. A passing linter is not a passing build.
+
+### Phase 2: Type Check
+```bash
+set -o pipefail
+# TypeScript projects
+npx --no-install tsc --noEmit 2>&1 | head -30
+
+# Python projects
+pyright . 2>&1 | head -30
+```
+
+Report all type errors. Fix critical ones before continuing.
+
+### Phase 3: Lint Check
+```bash
+# JavaScript/TypeScript
+npm run lint 2>&1 | head -30
+
+# Python
+ruff check . 2>&1 | head -30
+```
+
+### Phase 4: Test Suite
+```bash
+# Run tests with coverage
+npm run test -- --coverage 2>&1 | tail -50
+
+# Check coverage threshold
+# Target: 80% minimum
+```
+
+Report:
+- Total tests: X
+- Passed: X
+- Failed: X
+- Coverage: X%
+
+Read the summary line and the exit code, not just the tail. "0 failed" must appear in the output you read in this message.
+
+**Regression tests (red-green proof):** for a bug fix, a test that passes once proves nothing. Verify:
+
+```
+Write test -> Run (pass) -> Revert fix -> Run (MUST FAIL) -> Restore fix -> Run (pass)
+```
+
+### Phase 5: Security Scan
+```bash
+# Check for secrets
+grep -rn "sk-" --include="*.ts" --include="*.js" . 2>/dev/null | head -10
+grep -rn "api_key" --include="*.ts" --include="*.js" . 2>/dev/null | head -10
+
+# Check for console.log
+grep -rn "console.log" --include="*.ts" --include="*.tsx" src/ 2>/dev/null | head -10
+```
+
+### Phase 6: Diff Review
+```bash
+# Show what changed
+git diff --stat
+git diff HEAD~1 --name-only
+```
+
+Review each changed file for:
+- Unintended changes
+- Missing error handling
+- Potential edge cases
+
+**Requirements check:** re-read the plan or request, turn it into a line-by-line checklist, verify each line against the diff, and report gaps. "Tests pass" is not "requirements met".
+
+**Agent delegation check:** when an agent reported success, inspect the VCS diff yourself and verify the changes before repeating its claim.
+
+## Common Failures
+
+| Claim | Requires | Not Sufficient |
+|-------|----------|----------------|
+| Tests pass | Test command output: 0 failures | Previous run, "should pass" |
+| Linter clean | Linter output: 0 errors | Partial check, extrapolation |
+| Build succeeds | Build command: exit 0 | Linter passing, logs look good |
+| Bug fixed | Test original symptom: passes | Code changed, assumed fixed |
+| Regression test works | Red-green cycle verified | Test passes once |
+| Agent completed | VCS diff shows changes | Agent reports "success" |
+| Requirements met | Line-by-line checklist | Tests passing |
+| Coverage met | Coverage output at or above threshold | "Most files have tests" |
+
+## Key Patterns
+
+```
+Tests:        [Run test command] [See: 34/34 pass] "All tests pass"
+              NOT "Should pass now" / "Looks correct"
+
+Build:        [Run build] [See: exit 0] "Build passes"
+              NOT "Linter passed" (linter does not check compilation)
+
+Requirements: Re-read plan -> Create checklist -> Verify each -> Report gaps or completion
+              NOT "Tests pass, phase complete"
+
+Delegation:   Agent reports success -> Check VCS diff -> Verify changes -> Report actual state
+              NOT Trust the agent report
+```
+
+## Red Flags: STOP
+
+- Using "should", "probably", "seems to"
+- Expressing satisfaction before verification ("Great!", "Perfect!", "Done!")
+- About to commit, push, or open a PR without verification
+- Trusting agent success reports
+- Relying on partial verification
+- Thinking "just this once"
+- Tired and wanting the work over
+- Any wording implying success without having run verification
+
+## Rationalization Prevention
+
+| Excuse | Reality |
+|--------|---------|
+| "Should work now" | RUN the verification |
+| "I'm confident" | Confidence is not evidence |
+| "Just this once" | No exceptions |
+| "Linter passed" | Linter is not the compiler |
+| "Agent said success" | Verify independently |
+| "I'm tired" | Exhaustion is not an excuse |
+| "Partial check is enough" | Partial proves nothing |
+| "Different words so the rule doesn't apply" | Spirit over letter |
+| "It passed earlier in the session" | Earlier is not fresh. Run it again. |
+
+## Output Format
+
+After running all phases, produce a verification report. Every PASS must be backed by output you read in this message.
+
+```
+VERIFICATION REPORT
+==================
+
+Build:     [PASS/FAIL]
+Types:     [PASS/FAIL] (X errors)
+Lint:      [PASS/FAIL] (X warnings)
+Tests:     [PASS/FAIL] (X/Y passed, Z% coverage)
+Security:  [PASS/FAIL] (X issues)
+Diff:      [X files changed]
+
+Overall:   [READY/NOT READY] for PR
+
+Evidence:
+- <phase>: <exact command> -> <exit code, key output line>
+
+Issues to Fix:
+1. ...
+2. ...
+```
+
+If any phase was skipped, write `SKIPPED (reason)` for it and report Overall as NOT READY.
+
+## Continuous Mode
+
+For long sessions, run verification every 15 minutes or after major changes:
+
+- After completing each function
+- After finishing a component
+- Before moving to the next task
+
+Run this skill again (`neva-core:verification-loop`).
+
+## Integration with Hooks
+
+This skill complements PostToolUse hooks but provides deeper verification. Hooks catch issues immediately; this skill provides comprehensive review. `neva-core:delivery-gate` is the mechanical Stop-hook counterpart.

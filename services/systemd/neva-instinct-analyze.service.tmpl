@@ -1,0 +1,8 @@
+[Unit]
+Description=Nightly instinct analysis (apply ticked proposals, analyze observations, decay, prune, propose)
+[Service]
+Type=oneshot
+# vault from NEVA_VAULT or VAULT_PATH in ~/.config/neva/identity.env; PATH must reach the claude binary
+Environment=PATH=@SERVICE_PATH@
+Environment=HEARTBEAT_TIMEOUT=3600
+ExecStart=@PREFIX@/services/heartbeat-wrap.sh instinct-analyze /usr/bin/env python3 @PREFIX@/plugins/neva-core/skills/continuous-learning-v2/scripts/instinct-analyze.py

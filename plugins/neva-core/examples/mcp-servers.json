@@ -1,0 +1,136 @@
+{
+  "_adapted": "Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.",
+  "_comments": {
+    "what": "An opt-in catalog, not a config. Neva ships one default server, chrome-devtools, in plugins/neva-core/.mcp.json. Every other enabled server loads its tool schemas into every session, so add them per project only.",
+    "budget": "Keep under 10 servers and about 80 tools enabled per project. See docs/harness/06-mcp-budget.md.",
+    "use": "Copy only the entries a project needs into that project's .mcp.json, or add them with claude mcp add. Replace every YOUR_..._HERE placeholder. Never commit a real token.",
+    "cost": "The cost field says whether the server is free, needs an account with a free tier, or needs a paid API. It is documentation only; remove it when copying if your client rejects unknown keys.",
+    "versions": "Entries that use @latest pull the newest release on every start. Pin a version for reproducible setups."
+  },
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest"
+      ],
+      "description": "Browser inspection for visual verification: screenshots, console, network. The one server worth enabling everywhere you build UI.",
+      "cost": "free"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp",
+        "--browser",
+        "chrome"
+      ],
+      "description": "Browser automation and E2E testing via Playwright. The Playwright CLI in a skill is lighter; use the server only for interactive runs.",
+      "cost": "free"
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@latest"
+      ],
+      "description": "Live library documentation lookup (resolve-library-id, query-docs). A docs-lookup skill over the public REST API does the same with no resident tools; prefer it.",
+      "cost": "free"
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "YOUR_GITHUB_PAT_HERE"
+      },
+      "description": "GitHub PRs, issues, repos. The gh CLI covers most of this with no tool budget; prefer it.",
+      "cost": "free, needs a scoped token"
+    },
+    "cloudflare-docs": {
+      "type": "http",
+      "url": "https://docs.mcp.cloudflare.com/mcp",
+      "description": "Cloudflare documentation search.",
+      "cost": "free"
+    },
+    "cloudflare-workers-builds": {
+      "type": "http",
+      "url": "https://builds.mcp.cloudflare.com/mcp",
+      "description": "Cloudflare Workers builds.",
+      "cost": "account, free tier"
+    },
+    "cloudflare-workers-bindings": {
+      "type": "http",
+      "url": "https://bindings.mcp.cloudflare.com/mcp",
+      "description": "Cloudflare Workers bindings.",
+      "cost": "account, free tier"
+    },
+    "cloudflare-observability": {
+      "type": "http",
+      "url": "https://observability.mcp.cloudflare.com/mcp",
+      "description": "Cloudflare observability and logs.",
+      "cost": "account, free tier"
+    },
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--project-ref=YOUR_PROJECT_REF"
+      ],
+      "description": "Supabase database operations. Set your project ref.",
+      "cost": "account, free tier"
+    },
+    "vercel": {
+      "type": "http",
+      "url": "https://mcp.vercel.com",
+      "description": "Vercel deployments and projects.",
+      "cost": "account, free tier"
+    },
+    "parallel-search": {
+      "type": "http",
+      "url": "https://search.parallel.ai/mcp",
+      "description": "Web search and fetch returning citation-backed excerpts.",
+      "cost": "free for anonymous use"
+    },
+    "exa-web-search": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "exa-mcp-server"
+      ],
+      "env": {
+        "EXA_API_KEY": "YOUR_EXA_API_KEY_HERE"
+      },
+      "description": "Web search and research via Exa. Use after repo, GitHub and docs searches come up short.",
+      "cost": "paid API"
+    },
+    "firecrawl": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "firecrawl-mcp"
+      ],
+      "env": {
+        "FIRECRAWL_API_KEY": "YOUR_FIRECRAWL_KEY_HERE"
+      },
+      "description": "Web scraping and crawling.",
+      "cost": "paid API"
+    },
+    "jira": {
+      "command": "uvx",
+      "args": [
+        "mcp-atlassian==0.21.0"
+      ],
+      "env": {
+        "JIRA_URL": "YOUR_JIRA_URL_HERE",
+        "JIRA_EMAIL": "YOUR_JIRA_EMAIL_HERE",
+        "JIRA_API_TOKEN": "YOUR_JIRA_API_TOKEN_HERE"
+      },
+      "description": "Jira issue tracking.",
+      "cost": "Atlassian account"
+    }
+  }
+}

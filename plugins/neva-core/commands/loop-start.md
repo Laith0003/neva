@@ -1,0 +1,38 @@
+---
+description: "Start a managed autonomous loop pattern with safety defaults and explicit stop conditions."
+---
+
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# Loop Start Command
+
+Start a managed autonomous loop pattern with safety defaults.
+
+## Usage
+
+`/loop-start [pattern] [--mode safe|fast]`
+
+- `pattern`: `sequential`, `continuous-pr`, `rfc-dag`, `infinite`
+- `--mode`:
+  - `safe` (default): strict quality gates and checkpoints
+  - `fast`: reduced gates for speed
+
+## Flow
+
+1. Confirm repository state and branch strategy.
+2. Select loop pattern and model tier strategy.
+3. Enable required hooks/profile for the chosen mode.
+4. Create loop plan and write runbook under `.claude/plans/`.
+5. Print commands to start and monitor the loop. Monitoring from another terminal: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/loop_status.py" --watch --watch-count 60 --exit-code` (exit 2 means a stale wake or Bash wait).
+
+## Required Safety Checks
+
+- Verify tests pass before first loop iteration.
+- Ensure `NEVA_HOOK_PROFILE` is not disabled globally.
+- Ensure loop has explicit stop condition.
+
+## Arguments
+
+$ARGUMENTS:
+- `<pattern>` optional (`sequential|continuous-pr|rfc-dag|infinite`)
+- `--mode safe|fast` optional

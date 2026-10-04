@@ -1,0 +1,11 @@
+{
+  "name": "neva-core",
+  "version": "0.10.1",
+  "description": "Process, memory and learning core: plan, test, implement, review, verify, remember, improve. Agent orchestration, eval and security harnesses. Always on.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
+}

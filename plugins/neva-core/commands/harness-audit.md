@@ -1,0 +1,104 @@
+---
+description: "Run a deterministic Neva harness audit and return a prioritized scorecard."
+---
+
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# Harness Audit Command
+
+Run a deterministic harness audit and return a prioritized scorecard.
+
+## Usage
+
+`/harness-audit [scope] [--format text|json] [--root path]`
+
+- `scope` (optional): `repo` (default), `hooks`, `skills`, `commands`, `agents`
+- `--format`: output style (`text` default, `json` for automation)
+- `--root`: audit a specific path instead of the current working directory
+
+## Deterministic Engine
+
+Count the MCP tools loaded in this session first: every tool in your tool list whose name starts with `mcp__`. Pass that number as `--mcp-tools`; the script cannot see your tool list and marks the tool budget as unmeasured without it.
+
+Always run:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/harness_audit.py" <scope> --format <text|json> --mcp-tools <n> [--root <path>]
+```
+
+This script is the source of truth for scoring and checks. Do not invent additional dimensions or ad-hoc points. It is read-only: it never changes settings, plugins, rules or files.
+
+Rubric version: `2026-09-29.neva`.
+
+The script computes up to 12 fixed categories (`0-10` normalized each). The first seven are always applicable; GitHub Integration is always applicable; deploy-target categories are applicable only when a matching marker is detected.
+
+1. Tool Coverage
+2. Context Efficiency
+3. Quality Gates
+4. Memory Persistence
+5. Eval Coverage
+6. Security Guardrails
+7. Cost Efficiency
+8. GitHub Integration
+9. Vercel Integration *(when `vercel.json` or `.vercel/` is present)*
+10. Netlify Integration *(when `netlify.toml` or `.netlify/` is present)*
+11. Cloudflare Integration *(when `wrangler.toml`, `wrangler.jsonc` or `wrangler.json` is present)*
+12. Fly Integration *(when `fly.toml` is present)*
+
+Two target modes, auto-detected from the root:
+
+- `repo`: the Neva marketplace repo itself. Checks marketplace and plugin manifests, hook wiring (every module in `hooks.meta.json` has a registered event, a file and its function), every `${CLAUDE_PLUGIN_ROOT}/` path a command, agent or skill calls, skill description lengths (300 characters or fewer), model pins on every agent, the default MCP set, and the test and verify harness.
+- `consumer`: any other project on this machine. Checks that neva-core is installed and enabled, hooks are registered and firing (recent files in the Neva data dir, no `[error]` lines in `hooks.log` in the last 7 days), core rules are installed under `~/.claude/rules/neva/common/`, the MCP load is inside budget (fewer than 10 servers enabled for this project, fewer than 80 MCP tools), installed skills and agents are within budget and pinned, the vault is configured, instincts are fresh (no pending instinct past 30 days, no learned instinct older than 90), the cost tracker is writing, plus project hygiene.
+
+MCP servers added through claude.ai connectors are not in local config files, so the server count can be lower than what the session loads. The `--mcp-tools` count covers them.
+
+Scores are derived from explicit file and config checks. Time-based checks use the current date; pass `--now YYYY-MM-DD` to pin it and reproduce a report exactly.
+
+## Output Contract
+
+Return:
+
+1. `overall_score` out of `max_score`. `max_score` depends on which categories are applicable to the target; never assume a fixed total.
+2. `applicable_categories[]` and `category_count` describing which categories contributed.
+3. Category scores and concrete findings.
+4. Failed checks with exact file paths and their `detail` (the measured value).
+5. Top 3 actions from the deterministic output (`top_actions`).
+6. Suggested Neva skills to apply next.
+
+## Checklist
+
+- Use script output directly; do not rescore manually.
+- If `--format json` is requested, return the script JSON unchanged.
+- If text is requested, summarize failing checks and top actions.
+- Include exact file paths from `checks[]` and `top_actions[]`.
+- Report fixes as proposals. Changing settings, plugins, rules or MCP config is the user's call.
+
+## Example Result
+
+```text
+Harness Audit (repo, consumer): 61/72
+Root: /path/to/project
+
+- Tool Coverage: 10/10 (11/11 pts)
+- Context Efficiency: 6/10 (7/12 pts)
+- Memory Persistence: 8/10 (9/11 pts)
+- GitHub Integration: 4/10 (4/10 pts)
+
+Checks: 28 total, 5 failing
+
+Top 3 Actions:
+1) [Context Efficiency] Disable servers this project does not use: disabledMcpServers in the project entry of ~/.claude.json, or NEVA_DISABLED_MCPS for Neva's own. (~/.claude.json mcpServers)
+2) [GitHub Integration] Add at least one workflow under .github/workflows/ so CI runs on every PR. (.github/workflows/)
+3) [Memory Persistence] Read the [error] lines in hooks.log, fix the failing module, or disable it with NEVA_DISABLED_HOOKS. (~/.local/share/neva/hooks.log)
+```
+
+## Arguments
+
+$ARGUMENTS:
+- `repo|hooks|skills|commands|agents` (optional scope)
+- `--format text|json` (optional output format)
+- `--root <path>` (optional)
+
+## Dependency
+
+Requires Python 3 (standard library only). The script ships in this plugin at `scripts/harness_audit.py`.

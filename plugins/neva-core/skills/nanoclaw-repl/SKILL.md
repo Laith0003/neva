@@ -1,0 +1,47 @@
+---
+name: "nanoclaw-repl"
+description: "Use when running, resuming, branching, compacting, searching, or exporting a NanoClaw session, or extending claw.js: a zero-dependency REPL over claude -p with markdown-backed sessions, model switching, and skill loading."
+metadata:
+  origin: neva (adapted from ECC)
+---
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# NanoClaw REPL
+
+Use this skill when running or extending `scripts/claw.js` (shipped with this skill). requires: node.
+
+## Run
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/skills/nanoclaw-repl/scripts/claw.js"
+CLAW_SESSION=my-project CLAW_SKILLS=tdd-workflow,security-review CLAW_MODEL=sonnet \
+  node "${CLAUDE_PLUGIN_ROOT}/skills/nanoclaw-repl/scripts/claw.js"
+```
+
+- Sessions are markdown files in `~/.local/share/neva/sessions/claw/<session>.md` (override with `CLAW_DIR`). Session names match `^[a-zA-Z0-9][-a-zA-Z0-9]*$`.
+- `CLAW_SKILLS` loads skills as system context. Lookup order: `./skills/<name>/SKILL.md`, then `neva-core/skills`, then the sibling Neva plugins' `skills/`. Missing skills are skipped silently.
+- Each turn calls `claude -p` synchronously with the full history; the model name is validated against `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` before it reaches the command line.
+
+## Capabilities
+
+- persistent markdown-backed sessions
+- model switching with `/model`
+- dynamic skill loading with `/load`
+- session branching with `/branch`
+- cross-session search with `/search`
+- history compaction with `/compact`
+- export to md/json/txt with `/export`
+- session metrics with `/metrics`
+
+## Operating Guidance
+
+1. Keep sessions task-focused.
+2. Branch before high-risk changes.
+3. Compact after major milestones.
+4. Export before sharing or archival.
+
+## Extension Rules
+
+- keep zero external runtime dependencies
+- preserve markdown-as-database compatibility
+- keep command handlers deterministic and local

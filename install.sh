@@ -7,9 +7,14 @@
 #   3. sets up your vault folder (or leaves your existing one completely alone)
 #   4. interviews you for the identity file (only what it cannot detect)
 #   5. seeds the agent workspace (BOOTSTRAP interview, base persona layers)
-#   6. renders the scheduled-job templates (does NOT enable them; that is a later, manual,
-#      one-at-a-time step: docs/03-scheduled-jobs.md)
-#   7. runs doctor so you end with a table of what works and what to do next
+#   6. installs the Claude Code rules for the plugins you enable (default: core only) and
+#      prints the two commands that add the Neva marketplace and install neva-core
+#   7. renders the scheduled-job templates, including the nightly instinct job (does NOT
+#      enable them; that is a later, manual, one-at-a-time step: docs/03-scheduled-jobs.md)
+#   8. runs doctor so you end with a table of what works and what to do next
+#
+# Hands-free: NEVA_NONINTERACTIVE=1 plus the answers as env vars (OWNER_NAME, VAULT_PATH, ...,
+# NEVA_PLUGINS="core web"). Re-running is safe: every step copies over or skips.
 set -u
 REPO="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="$HOME/.local/neva"
@@ -74,6 +79,12 @@ for F in "$PREFIX/bin/"*; do
   ln -sf "$F" "$BIN/$(basename "$F")"
 done
 say "tools installed to $PREFIX/bin and linked into $BIN"
+# The nightly instinct job runs from the install prefix, not from this checkout or the plugin
+# cache (whose path Claude Code owns), so the timer keeps working if this folder moves.
+mkdir -p "$PREFIX/plugins/neva-core/skills"
+cp -R "$REPO/plugins/neva-core/skills/continuous-learning-v2" "$PREFIX/plugins/neva-core/skills/"
+rm -rf "$PREFIX/plugins/neva-core/skills/continuous-learning-v2/scripts/__pycache__" \
+       "$PREFIX/plugins/neva-core/skills/continuous-learning-v2/.pytest_cache"
 case ":$PATH:" in
   *":$BIN:"*) : ;;
   *) say "note: $BIN is not in your PATH. Add to your shell rc:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
@@ -269,10 +280,51 @@ fi
 # does not re-ask every time once the buyer has already made this choice once
 date +%F > "$WORKSPACE_PATH/.neva-workspace"
 
-# ---------- 6. render service templates (not enabled) ----------
+# ---------- 6. Claude Code: rules and plugins ----------
+# Rules are plain markdown Claude Code loads from ~/.claude/rules/ in every session. neva-core's
+# go to rules/neva/common/, each enabled plugin's language packs to rules/neva/<lang>/. Only the
+# plugins you enable: a rule for a language you never write is context you pay for every turn.
+PLUGIN_NAMES=""
+for D in "$REPO/plugins/"neva-*; do [ -d "$D" ] && PLUGIN_NAMES="$PLUGIN_NAMES ${D##*/neva-}"; done
+ask NEVA_PLUGINS "Which Neva plugins will you use (core is always on; add any of:$PLUGIN_NAMES)" "core"
+ENABLED="core"
+for P in $(printf "%s" "$NEVA_PLUGINS" | tr ',' ' '); do
+  P="${P#neva-}"
+  [ "$P" = "core" ] && continue
+  if [ -d "$REPO/plugins/neva-$P" ]; then
+    case " $ENABLED " in *" $P "*) : ;; *) ENABLED="$ENABLED $P" ;; esac
+  else
+    say "unknown plugin '$P' in NEVA_PLUGINS, skipped. fix: use any of:$PLUGIN_NAMES"
+  fi
+done
+RULES_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/rules/neva"
+mkdir -p "$RULES_DIR/common"
+cp "$REPO/plugins/neva-core/rules/"*.md "$RULES_DIR/common/" 2>/dev/null || true
+LANGS=""
+for P in $ENABLED; do
+  for L in "$REPO/plugins/neva-$P/rules/"*/; do
+    [ -d "$L" ] || continue
+    L="${L%/}"; L="${L##*/}"
+    mkdir -p "$RULES_DIR/$L"
+    cp "$REPO/plugins/neva-$P/rules/$L/"*.md "$RULES_DIR/$L/" 2>/dev/null || true
+    LANGS="$LANGS $L"
+  done
+done
+say "rules installed to $RULES_DIR (common${LANGS:+,$LANGS}) for plugins: $ENABLED"
+say "add the plugins to Claude Code (run these yourself; install.sh never changes Claude Code settings):"
+say "  claude plugin marketplace add \"$REPO\""
+for P in $ENABLED; do say "  claude plugin install neva-$P@neva"; done
+
+# ---------- 7. render service templates (not enabled) ----------
 RENDERED="$PREFIX/services"
 mkdir -p "$RENDERED"
-render() { sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@HOME@|$HOME|g" "$1" > "$2"; }
+# Scheduled jobs start with a bare PATH. The instinct job needs the claude binary, so bake in
+# the directory it lives in now; if claude is installed later, re-run install.sh.
+CLAUDE_BIN_DIR=""
+command -v claude >/dev/null 2>&1 && CLAUDE_BIN_DIR="$(dirname "$(command -v claude)")"
+SERVICE_PATH="${CLAUDE_BIN_DIR:+$CLAUDE_BIN_DIR:}$BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+[ -z "$CLAUDE_BIN_DIR" ] && say "note: claude CLI not found; the nightly instinct job will skip analysis until it is on PATH. fix: install Claude Code, then re-run install.sh"
+render() { sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@HOME@|$HOME|g" -e "s|@SERVICE_PATH@|$SERVICE_PATH|g" "$1" > "$2"; }
 if [ "$OS" = "Darwin" ]; then
   for T in "$REPO/services/launchd/"*.tmpl; do
     [ -f "$T" ] || continue
@@ -290,6 +342,7 @@ fi
 render "$REPO/services/heartbeat-wrap.sh" "$RENDERED/heartbeat-wrap.sh"
 chmod +x "$RENDERED/heartbeat-wrap.sh"
 say "scheduled-job templates rendered to $RENDERED (enable later, one at a time: docs/03-scheduled-jobs.md)"
+say "  includes the nightly instinct job (instinct-analyze, 03:30): it turns observed sessions into instinct proposals for you to approve"
 
 # Linux systemd --user units only run while a user session exists, UNLESS lingering is
 # enabled: without it, a timer enabled over SSH stops the moment that SSH session ends and
@@ -372,7 +425,7 @@ fi
 fi
 echo "$CADENCE_STATUS" > "$STATE/cadence-enabled-at-install"
 
-# ---------- 7. doctor ----------
+# ---------- 8. doctor ----------
 echo
 "$PREFIX/bin/doctor" || true
 echo

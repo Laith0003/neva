@@ -4,8 +4,11 @@
 set -eu
 REPO="$(cd "$(dirname "$0")" && pwd)"
 say() { printf "%s\n" "$*"; }
-say "This updates: tools (bin/lib), services templates, docs, base persona layers, vault manual and skills."
+say "This updates: tools (bin/lib), services templates (including the nightly instinct job), the instinct"
+say "engine copy under ~/.local/neva/plugins, Claude Code rules for your enabled plugins (NEVA_PLUGINS),"
+say "docs, base persona layers, vault manual and skills."
 say "It never touches: identity.env, USER.md, SOUL.local.md, AGENTS.local.md, or your vault content."
+say "An existing vault gets no new seed notes; the first instinct proposal creates 00 Inbox/inbox.md when missing."
 # NON-INTERACTIVE MODE (2026-08-01): install.sh's own `ask()` already handles an agent-driven,
 # hands-free run (NEVA_NONINTERACTIVE=1 or no tty): pre-seeded answers pass through, a missing
 # required one fails loudly by name. upgrade.sh had none of that: a hands-free invocation hit

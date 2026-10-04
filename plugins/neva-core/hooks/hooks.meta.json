@@ -1,0 +1,462 @@
+{
+  "_attribution": "Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.",
+  "_about": "Module registry for dispatch.py. events: hook events the module listens on (every event is one * matcher in hooks.json). tools: optional fnmatch list of tool names; the module runs only for those tools. profiles: which NEVA_HOOK_PROFILE values run it. Order inside an event is run order. Disable any id with NEVA_DISABLED_HOOKS. The human-readable table is docs/harness/hooks.md.",
+  "version": 2,
+  "profiles": [
+    "minimal",
+    "standard",
+    "strict"
+  ],
+  "modules": [
+    {
+      "id": "session_start",
+      "module": "session_start",
+      "function": "run",
+      "events": [
+        "SessionStart"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "Inject strong instincts (canonical project/<id> and global folders), today's journal head, inbox open actions, open instinct proposals and the last session summary for this worktree or repo (8000 char cap); prune session files older than 30 days."
+    },
+    {
+      "id": "ck_session_start",
+      "module": "ck",
+      "function": "run",
+      "events": [
+        "SessionStart"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "ck skill: record current-session.json and inject the project's saved goal, where it left off and next steps (or the 3 most recent ck projects). No-op when ck data does not exist."
+    },
+    {
+      "id": "prompt_context",
+      "module": "prompt_context",
+      "function": "run",
+      "events": [
+        "UserPromptSubmit"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Once per session: GOALS.md and project states when a prompt is about direction; the matching project note when the working directory is under its code path."
+    },
+    {
+      "id": "hookify_prompt",
+      "module": "hookify",
+      "function": "prompt",
+      "events": [
+        "UserPromptSubmit"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "hookify rules with event prompt or all: warn with context or block the prompt."
+    },
+    {
+      "id": "no_verify",
+      "module": "pre_bash",
+      "function": "no_verify",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Bash"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "Block git hook bypasses: --no-verify (and prefixes), commit -n clusters, -c core.hooksPath, git config core.hooksPath, HUSKY=0."
+    },
+    {
+      "id": "safety_careful",
+      "module": "safety_guard",
+      "function": "careful",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Bash"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "safety-guard careful mode (on while <NEVA_STATE_DIR>/safety-guard/careful exists): ask before destructive commands."
+    },
+    {
+      "id": "commit_quality",
+      "module": "pre_bash",
+      "function": "commit_quality",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Bash"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "On git commit: block secret shapes and debugger statements in the staged diff; warn on console.log, possible hardcoded secrets and non-conventional messages."
+    },
+    {
+      "id": "push_reminder",
+      "module": "pre_bash",
+      "function": "push_reminder",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Bash"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "On git push: remind to check what will be published; flag shared branches and force pushes."
+    },
+    {
+      "id": "tmux_dev",
+      "module": "pre_bash",
+      "function": "tmux_dev",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Bash"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Dev server started in the foreground outside tmux: warn (standard) or block (strict), with the exact tmux command. run_in_background is allowed."
+    },
+    {
+      "id": "vault_gate",
+      "module": "pre_write",
+      "function": "vault_gate",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "Writes into the vault outside NEVA_VAULT_WRITABLE folders ask the user first."
+    },
+    {
+      "id": "safety_freeze",
+      "module": "safety_guard",
+      "function": "freeze",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "safety-guard freeze mode (on while <NEVA_STATE_DIR>/safety-guard/freeze-dir.txt names a directory): deny edits outside it."
+    },
+    {
+      "id": "config_protection",
+      "module": "pre_write",
+      "function": "config_protection",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Block edits that loosen lint, format or type configs: rules turned off or to warn, strict flags off, new ignores or excludes, removed rules, lowered levels."
+    },
+    {
+      "id": "doc_file_warning",
+      "module": "pre_write",
+      "function": "doc_file_warning",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Warn on ad-hoc NOTES/TODO/SCRATCH style files outside structured doc folders."
+    },
+    {
+      "id": "gateguard",
+      "module": "gateguard",
+      "function": "run",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "strict"
+      ],
+      "description": "GateGuard first-edit gate: deny the first Edit, Write or MultiEdit of each file until the model lists importers or callers, affected API, data shapes and the user's instruction verbatim; the retry passes."
+    },
+    {
+      "id": "suggest_compact",
+      "module": "pre_write",
+      "function": "suggest_compact",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "strategic-compact nudge: context size from the transcript (160k of a 200k window, 800k of a 1M window, then every 60k more); edit-count fallback at 50 then every 25 when no usage is recorded yet."
+    },
+    {
+      "id": "hookify_pre_tool",
+      "module": "hookify",
+      "function": "pre_tool",
+      "events": [
+        "PreToolUse"
+      ],
+      "tools": [
+        "Bash",
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "hookify rules from .claude/hookify.*.local.md with event bash, file or all: warn with context or block the call."
+    },
+    {
+      "id": "mcp_health",
+      "module": "mcp_health",
+      "function": "run",
+      "events": [
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure"
+      ],
+      "tools": [
+        "mcp__*"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "Mark an MCP server unhealthy after a transport, auth, rate-limit or availability failure and block calls to it until its backoff passes. Runs for mcp__* tools only."
+    },
+    {
+      "id": "observe",
+      "module": "observe",
+      "function": "observe",
+      "events": [
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "continuous-learning-v2 observation hook: append scrubbed, truncated tool events (with `path` on tool_start) to <observations dir>/<project-id>/observations.jsonl for the nightly instinct analyzer. NEVA_SKIP_OBSERVE=1 skips."
+    },
+    {
+      "id": "edit_accumulator",
+      "module": "observe",
+      "function": "edit_accumulator",
+      "events": [
+        "PostToolUse"
+      ],
+      "tools": [
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Remember files edited this response for the Stop format and typecheck pass."
+    },
+    {
+      "id": "pre_compact",
+      "module": "pre_compact",
+      "function": "run",
+      "events": [
+        "PreCompact"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Write the summary block into the session file and one line into today's journal log before compaction."
+    },
+    {
+      "id": "plan_canvas_pending",
+      "module": "plan_canvas",
+      "function": "run",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "plan-canvas: block the stop while canvas feedback is queued with no listener, and hand over up to 20 items. Allows on any error."
+    },
+    {
+      "id": "session_summary",
+      "module": "stop",
+      "function": "session_summary",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Refresh the per-session summary between NEVA:SUMMARY markers in the session file."
+    },
+    {
+      "id": "cost_tracker",
+      "module": "stop",
+      "function": "cost_tracker",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Append a cumulative cost snapshot to <NEVA_METRICS_DIR>/costs.jsonl (default ~/.local/share/neva/metrics) when transcript usage changed."
+    },
+    {
+      "id": "format_typecheck",
+      "module": "stop",
+      "function": "format_typecheck",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Once per response, format edited files with the project's own biome, prettier, pint or ruff; strict also runs tsc and feeds errors back once."
+    },
+    {
+      "id": "hookify_stop",
+      "module": "hookify",
+      "function": "stop",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "hookify rules with event stop or all: warn, or refuse the stop once (never twice in a row)."
+    },
+    {
+      "id": "delivery_gate",
+      "module": "delivery_gate",
+      "function": "run",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "strict"
+      ],
+      "description": "delivery-gate: block on critical disk space or on a complex task without learning capture; warn on rationalization phrases."
+    },
+    {
+      "id": "journal_nudge",
+      "module": "stop",
+      "function": "journal_nudge",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Once per session, block the stop when 5 or more tool calls ran and nothing was written to the journal."
+    },
+    {
+      "id": "notify",
+      "module": "stop",
+      "function": "notify",
+      "events": [
+        "Stop"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "Optional macOS notification when a response is ready. Off unless NEVA_NOTIFY=1."
+    },
+    {
+      "id": "session_audit",
+      "module": "session_end",
+      "function": "audit",
+      "events": [
+        "SessionEnd"
+      ],
+      "profiles": [
+        "minimal",
+        "standard",
+        "strict"
+      ],
+      "description": "One audit line per session id in today's journal log, updated in place on resume."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "neva-media",
+  "version": "0.10.0",
+  "description": "Video editing and generation (Remotion, Manim, VideoDB, fal.ai), Blender motion, taste and style packs, UI demo recordings, document processing and translation.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
+}

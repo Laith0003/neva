@@ -1,0 +1,11 @@
+{
+  "name": "neva-ops",
+  "version": "0.10.0",
+  "description": "Docker, Kubernetes, deployment and canary checks, homelab and network engineering (VLAN, WireGuard, DNS, BGP, Cisco IOS), Flox, PM2, terminal ops.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
+}

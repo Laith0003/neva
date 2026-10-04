@@ -1,0 +1,45 @@
+name: verify
+
+on:
+  push:
+    branches: [main, feat/**]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Personal denylist for the leak scan (from a repository secret, never committed)
+        env:
+          LEAK_SCAN_LOCAL: ${{ secrets.LEAK_SCAN_LOCAL }}
+        run: |
+          if [ -n "$LEAK_SCAN_LOCAL" ]; then printf '%s\n' "$LEAK_SCAN_LOCAL" > build/leak-scan.local; fi
+      - name: Leak scan
+        run: python3 build/leak-scan.py .
+      - name: Licence guard
+        run: python3 build/licence-guard.py
+      - name: Acceptance harness
+        run: bash build/verify.sh
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

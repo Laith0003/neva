@@ -7,16 +7,22 @@ build/
 workspace/AGENTS.base.md
 workspace/SOUL.base.md
 workspace/BOOTSTRAP.md
+plugins/
 vault/CLAUDE.md
 vault/Templates/
 vault/Skills/
 install.sh
+upgrade.sh
 README.md
 VERSION
 MANIFEST
+# install targets rebuilt from the paths above on every install or upgrade:
+#   ~/.local/neva/{bin,lib,services,plugins/neva-core/skills/continuous-learning-v2}
+#   ~/.claude/rules/neva/common/ and ~/.claude/rules/neva/<lang>/ (enabled plugins only)
 # user-owned, NEVER touched by upgrades: everything else, notably
 #   ~/.config/neva/identity.env, workspace *.local.md and USER.md,
-#   all vault content folders (00-10, Food, Journal, Reviews),
+#   all vault content folders (00-10, Food, Journal, Reviews), including the seeded
+#   00 Inbox/inbox.md and 06 Memory/instincts/README.md (shipped once, then yours),
 #   and vault/.obsidian: shipped once at install, then yours. This is deliberate, not an
 #   omission. Buyers retheme and add plugins, and silently overwriting that on upgrade would
 #   cost them more than a stale dashboard does. If a dashboard changes, docs say what to copy.

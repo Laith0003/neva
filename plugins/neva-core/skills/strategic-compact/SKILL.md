@@ -1,0 +1,135 @@
+---
+name: strategic-compact
+description: "Use when a long session nears its context limit, when switching task phases (research to plan, plan to build, debug to next feature), or when a compact suggestion fires: decide whether to /compact now and what to write down first."
+metadata:
+  origin: neva (adapted from ECC)
+---
+<!-- Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva. -->
+
+# Strategic Compact Skill
+
+Suggests manual `/compact` at strategic points in your workflow rather than relying on arbitrary auto-compaction.
+
+## When to Activate
+
+- Running long sessions that approach context limits (200K+ tokens)
+- Working on multi-phase tasks (research → plan → implement → test)
+- Switching between unrelated tasks within the same session
+- After completing a major milestone and starting new work
+- When responses slow down or become less coherent (context pressure)
+
+## Why Strategic Compaction?
+
+Auto-compaction triggers at arbitrary points:
+- Often mid-task, losing important context
+- No awareness of logical task boundaries
+- Can interrupt complex multi-step operations
+
+Strategic compaction at logical boundaries:
+- **After exploration, before execution**: Compact research context, keep implementation plan
+- **After completing a milestone**: Fresh start for next phase
+- **Before major context shifts**: Clear exploration context before different task
+
+## How It Works
+
+The `suggest_compact` module of the neva-core hook runtime (`hooks/neva_hooks/pre_write.py`) runs on `PreToolUse` for Edit, Write and MultiEdit, in the standard and strict profiles. It is the only implementation; it suggests `/compact`, you decide.
+
+1. **Context size (primary)**: reads the newest `usage` record in the session transcript (`transcript_path`) and sums `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, the true context size of the turn. Suggests at **160k tokens on a 200k window** and **800k tokens on a 1M window**, then again after every further 60k.
+2. **Edit count (fallback)**: only while the transcript has no usage record yet. Suggests at 50 edits, then every 25.
+
+The window is `NEVA_CONTEXT_WINDOW_TOKENS`, else `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, else 1M when the model id carries a `[1m]` marker or belongs to a 1M family, else 1M when more than 200k tokens are already in use, else 200k.
+
+Messages, added as context for the model:
+
+- `[StrategicCompact] Context is about <N>k tokens (<P>% of a <W>k window). Consider /compact at the next logical boundary, with a focus line for what comes next. Write the plan or state to a file first (/ck:save).`
+- `[StrategicCompact] <N> edits this session. A good checkpoint for /compact if the phase is changing.`
+
+State: `<NEVA_STATE_DIR>/hooks/compact-<session>.json` (default `~/.local/state/neva/hooks/`), holding the edit count and the last context bucket reported. Hook state files older than `COMPACT_STATE_TTL_DAYS` (14) are pruned at session start. The hook never blocks.
+
+## Configuration
+
+- `COMPACT_CONTEXT_THRESHOLD`: context tokens before the first suggestion (default 160000 on a 200k window, 800000 on a 1M window; `0` disables the context signal)
+- `COMPACT_CONTEXT_INTERVAL`: additional tokens before it repeats (default 60000)
+- `COMPACT_THRESHOLD`: edits before the fallback suggestion (default 50)
+- `COMPACT_STATE_TTL_DAYS`: age at which hook state files are pruned (default 14)
+- `NEVA_CONTEXT_WINDOW_TOKENS`: explicit window size, overriding detection. Set it for a large-window model whose id reveals neither a `[1m]` marker nor a 1M family.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: Claude Code's own window override, honored when the one above is unset.
+- `NEVA_DISABLED_HOOKS=suggest_compact` turns the nudge off.
+
+## Compaction Decision Guide
+
+Use this table to decide when to compact:
+
+| Phase Transition | Compact? | Why |
+|-----------------|----------|-----|
+| Research → Planning | Yes | Research context is bulky; plan is the distilled output |
+| Planning → Implementation | Yes | Plan is written down (a file, or the task list if you have one); free up context for code |
+| Implementation → Testing | Maybe | Keep if tests reference recent code; compact if switching focus |
+| Debugging → Next feature | Yes | Debug traces pollute context for unrelated work |
+| Mid-implementation | No | Losing variable names, file paths, and partial state is costly |
+| After a failed approach | Yes | Clear the dead-end reasoning before trying a new approach |
+
+## What Survives Compaction
+
+Understanding what persists helps you compact with confidence:
+
+| Persists | Lost |
+|----------|------|
+| CLAUDE.md instructions | Intermediate reasoning and analysis |
+| Files on disk | File contents you previously read |
+| Memory files (auto-memory, the vault) | Multi-step conversation context |
+| Git state (commits, branches) | Tool call history and counts |
+| The task list: **only if you have the todo tools** (see below) | Nuanced user preferences stated verbally |
+
+> ### Don't rely on the task list surviving: it may not exist
+>
+> Claude Code **2.1.233 removed the todo/task tools by default** on Opus 4.8, Sonnet 5,
+> Fable 5, Mythos 5 and newer models (`TodoWrite`, `TaskCreate/Get/Update/List`).
+> `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` brings them back, but that is a per-machine
+> environment setting: **it does not travel with this skill**, so you cannot assume the
+> reader has it.
+>
+> This matters because "my todo list survives compaction" is a reason people compact
+> *instead of* writing state down. If the tools are absent there is no list to survive,
+> and the plan is simply gone. **Write the plan to a file before compacting**: a file
+> persists on every version and every model. Treat the task list as a convenience that
+> may be missing, never as your durable record.
+
+## Best Practices
+
+1. **Compact after planning**: Once the plan is finalized **and written to a file**, compact to start fresh
+2. **Compact after debugging**: Clear error-resolution context before continuing
+3. **Don't compact mid-implementation**: Preserve context for related changes
+4. **Read the suggestion**: The hook tells you *when*, you decide *if*
+5. **Write before compacting**: Save important context to files or memory before compacting (`/ck:save` records goal, where you left off, next steps, decisions)
+6. **Use `/compact` with a summary**: Add a custom message: `/compact Focus on implementing auth middleware next`
+
+## Token Optimization Patterns
+
+### Trigger-Table Lazy Loading
+Instead of loading full skill content at session start, use a trigger table that maps keywords to skill paths. Skills load only when triggered, reducing baseline context by 50%+:
+
+| Trigger | Skill | Load When |
+|---------|-------|-----------|
+| "test", "tdd", "coverage" | tdd-workflow | User mentions testing |
+| "security", "auth", "xss" | security-review | Security-related work |
+| "deploy", "ci/cd" | deployment-patterns | Deployment context |
+
+### Context Composition Awareness
+Monitor what's consuming your context window:
+- **CLAUDE.md files**: Always loaded, keep lean
+- **Loaded skills**: Each skill adds 1-5K tokens
+- **Conversation history**: Grows with each exchange
+- **Tool results**: File reads, search results add bulk
+
+### Duplicate Instruction Detection
+Common sources of duplicate context:
+- Same rules in both `~/.claude/rules/` and project `.claude/rules/`
+- Skills that repeat CLAUDE.md instructions
+- Multiple skills covering overlapping domains
+
+## Related
+
+- `ck`: save session state (`/ck:save`) before compacting, and resume it after (`/ck:resume`).
+- `context-budget`: find what is filling the window before deciding to compact.
+- `continuous-learning-v2`: the observe hook records the session regardless of compaction.

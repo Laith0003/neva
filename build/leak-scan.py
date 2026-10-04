@@ -93,6 +93,15 @@ TIER2_ALLOW = {
                                     # so this has not been reachable -- left as-is, flagged
                                     # in the security audit rather than silently changed)
     "/Users/you/",                 # the documented placeholder path (docs/CONFIGURATION.md)
+    # Plugin fixtures and docs (ECC-derived, reviewed 2026-09-29): generic placeholders only.
+    "/home/user/", "/home/username/",
+    "/home/resolve/",              # DaVinci Resolve's documented Linux install path
+    "+447700900123",               # Ofcom-reserved fictional UK drama number, test fixture
+    "eutilities@ncbi.nlm.nih.gov", # NCBI's published E-utilities contact, required by their API terms
+    "git@github.com",              # SSH remote host, not a person
+    "existing@2x.png", "HomePage-Default@3x.png", "HomePage-List-Default@3x.png",  # retina asset names
+    "-@dev.md",                    # markdown anchor fragment
+    "/users/by/", "/users/migrations/", "/users/tests/",  # URL path segments, not home dirs
 }
 # "build" and "__pycache__" used to be here. That is exactly why two real leaks survived:
 # a person's name in build/verify.sh and a tracked .pyc embedding an absolute home path were
