@@ -609,6 +609,25 @@ class TestLifecycle(HookTest):
         self.assertBlocked(r, "error TS2322")
         self.assertTrue(os.path.exists(tlog))
 
+    def test_transcript_cache_reads_only_appended_lines_and_detects_rewrite(self):
+        import importlib, sys as _sys
+        _sys.path.insert(0, self.s.hooks)
+        os.environ["NEVA_STATE_DIR"] = os.path.join(self.s.work, ".state-cache")
+        c = importlib.import_module("neva_hooks.common")
+        tp = self.work_transcript("cache", tools=2)
+        first = c.parse_transcript(tp)
+        n1 = len(first["tool_uses"])
+        with open(tp, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"id": "m-extra", "content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/x"}}]}}) + "\n")
+        second = c.parse_transcript(tp)
+        self.assertEqual(len(second["tool_uses"]), n1 + 1, "appended tool call must be counted once")
+        self.assertEqual(second["prompts"], first["prompts"], "earlier prompts must survive the cache")
+        tp2 = self.work_transcript("cache", tools=5)  # rewrite the same path with different content
+        third = c.parse_transcript(tp2)
+        self.assertEqual(len(third["tool_uses"]), 5, "a rewritten transcript must be reparsed from the start")
+        os.environ.pop("NEVA_STATE_DIR", None)
+
     def test_session_end_audit_dedupes_on_resume(self):
         tp = self.work_transcript("end", tools=2)
         self.s.dispatch("SessionEnd", self.base(transcript_path=tp, reason="exit"))

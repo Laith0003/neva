@@ -470,52 +470,103 @@ def _text_of(content):
     return "", False
 
 
+_KEEP_INPUT_KEYS = ("file_path", "notebook_path", "command", "path", "pattern")
+
+
+def _compact_input(inp):
+    """Keep only the input fields hooks read (paths and commands), capped, so the cache stays small."""
+    return {k: str(inp[k])[:2000] for k in _KEEP_INPUT_KEYS if k in inp}
+
+
+def _prefix_sig(fh, offset):
+    """Fingerprint of the bytes just before offset, to detect a rewritten (not appended) file."""
+    start = max(0, offset - 512)
+    fh.seek(start)
+    return hashlib.sha1(fh.read(offset - start)).hexdigest()
+
+
+def _transcript_cache_path(path):
+    key = hashlib.sha1(os.path.realpath(path).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(ensure_dir(os.path.join(state_dir(), "transcripts")), key + ".json")
+
+
 def parse_transcript(path):
-    """One pass over a Claude Code JSONL transcript. Sidechain (subagent) entries skipped."""
+    """Claude Code JSONL transcript, parsed incrementally. Sidechain (subagent) entries skipped.
+
+    A per-transcript cache in the hook state dir keeps the byte offset and the accumulated
+    result, so each Stop reads only the lines appended since the last call instead of the
+    whole file (large sessions took about 2 s per response before this)."""
     out = {"prompts": [], "tool_uses": [], "files": [], "usage": {}, "model": "", "ok": False}
     if not path or not os.path.exists(path):
         return out
-    files_seen = set()
-    synthetic = 0
+    offset, synthetic = 0, 0
+    cache = None
     try:
-        with open(path, encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(o, dict) or o.get("isSidechain"):
-                    continue
-                msg = o.get("message") if isinstance(o.get("message"), dict) else {}
-                if o.get("type") == "user" and not o.get("isMeta"):
-                    text, is_result = _text_of(msg.get("content"))
-                    if not is_result and is_real_prompt(text):
-                        out["prompts"].append(text.strip())
-                elif o.get("type") == "assistant":
-                    content = msg.get("content")
-                    if isinstance(content, list):
-                        for b in content:
-                            if isinstance(b, dict) and b.get("type") == "tool_use":
-                                name = str(b.get("name", ""))
-                                inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-                                out["tool_uses"].append((name, inp))
-                                fp = inp.get("file_path") or inp.get("notebook_path")
-                                if fp and name in ("Write", "Edit", "MultiEdit", "NotebookEdit") and fp not in files_seen:
-                                    files_seen.add(fp)
-                                    out["files"].append(fp)
-                    usage = msg.get("usage")
-                    if isinstance(usage, dict):
-                        mid = msg.get("id")
-                        if not mid:
-                            synthetic += 1
-                            mid = f"_line{synthetic}"
-                        out["usage"][mid] = usage
-                    if msg.get("model") and msg.get("model") != "<synthetic>":
-                        out["model"] = msg["model"]
+        cache = _transcript_cache_path(path)
+        size = os.path.getsize(path)
+        if os.path.exists(cache):
+            with open(cache, encoding="utf-8") as fh:
+                saved = json.load(fh)
+            ok = isinstance(saved, dict) and 0 < saved.get("offset", 0) <= size
+            if ok:
+                with open(path, "rb") as fh:
+                    ok = _prefix_sig(fh, saved["offset"]) == saved.get("sig")
+            if ok:
+                offset, synthetic = saved["offset"], saved.get("synthetic", 0)
+                out.update(saved["out"])
+                out["tool_uses"] = [tuple(x) for x in out["tool_uses"]]
+    except Exception:
+        offset, synthetic = 0, 0
+        out = {"prompts": [], "tool_uses": [], "files": [], "usage": {}, "model": "", "ok": False}
+    files_seen = set(out["files"])
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            data = fh.read()
+            cut = data.rfind(b"\n") + 1  # only complete lines; a half-written last line waits for next time
+            sig = _prefix_sig(fh, offset + cut) if cut else None
+        for raw in data[:cut].splitlines():
+            line = raw.decode("utf-8", "ignore").strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(o, dict) or o.get("isSidechain"):
+                continue
+            msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+            if o.get("type") == "user" and not o.get("isMeta"):
+                text, is_result = _text_of(msg.get("content"))
+                if not is_result and is_real_prompt(text):
+                    out["prompts"].append(text.strip())
+            elif o.get("type") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_use":
+                            name = str(b.get("name", ""))
+                            inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                            out["tool_uses"].append((name, _compact_input(inp)))
+                            fp = inp.get("file_path") or inp.get("notebook_path")
+                            if fp and name in ("Write", "Edit", "MultiEdit", "NotebookEdit") and fp not in files_seen:
+                                files_seen.add(fp)
+                                out["files"].append(fp)
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    mid = msg.get("id")
+                    if not mid:
+                        synthetic += 1
+                        mid = f"_line{synthetic}"
+                    out["usage"][mid] = usage
+                if msg.get("model") and msg.get("model") != "<synthetic>":
+                    out["model"] = msg["model"]
         out["ok"] = True
+        if cache and cut:
+            tmp = cache + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"offset": offset + cut, "sig": sig, "synthetic": synthetic, "out": out}, fh)
+            os.replace(tmp, cache)
     except Exception:
         log_exception(f"parse_transcript {path}")
     return out
