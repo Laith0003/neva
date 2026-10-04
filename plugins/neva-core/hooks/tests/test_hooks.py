@@ -1176,7 +1176,7 @@ class TestPlanCanvasStop(HookTest):
         return srv.server_address[1], calls
 
     def state(self, port, file, pending=True, status="feedback"):
-        key = "abcdef012345"
+        key = "abcdef012345"  # gitleaks:allow, fake test value
         self.s.write("home/.local/state/neva/plan-canvas/sessions.json", json.dumps({"sessions": {key: {
             "key": key, "file": file, "status": status, "pendingFeedback": [{"kind": "chat"}] if pending else []}}}))
         self.s.write("home/.local/state/neva/plan-canvas/server.json", json.dumps({"port": port}))

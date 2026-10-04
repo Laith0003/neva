@@ -826,17 +826,21 @@ PYEOF
 then ok "every hook module's event is registered in hooks.json, and plugin.json does not double-declare hooks"
 else bad "hook registration" "a module listens to an event hooks.json never registers, or plugin.json declares hooks; see the python error above"
 fi
-HT_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks.py 2>&1 | tail -3)"
+HT_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks.py 2>&1)"
+HT_OUT="$(printf '%s\n' "$HT_FULL" | tail -3)"
 if printf '%s' "$HT_OUT" | grep -q '^OK'; then
   ok "hook runtime suite: $(printf '%s' "$HT_OUT" | grep -o 'Ran [0-9]* tests')"
 else
   bad "hook runtime suite" "$(printf '%s' "$HT_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$HT_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
 fi
-ST_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/scripts/tests 2>&1 | tail -3)"
+ST_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/scripts/tests 2>&1)"
+ST_OUT="$(printf '%s\n' "$ST_FULL" | tail -3)"
 if printf '%s' "$ST_OUT" | grep -q '^OK'; then
   ok "harness scripts suite: $(printf '%s' "$ST_OUT" | grep -o 'Ran [0-9]* tests')"
 else
   bad "harness scripts suite" "$(printf '%s' "$ST_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$ST_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
 fi
 if command -v claude >/dev/null 2>&1; then
   if (cd "$REPO" && claude plugin validate . 2>&1 | grep -q 'Validation passed'); then
