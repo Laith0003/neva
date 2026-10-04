@@ -6,6 +6,7 @@ Run:  python3 plugins/neva-core/scripts/tests/test_orchestrate_worktrees.py
 """
 import json
 import os
+import shutil
 import sys
 import unittest
 
@@ -156,7 +157,15 @@ class TestExecute(OrchCase):
 
     def test_missing_tmux_is_explained(self):
         os.remove(os.path.join(self.sb.bin, "tmux"))
-        env = {"PATH": self.sb.bin + os.pathsep + "/usr/bin:/bin"}
+        # A PATH with only what the run needs and no tmux: runners such as ubuntu-latest ship
+        # tmux in /usr/bin, so pointing PATH at the system dirs would not hide it.
+        bare = os.path.join(self.sb.home, "bare-bin")
+        os.makedirs(bare, exist_ok=True)
+        for tool in ("git", "sh", "env", "python3"):
+            src = shutil.which(tool)
+            if src and not os.path.exists(os.path.join(bare, tool)):
+                os.symlink(src, os.path.join(bare, tool))
+        env = {"PATH": self.sb.bin + os.pathsep + bare}
         r = self.run_orch(self.plan(), "--execute", env=env)
         self.assertEqual(r.returncode, 1)
         self.assertIn("tmux not found on PATH", r.stderr)
