@@ -110,7 +110,12 @@ TIER2_ALLOW = {
 SKIP_DIRS = {".git", "node_modules", ".obsidian"}
 # The personal denylist is gitignored and never ships. Scanning it would report every
 # pattern it contains as a leak, which is noise that teaches people to ignore this tool.
-SKIP_FILES = {"leak-scan.local"}
+SKIP_FILES = {"leak-scan.local",
+              # In a git worktree, .git is a FILE holding "gitdir: /absolute/path/to/.git/...".
+              # The SKIP_DIRS entry above only ever matched the directory form, so every scan
+              # run inside a worktree reported that pointer as a home-path leak and the
+              # pre-commit hook refused every commit. It is git plumbing, never shipped content.
+              ".git"}
 SKIP_EXT = {".png", ".jpg", ".gif", ".ico", ".woff", ".woff2", ".zip"}
 
 # An empty alternation matches the empty string at every position, so guard it: with no

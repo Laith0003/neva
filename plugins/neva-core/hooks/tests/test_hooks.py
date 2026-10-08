@@ -1414,7 +1414,10 @@ class TestRepoIntegration(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
             outs.append(p.stdout)
         out = outs[1]
-        self.assertIn(f'claude plugin marketplace add "{REPO_ROOT}"', out)
+        # The marketplace is the install prefix, not the checkout, so it survives a moved checkout.
+        prefix = os.path.join(home, ".local", "neva")
+        self.assertIn(f'claude plugin marketplace add "{prefix}"', out)
+        self.assertTrue(os.path.isfile(os.path.join(prefix, ".claude-plugin", "marketplace.json")))
         self.assertIn("claude plugin install neva-core@neva", out)
         self.assertIn("claude plugin install neva-mobile@neva", out)
         self.assertNotIn("neva-web@neva", out)

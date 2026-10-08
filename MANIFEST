@@ -17,8 +17,16 @@ README.md
 VERSION
 MANIFEST
 # install targets rebuilt from the paths above on every install or upgrade:
-#   ~/.local/neva/{bin,lib,services,plugins/neva-core/skills/continuous-learning-v2}
+#   ~/.local/neva/{bin,lib,services,plugins,.claude-plugin}, the resources the installed neva reads
 #   ~/.claude/rules/neva/common/ and ~/.claude/rules/neva/<lang>/ (enabled plugins only)
+#   everything bin/neva install writes into a coding harness: the rules above, the NEVA_*
+#   keys inside the env object of ~/.claude/settings.json, the marketplace and plugin
+#   registrations it added through the claude CLI, and whatever each
+#   adapters/<harness>/install.json names. Every one of those is listed with its checksum and
+#   the backup of what it replaced in ~/.local/share/neva/install-state.json, so
+#   `neva uninstall` removes exactly them and nothing a buyer wrote. That manifest and
+#   ~/.local/share/neva/backups/ are tool-owned, not template-owned: upgrades leave them alone
+#   and uninstall keeps the backups on purpose.
 # user-owned, NEVER touched by upgrades: everything else, notably
 #   ~/.config/neva/identity.env, workspace *.local.md and USER.md,
 #   all vault content folders (00-10, Food, Journal, Reviews), including the seeded

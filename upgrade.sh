@@ -7,6 +7,9 @@ say() { printf "%s\n" "$*"; }
 say "This updates: tools (bin/lib), services templates (including the nightly instinct job), the instinct"
 say "engine copy under ~/.local/neva/plugins, Claude Code rules for your enabled plugins (NEVA_PLUGINS),"
 say "docs, base persona layers, vault manual and skills."
+say "Harness entries are re-applied through bin/neva install, which keeps the install-state manifest"
+say "at ~/.local/share/neva/install-state.json and the backups it already holds. Set NEVA_HARNESS=none"
+say "to leave your coding harness alone."
 say "It never touches: identity.env, USER.md, SOUL.local.md, AGENTS.local.md, or your vault content."
 say "An existing vault gets no new seed notes; the first instinct proposal creates 00 Inbox/inbox.md when missing."
 # NON-INTERACTIVE MODE (2026-08-01): install.sh's own `ask()` already handles an agent-driven,

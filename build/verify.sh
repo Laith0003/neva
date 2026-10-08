@@ -862,6 +862,130 @@ else
 fi
 rm -rf "$BAD_HOOKS_DIR"
 
+head_ "27. the neva CLI installs into a harness and can take itself back out again (2026-10-04)"
+# Added with the installer. An installer that writes into somebody else's home directory is only
+# as good as its undo: a buyer who tries Neva and removes it must get their machine back exactly
+# as it was. The unit suite proves the pieces; this proves the shipped bin/neva binary, run as a
+# real process with a real HOME, leaves nothing behind.
+CT_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO/lib" python3 -m unittest discover -s lib/neva_cli/tests -t lib 2>&1)"
+CT_OUT="$(printf '%s\n' "$CT_FULL" | tail -3)"
+if printf '%s' "$CT_OUT" | grep -q '^OK'; then
+  ok "neva CLI suite: $(printf '%s' "$CT_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "neva CLI suite" "$(printf '%s' "$CT_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$CT_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
+fi
+
+# The neva a buyer runs is ~/.local/bin/neva, a link into the prefix install.sh built in
+# section 1, and its REPO_ROOT is that prefix. Every resource it reads has to be there, or the
+# documented `neva install` cannot do what the checkout's bin/neva does (review, 2026-10-08).
+INST_PREFIX="$SANDBOX/home/.local/neva"
+MISSING_RES=""
+for R in .claude-plugin/marketplace.json plugins/neva-core/hooks/dispatch.py plugins/neva-core/hooks/hooks.json; do
+  [ -f "$INST_PREFIX/$R" ] || MISSING_RES="$MISSING_RES $R"
+done
+ls "$INST_PREFIX/plugins/neva-core/rules/"*.md >/dev/null 2>&1 || MISSING_RES="$MISSING_RES plugins/neva-core/rules/*.md"
+if [ -z "$MISSING_RES" ] && [ -L "$SANDBOX/home/.local/bin/neva" ]; then
+  ok "the installed prefix carries the rules, hooks and marketplace manifest the installed neva reads"
+else
+  bad "installed prefix" "missing from $INST_PREFIX:${MISSING_RES:- the ~/.local/bin/neva link}; the installed neva cannot install or doctor"
+fi
+
+# End to end against the real bin/neva, with a throwaway HOME and a fixture adapter. Nothing
+# here touches the machine running verify: HOME, the data directory and the adapters directory
+# all live inside $SANDBOX.
+CLI_HOME="$SANDBOX/cli-home"; CLI_DATA="$SANDBOX/cli-data"; CLI_ADAPTERS="$SANDBOX/cli-adapters"
+mkdir -p "$CLI_HOME/.fakeharness" "$CLI_ADAPTERS/fakeharness"
+printf 'export EDITOR=vim\n' > "$CLI_HOME/.profile"
+# settings.json is a dotfiles link: install must write through it and uninstall must leave the
+# same link pointing at the same bytes (review round 3).
+mkdir -p "$CLI_HOME/dotfiles"
+printf '{"editor": "vim"}\n' > "$CLI_HOME/dotfiles/fakeharness-settings.json"
+ln -s "$CLI_HOME/dotfiles/fakeharness-settings.json" "$CLI_HOME/.fakeharness/settings.json"
+printf '# Neva for the fake harness\nGround every answer in the vault.\n' > "$CLI_ADAPTERS/fakeharness/AGENTS.md"
+printf '{"neva": {"profile": "standard"}}\n' > "$CLI_ADAPTERS/fakeharness/settings.json"
+printf 'export NEVA_VAULT="$HOME/vault"\n' > "$CLI_ADAPTERS/fakeharness/block.sh"
+cat > "$CLI_ADAPTERS/fakeharness/install.json" <<'JSONEOF'
+{"harness": "fakeharness",
+ "detect": {"paths": ["~/.fakeharness"]},
+ "entries": [
+   {"src": "AGENTS.md", "dest": "~/.fakeharness/AGENTS.md", "mode": "copy"},
+   {"src": "settings.json", "dest": "~/.fakeharness/settings.json", "mode": "merge-json", "key": "neva.profile"},
+   {"src": "block.sh", "dest": "~/.profile", "mode": "append-block", "key": "fakeharness"}],
+ "post": ["fakeharness auth login"]}
+JSONEOF
+# A snapshot is every path under HOME with its bytes, mode and symlink target. Comparing two of
+# them is the whole test: "uninstall left nothing" is a claim about the filesystem, not about
+# an exit code.
+cli_snapshot() {
+  python3 - "$1" <<'PYEOF'
+import hashlib, os, sys
+root = sys.argv[1]
+rows = []
+for base, dirs, files in os.walk(root, followlinks=False):
+    for name in sorted(dirs) + sorted(files):
+        path = os.path.join(base, name)
+        rel = os.path.relpath(path, root)
+        if os.path.islink(path):
+            rows.append(rel + "\tlink\t" + os.readlink(path))
+        elif os.path.isdir(path):
+            rows.append(rel + "\tdir\t")
+        else:
+            digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+            rows.append(rel + "\tfile:%o\t%s" % (os.stat(path).st_mode & 0o777, digest))
+print("\n".join(sorted(rows)))
+PYEOF
+}
+CLI_ENV="HOME=$CLI_HOME NEVA_DATA_DIR=$CLI_DATA NEVA_ADAPTERS_DIR=$CLI_ADAPTERS"
+CLI_BEFORE="$(cli_snapshot "$CLI_HOME")"
+CLI_OUT="$(env $CLI_ENV "$REPO/bin/neva" install --harness fakeharness --yes 2>&1)"
+if printf '%s' "$CLI_OUT" | grep -q 'managed 3 entries' \
+   && [ -f "$CLI_HOME/.fakeharness/AGENTS.md" ] \
+   && grep -q '# neva begin fakeharness' "$CLI_HOME/.profile" \
+   && grep -q '"vim"' "$CLI_HOME/.fakeharness/settings.json"; then
+  ok "neva install applies every adapter mode and leaves the user's own settings keys in place"
+else
+  bad "neva install" "did not apply the fixture adapter: $(printf '%s' "$CLI_OUT" | tr '\n' ' ')"
+fi
+if printf '%s' "$CLI_OUT" | grep -q 'run this yourself: fakeharness auth login'; then
+  ok "adapter post commands are printed for the buyer to run, never run silently"
+else
+  bad "neva install post" "post commands were not printed; a silent run is exactly what the contract forbids"
+fi
+if env $CLI_ENV "$REPO/bin/neva" doctor --harness fakeharness --no-vault >/dev/null 2>&1; then
+  ok "neva doctor is green on a clean install"
+else
+  bad "neva doctor" "went red straight after a clean install: $(env $CLI_ENV "$REPO/bin/neva" doctor --harness fakeharness --no-vault 2>&1 | tr '\n' ' ')"
+fi
+printf 'someone edited this by hand\n' > "$CLI_HOME/.fakeharness/AGENTS.md"
+DOC_OUT="$(env $CLI_ENV "$REPO/bin/neva" doctor --harness fakeharness --no-vault 2>&1)"; DOC_RC=$?
+if [ "$DOC_RC" -ne 0 ] && printf '%s' "$DOC_OUT" | grep -q 'fix: run neva repair --harness fakeharness'; then
+  ok "negative control: an edited file turns doctor red with the exact command that fixes it"
+else
+  bad "doctor tamper detection" "doctor exited $DOC_RC over an edited managed file and did not name the repair command; this check cannot fail and proves nothing"
+fi
+env $CLI_ENV "$REPO/bin/neva" repair --harness fakeharness >/dev/null 2>&1
+if env $CLI_ENV "$REPO/bin/neva" doctor --harness fakeharness --no-vault >/dev/null 2>&1; then
+  ok "neva repair puts the edited file back and doctor goes green again"
+else
+  bad "neva repair" "doctor is still red after repair: $(env $CLI_ENV "$REPO/bin/neva" doctor --harness fakeharness --no-vault 2>&1 | tr '\n' ' ')"
+fi
+env $CLI_ENV "$REPO/bin/neva" uninstall --harness fakeharness --yes >/dev/null 2>&1
+CLI_AFTER="$(cli_snapshot "$CLI_HOME")"
+if [ "$CLI_BEFORE" = "$CLI_AFTER" ]; then
+  ok "neva uninstall leaves HOME byte identical: same files, same bytes, same modes"
+else
+  bad "neva uninstall" "HOME is not what it was before install: $(diff <(printf '%s' "$CLI_BEFORE") <(printf '%s' "$CLI_AFTER") | tr '\n' ' ' | head -c 400)"
+fi
+# negative control: prove the comparison above is capable of seeing a leftover file
+printf 'left behind\n' > "$CLI_HOME/.fakeharness/leftover.md"
+if [ "$CLI_BEFORE" != "$(cli_snapshot "$CLI_HOME")" ]; then
+  ok "negative control: one leftover file is detected by the byte-identity comparison"
+else
+  bad "byte-identity comparison" "a deliberately planted leftover file went unnoticed; the uninstall check above proves nothing"
+fi
+rm -rf "$CLI_HOME" "$CLI_DATA" "$CLI_ADAPTERS"
+
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then

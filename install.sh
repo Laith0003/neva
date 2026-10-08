@@ -7,14 +7,18 @@
 #   3. sets up your vault folder (or leaves your existing one completely alone)
 #   4. interviews you for the identity file (only what it cannot detect)
 #   5. seeds the agent workspace (BOOTSTRAP interview, base persona layers)
-#   6. installs the Claude Code rules for the plugins you enable (default: core only) and
-#      prints the two commands that add the Neva marketplace and install neva-core
+#   6. installs Neva into your coding harness through bin/neva: the rules for the plugins you
+#      enable (default: core only), the NEVA_* settings, and the marketplace. Answer "none" to
+#      that question and it only prints the commands. Everything it writes is reversible with
+#      `neva uninstall`, which restores the backup of anything it replaced.
 #   7. renders the scheduled-job templates, including the nightly instinct job (does NOT
 #      enable them; that is a later, manual, one-at-a-time step: docs/03-scheduled-jobs.md)
 #   8. runs doctor so you end with a table of what works and what to do next
 #
 # Hands-free: NEVA_NONINTERACTIVE=1 plus the answers as env vars (OWNER_NAME, VAULT_PATH, ...,
-# NEVA_PLUGINS="core web"). Re-running is safe: every step copies over or skips.
+# NEVA_PLUGINS="core web", NEVA_HARNESS=claude|all|none, NEVA_CLAUDE_SETTINGS=no to leave Claude
+# Code's settings.json and plugin registry untouched). Re-running is safe: every step
+# copies over or skips, and bin/neva install is idempotent.
 set -u
 REPO="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="$HOME/.local/neva"
@@ -64,27 +68,15 @@ command -v openclaw >/dev/null 2>&1 || say "note: openclaw is not installed yet.
 command -v rg >/dev/null 2>&1 || say "note: ripgrep (rg) recommended for fast vault search: brew/apt install ripgrep"
 
 # ---------- 2. tools ----------
-mkdir -p "$PREFIX" "$BIN" "$STATE"
-cp -R "$REPO/bin" "$REPO/lib" "$PREFIX/"
-# VERSION travels with the install. Without it `report` looks for ../VERSION relative to bin/,
-# finds nothing, and every bug report a user sends back says "Neva " with the version blank:
-# the single most useful field in the report, always empty. Found 2026-08-14 by running report
-# in a fresh install rather than from the repo.
-cp "$REPO/VERSION" "$PREFIX/VERSION" 2>/dev/null || true
-# tools resolve lib relative to the repo; installed copies use the fixed prefix instead
-for F in "$PREFIX/bin/"*; do
-  [ -f "$F" ] || continue
-  sed -i.bak 's|^\. "\$(cd "\$(dirname "\$0")/\.\." && pwd)/lib/config.sh"|. "'"$PREFIX"'/lib/config.sh"|' "$F" && rm -f "$F.bak"
-  chmod +x "$F"
-  ln -sf "$F" "$BIN/$(basename "$F")"
-done
+# PREFIX and BIN are created by the helper, after it has checked them for symlinks.
+mkdir -p "$STATE"
+# shellcheck source=lib/install-tools.sh
+. "$REPO/lib/install-tools.sh"
+if ! neva_install_tools "$REPO" "$PREFIX" "$BIN"; then
+  say "tools were not installed: the line above names the path and the fix"
+  exit 1
+fi
 say "tools installed to $PREFIX/bin and linked into $BIN"
-# The nightly instinct job runs from the install prefix, not from this checkout or the plugin
-# cache (whose path Claude Code owns), so the timer keeps working if this folder moves.
-mkdir -p "$PREFIX/plugins/neva-core/skills"
-cp -R "$REPO/plugins/neva-core/skills/continuous-learning-v2" "$PREFIX/plugins/neva-core/skills/"
-rm -rf "$PREFIX/plugins/neva-core/skills/continuous-learning-v2/scripts/__pycache__" \
-       "$PREFIX/plugins/neva-core/skills/continuous-learning-v2/.pytest_cache"
 case ":$PATH:" in
   *":$BIN:"*) : ;;
   *) say "note: $BIN is not in your PATH. Add to your shell rc:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
@@ -280,13 +272,17 @@ fi
 # does not re-ask every time once the buyer has already made this choice once
 date +%F > "$WORKSPACE_PATH/.neva-workspace"
 
-# ---------- 6. Claude Code: rules and plugins ----------
-# Rules are plain markdown Claude Code loads from ~/.claude/rules/ in every session. neva-core's
-# go to rules/neva/common/, each enabled plugin's language packs to rules/neva/<lang>/. Only the
-# plugins you enable: a rule for a language you never write is context you pay for every turn.
+# ---------- 6. harness installation ----------
+# bin/neva owns every harness write: it backs up whatever it replaces, records each file,
+# symlink and settings key in ~/.local/share/neva/install-state.json, and can take all of it
+# back out again with `neva uninstall`. This step stays opt-out, because unlike the rest of
+# install.sh it writes into Claude Code's own settings and runs `claude plugin` for you.
 PLUGIN_NAMES=""
 for D in "$REPO/plugins/"neva-*; do [ -d "$D" ] && PLUGIN_NAMES="$PLUGIN_NAMES ${D##*/neva-}"; done
 ask NEVA_PLUGINS "Which Neva plugins will you use (core is always on; add any of:$PLUGIN_NAMES)" "core"
+ask NEVA_HARNESS "Install Neva into which coding harness (claude, all, or none to do it yourself)" "claude"
+# A typo in one plugin name must not cost the buyer the whole step: name it, drop it, carry on.
+# bin/neva makes the same choice; this loop keeps the message identical whichever one sees it.
 ENABLED="core"
 for P in $(printf "%s" "$NEVA_PLUGINS" | tr ',' ' '); do
   P="${P#neva-}"
@@ -297,23 +293,45 @@ for P in $(printf "%s" "$NEVA_PLUGINS" | tr ',' ' '); do
     say "unknown plugin '$P' in NEVA_PLUGINS, skipped. fix: use any of:$PLUGIN_NAMES"
   fi
 done
-RULES_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/rules/neva"
-mkdir -p "$RULES_DIR/common"
-cp "$REPO/plugins/neva-core/rules/"*.md "$RULES_DIR/common/" 2>/dev/null || true
-LANGS=""
-for P in $ENABLED; do
-  for L in "$REPO/plugins/neva-$P/rules/"*/; do
-    [ -d "$L" ] || continue
-    L="${L%/}"; L="${L##*/}"
-    mkdir -p "$RULES_DIR/$L"
-    cp "$REPO/plugins/neva-$P/rules/$L/"*.md "$RULES_DIR/$L/" 2>/dev/null || true
-    LANGS="$LANGS $L"
-  done
-done
-say "rules installed to $RULES_DIR (common${LANGS:+,$LANGS}) for plugins: $ENABLED"
-say "add the plugins to Claude Code (run these yourself; install.sh never changes Claude Code settings):"
-say "  claude plugin marketplace add \"$REPO\""
+say "Claude Code marketplace and plugins for: $ENABLED"
+say "  claude plugin marketplace add \"$PREFIX\""
 for P in $ENABLED; do say "  claude plugin install neva-$P@neva"; done
+NEVA_PROFILE="${NEVA_HOOK_PROFILE:-standard}"
+# Writing into Claude Code's own settings.json and plugin registry is on by default, also in a
+# hands-free install or upgrade, so it is announced here and can be turned off:
+# NEVA_CLAUDE_SETTINGS=no installs only the rules and prints the rest for you to do by hand.
+SETTINGS_FLAG=""
+case "${NEVA_CLAUDE_SETTINGS:-yes}" in
+  no|NO|No|0|false|off) SETTINGS_FLAG="--no-claude-settings" ;;
+esac
+case "$NEVA_HARNESS" in
+  none|no|skip) : ;;
+  *)
+    if [ -n "$SETTINGS_FLAG" ]; then
+      say "NEVA_CLAUDE_SETTINGS=no: Claude Code's settings.json and plugin registry stay untouched; only the rules are installed"
+    else
+      say "next: neva install merges NEVA_HOOK_PROFILE, NEVA_PLUGINS and NEVA_CLAUDE_BIN into the env object of ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json and runs the claude plugin commands above."
+      say "      it prints each change before making it. To skip that, re-run with NEVA_CLAUDE_SETTINGS=no"
+    fi
+    ;;
+esac
+case "$NEVA_HARNESS" in
+  none|no|skip)
+    say "harness install skipped: run the commands above yourself, or run"
+    say "  $BIN/neva install --harness claude --plugins \"$NEVA_PLUGINS\" --yes"
+    ;;
+  *)
+    # The installed copy, not this checkout: it registers the prefix as the marketplace, so the
+    # harness keeps working after this folder is moved or deleted.
+    if "$PREFIX/bin/neva" install --harness "$NEVA_HARNESS" --plugins "$ENABLED" \
+         --profile "$NEVA_PROFILE" --yes $SETTINGS_FLAG; then
+      say "harness install finished. rules are in ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/rules/neva/"
+      say "check it any time with: $BIN/neva doctor, undo it with: $BIN/neva uninstall"
+    else
+      say "harness install did not complete. fix: re-run $BIN/neva install --harness $NEVA_HARNESS --plugins \"$ENABLED\" --yes and read the rows it prints"
+    fi
+    ;;
+esac
 
 # ---------- 7. render service templates (not enabled) ----------
 RENDERED="$PREFIX/services"

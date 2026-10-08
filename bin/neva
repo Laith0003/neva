@@ -27,7 +27,13 @@ def main(argv=None):
     if not args.cmd:
         p.print_help()
         return 0
-    return int(mods[args.cmd].run(args) or 0)
+    from neva_cli import core
+    try:
+        return int(mods[args.cmd].run(args) or 0)
+    except core.ConfigError as error:
+        # A file Neva cannot read safely stops the command before it writes anything.
+        print("neva " + args.cmd + ": " + str(error), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
