@@ -56,7 +56,7 @@ _neva_tools_no_links() {
 }
 
 neva_install_tools() {
-  local repo="$1" prefix="$2" bin="$3" f name child
+  local repo="$1" prefix="$2" bin="$3" f name child d
   _neva_tools_safe_dir "$prefix" || return 1
   _neva_tools_safe_dir "$bin" || return 1
   for child in bin lib plugins .claude-plugin adapters services VERSION; do
@@ -114,5 +114,10 @@ PYEOF
   cp -R "$repo/plugins" "$prefix/" || return 1
   if [ -d "$repo/.claude-plugin" ]; then cp -R "$repo/.claude-plugin" "$prefix/" || return 1; fi
   if [ -d "$repo/adapters" ]; then cp -R "$repo/adapters" "$prefix/" || return 1; fi
-  find "$prefix/plugins" \( -name __pycache__ -o -name .pytest_cache \) -prune -exec rm -rf {} + || return 1
+  # A checkout that ever ran its tests carries bytecode and test caches in every tree, not only
+  # plugins; none of it belongs in the prefix, and bytecode embeds the checkout's absolute paths.
+  for d in bin lib plugins adapters; do
+    [ -d "$prefix/$d" ] || continue
+    find "$prefix/$d" \( -name __pycache__ -o -name .pytest_cache \) -type d -prune -exec rm -rf {} + || return 1
+  done
 }

@@ -986,6 +986,128 @@ else
 fi
 rm -rf "$CLI_HOME" "$CLI_DATA" "$CLI_ADAPTERS"
 
+head_ "28. the cockpit ingests what the hooks already write and renders it (2026-10-05)"
+CK_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO/lib" python3 -m unittest discover -s lib/neva_cockpit/tests -t lib 2>&1)"
+CK_OUT="$(printf '%s\n' "$CK_FULL" | tail -3)"
+if printf '%s' "$CK_OUT" | grep -q '^OK'; then
+  ok "cockpit suite: $(printf '%s' "$CK_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "cockpit suite" "$(printf '%s' "$CK_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$CK_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
+fi
+
+# End to end against the real bin/neva cockpit, with fixture data planted directly where the
+# hooks runtime would have written it, including one deliberately malformed line in each JSONL
+# source: the promise under test is that a bad line never takes the good ones around it down.
+COCKPIT_DATA="$SANDBOX/cockpit-data"
+mkdir -p "$COCKPIT_DATA/sessions" "$COCKPIT_DATA/metrics" "$COCKPIT_DATA/observations/projabc"
+cat > "$COCKPIT_DATA/sessions/2026-10-05-fixture1-session.tmp" <<'SESSEOF'
+# Session: 2026-10-05
+**Date:** 2026-10-05
+**Started:** 09:00
+**Last Updated:** 09:30
+**Project:** fixture-project
+**Branch:** main
+**Worktree:** /tmp/fixture
+**Repo:** /tmp/fixture/.git
+**Session:** fixture-session-1
+
+---
+SESSEOF
+printf '%s\n{not json\n%s\n' \
+  '{"timestamp":"2026-10-05T09:10:00","session_id":"fixture-session-1","project":"fixture-project","estimated_cost_usd":3.5}' \
+  '{"timestamp":"2026-10-05T09:20:00","session_id":"fixture-session-2","project":"fixture-project","estimated_cost_usd":1.0}' \
+  > "$COCKPIT_DATA/metrics/costs.jsonl"
+printf '%s\nnot even json{{\n%s\n' \
+  '{"event":"tool_error","tool":"Bash","session":"fixture-session-1","project_name":"fixture-project"}' \
+  '{"event":"tool_start","tool":"Bash","session":"fixture-session-2","project_name":"fixture-project","input":{"command":"rm -rf /tmp/whatever"}}' \
+  > "$COCKPIT_DATA/observations/projabc/observations.jsonl"
+COCKPIT_OUT="$(env NEVA_DATA_DIR="$COCKPIT_DATA" NEVA_STATE_DIR="$SANDBOX/cockpit-state" NEVA_VAULT="" "$REPO/bin/neva" cockpit --json 2>&1)"; COCKPIT_RC=$?
+if [ "$COCKPIT_RC" -eq 0 ] && printf '%s' "$COCKPIT_OUT" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+sessions = {s['id']: s for s in data['sessions']}
+assert 'fixture-session-1' in sessions, 'the row after a malformed costs.jsonl line went missing'
+assert 'fixture-session-2' in sessions, 'the row after a malformed observations.jsonl line went missing'
+assert sessions['fixture-session-1']['project'] == 'fixture-project'
+assert any(f.startswith('destructive-bash') for f in sessions['fixture-session-2']['risk_flags']), 'the rm -rf observation did not produce a risk flag'
+assert 'health' in data and 'omniroute' in data['health']
+" 2>/dev/null; then
+  ok "neva cockpit --json ingests session summaries, costs and observations, and a malformed line in either JSONL source does not take its neighbours down"
+else
+  bad "neva cockpit --json" "$(printf '%s' "$COCKPIT_OUT" | tr '\n' ' ' | head -c 500)"
+fi
+# negative control: prove the assertions above are capable of catching a missing row. The
+# baseline is validated first (exit 3: not JSON, exit 4: the real fixture row is absent), so only
+# the deliberate assertion (exit 1) counts: invalid JSON used to pass as "the check failed".
+printf '%s' "$COCKPIT_OUT" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    sessions = {s['id']: s for s in data['sessions']}
+except Exception:
+    sys.exit(3)
+if 'fixture-session-1' not in sessions:
+    sys.exit(4)
+try:
+    assert 'session-that-was-never-ingested' in sessions
+except AssertionError:
+    sys.exit(1)
+sys.exit(0)
+" 2>/dev/null; NEG_RC=$?
+if [ "$NEG_RC" -eq 1 ]; then
+  ok "negative control: the same assertion correctly fails when asked to find a session that was never ingested"
+else
+  bad "cockpit json assertions" "negative control exited $NEG_RC (0: a never-written session was found, 3: the snapshot is not JSON, 4: the baseline fixture row is missing); this check proves nothing"
+fi
+
+# The INSTALLED entry point, not the checkout: section 1 ran install.sh into $SANDBOX/home, and
+# the cockpit once imported the hooks runtime from a path install.sh never copied, so the
+# installed neva died on --help while every checkout check here stayed green (review H1).
+INSTALLED_NEVA="$SANDBOX/home/.local/bin/neva"
+INST_OUT="$(env HOME="$SANDBOX/home" NEVA_DATA_DIR="$COCKPIT_DATA" NEVA_STATE_DIR="$SANDBOX/cockpit-state" NEVA_VAULT="" "$INSTALLED_NEVA" cockpit --json 2>&1)"; INST_RC=$?
+if [ "$INST_RC" -eq 0 ] && printf '%s' "$INST_OUT" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert 'fixture-session-1' in {s['id'] for s in data['sessions']}
+assert {'health', 'health_rows', 'hook_errors'} <= set(data)
+" 2>/dev/null; then
+  ok "the installed ~/.local/bin/neva cockpit --json runs from the install prefix and reads the same fixtures"
+else
+  bad "installed neva cockpit" "exit $INST_RC: $(printf '%s' "$INST_OUT" | tr '\n' ' ' | head -c 400)"
+fi
+rm -rf "$COCKPIT_DATA" "$SANDBOX/cockpit-state"
+
+# negative control: web.make_server must raise rather than silently rewrite a non-loopback bind.
+# Only the guard's own ValueError counts: an import failure or a sandbox that denies sockets
+# also exits nonzero, and used to pass here even with the guard deleted (review M8).
+BIND_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO/lib" python3 -c "
+from neva_cockpit import web
+try:
+    web.make_server(host='0.0.0.0', port=0, token='x', snapshot_fn=lambda: {})
+except ValueError as error:
+    print('GUARD', error)
+else:
+    print('BOUND-ANYWAY')
+" 2>&1)"
+if printf '%s' "$BIND_OUT" | grep -q "^GUARD .*refusing to bind '0.0.0.0'"; then
+  ok "negative control: the cockpit web server refuses to bind anything other than 127.0.0.1, with its own error"
+else
+  bad "cockpit web bind guard" "expected the guard's ValueError naming 0.0.0.0, got: $(printf '%s' "$BIND_OUT" | tr '\n' ' ' | head -c 300)"
+fi
+# and the permitted bind really binds, so the refusal above is the guard, not a dead socket layer
+LOOP_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO/lib" python3 -c "
+from neva_cockpit import web
+server = web.make_server(host='127.0.0.1', port=0, token='x', snapshot_fn=lambda: {})
+print('BOUND', server.server_address[0], server.server_address[1] > 0)
+server.server_close()
+" 2>&1)"
+if printf '%s' "$LOOP_OUT" | grep -q "^BOUND 127.0.0.1 True"; then
+  ok "the cockpit web server binds 127.0.0.1 on an ephemeral port"
+else
+  bad "cockpit web loopback bind" "127.0.0.1 did not bind (a sandbox that denies sockets cannot certify the web view): $(printf '%s' "$LOOP_OUT" | tr '\n' ' ' | head -c 300)"
+fi
+
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then
