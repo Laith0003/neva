@@ -13,7 +13,7 @@
 
 import { readFileSync, existsSync, renameSync } from 'fs';
 import { resolve } from 'path';
-import { readProjects, writeProjects, saveContext, today, shortId, CONTEXTS_DIR } from './shared.mjs';
+import { readProjects, writeProjects, saveContext, today, shortId, contextDirPath as safeContextDir } from './shared.mjs';
 
 const isDryRun = process.argv.includes('--dry-run');
 
@@ -88,7 +88,7 @@ let errors = 0;
 
 for (const [projectPath, info] of Object.entries(projects)) {
   const contextDir = info.contextDir;
-  const contextDirPath = resolve(CONTEXTS_DIR, contextDir);
+  const contextDirPath = safeContextDir(contextDir);
   const contextJsonPath = resolve(contextDirPath, 'context.json');
   const contextMdPath   = resolve(contextDirPath, 'CONTEXT.md');
   const metaPath        = resolve(contextDirPath, 'meta.json');

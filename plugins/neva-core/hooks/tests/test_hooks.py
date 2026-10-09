@@ -23,6 +23,13 @@ PLUGIN_SRC = os.path.dirname(SRC)
 CL2_SRC = os.path.join(PLUGIN_SRC, "skills", "continuous-learning-v2")
 PY = sys.executable
 
+# Imported directly so the normalization and merge contracts can be asserted as functions,
+# not only through a subprocess. Both are pure, so this needs no sandbox.
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+import dispatch  # noqa: E402
+from neva_hooks import common  # noqa: E402
+
 
 def today_utc():
     return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
@@ -310,6 +317,7 @@ class TestPreBash(HookTest):
                     "cd sub && git commit -n -m 'fix: a'", "git config core.hooksPath /tmp/none"):
             with self.subTest(cmd=cmd):
                 self.assertBlocked(self.bash(cmd), "skips the repository's git hooks")
+
 
     def test_no_verify_lookalikes_allowed(self):
         for cmd in ('git commit -m "fix: never use --no-verify"', 'git commit -am "-n is only text here"',
@@ -1438,6 +1446,410 @@ class TestRepoIntegration(unittest.TestCase):
                               "scripts", "instinct-analyze.py")
         self.assertTrue(os.path.exists(engine))
         self.assertTrue(os.path.exists(os.path.join(home, "Vault", "00 Inbox", "inbox.md")))
+
+
+class TestHarnessPayloadNormalization(HookTest):
+    def test_codex_session_start_uses_normalized_session_and_cwd(self):
+        payload = {"event": "session.start", "session": {"id": "codex-session", "cwd": self.s.work}}
+        r = self.s.dispatch("SessionStart", payload, NEVA_HARNESS="codex")
+        self.assertAllowed(r)
+        self.assertIn("hookSpecificOutput", r.out)
+
+    def test_codex_pre_tool_shell_is_blocked_by_no_verify(self):
+        payload = {"event": "tool.before", "session_id": "codex-session", "cwd": self.s.work,
+                   "tool": {"name": "shell", "input": {"command": "git commit --no-verify -m x"}}}
+        self.assertBlocked(self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="codex"),
+                           "skips the repository's git hooks")
+
+    def test_codex_stop_normalizes_without_a_transcript(self):
+        payload = {"event": "session.end", "session": {"id": "codex-session", "cwd": self.s.work}}
+        self.assertAllowed(self.s.dispatch("Stop", payload, NEVA_HARNESS="codex"))
+
+    def test_opencode_session_start_normalizes(self):
+        payload = {"event": "session.created", "session": {"id": "open-session", "directory": self.s.work}}
+        r = self.s.dispatch("SessionStart", payload, NEVA_HARNESS="opencode")
+        self.assertAllowed(r)
+        self.assertIn("hookSpecificOutput", r.out)
+
+    def test_opencode_pre_tool_shell_is_blocked_by_no_verify(self):
+        payload = {"event": "tool.execute.before", "sessionID": "open-session", "directory": self.s.work,
+                   "tool": {"name": "bash", "arguments": {"command": "git commit --no-verify -m x"}}}
+        self.assertBlocked(self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="opencode"),
+                           "skips the repository's git hooks")
+
+    def test_opencode_stop_normalizes_without_a_transcript(self):
+        payload = {"event": "session.idle", "session": {"id": "open-session", "directory": self.s.work}}
+        self.assertAllowed(self.s.dispatch("Stop", payload, NEVA_HARNESS="opencode"))
+
+    def test_opencode_bridge_payload_shape_is_the_one_the_bridge_sends(self):
+        """Exactly what adapters/opencode/plugins/neva-hooks.js puts on stdin."""
+        payload = {"hook_event_name": "PreToolUse", "cwd": self.s.work,
+                   "session_id": "open-session",
+                   "tool": {"name": "bash", "input": {"command": "git commit --no-verify -m x"}}}
+        self.assertBlocked(self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="opencode"),
+                           "skips the repository's git hooks")
+
+    # Cursor names no tool and sends the command as a bare top-level string, so the shell
+    # guard only fires if normalization infers Bash from it. Cursor also sends the working
+    # directory as `workspace_roots`, an array, where every other harness sends a string.
+    def cursor_shell(self, command):
+        return {"hook_event_name": "beforeShellExecution", "conversation_id": "cursor-conv",
+                "generation_id": "gen-1", "workspace_roots": [self.s.work],
+                "command": command, "cwd": self.s.work, "sandbox": False}
+
+    def test_cursor_shell_command_is_blocked_by_no_verify(self):
+        self.assertBlocked(
+            self.s.dispatch("PreToolUse", self.cursor_shell("git commit --no-verify -m x"),
+                            NEVA_HARNESS="cursor"),
+            "skips the repository's git hooks")
+
+    def test_cursor_ordinary_shell_command_is_allowed(self):
+        self.assertAllowed(self.s.dispatch("PreToolUse", self.cursor_shell("git status"),
+                                           NEVA_HARNESS="cursor"))
+
+    def test_cursor_array_workspace_root_becomes_a_plain_cwd(self):
+        event, data, name = common.normalize_payload("PreToolUse", self.cursor_shell("ls"), "cursor")
+        self.assertEqual("cursor", name)
+        self.assertEqual(self.s.work, data["cwd"])
+        self.assertEqual("Bash", data["tool_name"])
+        self.assertEqual({"command": "ls"}, data["tool_input"])
+        self.assertEqual("cursor-conv", data["session_id"])
+
+    def test_a_claude_payload_is_passed_through_untouched(self):
+        """The native path must not be reshaped: only the harness tag may be added."""
+        original = {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                    "tool_input": {"command": "ls"}, "cwd": self.s.work,
+                    "session_id": "abc", "transcript_path": "/tmp/t.jsonl"}
+        event, data, name = common.normalize_payload("PreToolUse", dict(original))
+        self.assertEqual("claude", name)
+        self.assertEqual("PreToolUse", event)
+        self.assertEqual(original, {k: v for k, v in data.items() if k != "neva_harness"})
+
+    def test_an_unset_harness_is_sniffed_rather_than_guessed_as_claude(self):
+        opencode = {"event": "tool.execute.before", "tool": {"name": "bash"}}
+        self.assertEqual("opencode", common.detect_harness(opencode))
+        self.assertEqual("claude", common.detect_harness({"hook_event_name": "PreToolUse"}))
+
+    def test_codex_never_receives_a_permission_ask(self):
+        """Codex hard-errors on permissionDecision:ask, so the dispatcher must not send one."""
+        results = [("guard", {"ask": "confirm this deploy"})]
+        out, err, code = dispatch.merge("PreToolUse", results, "codex")
+        self.assertNotIn("permissionDecision", out)
+
+    def test_an_ask_fails_closed_on_codex(self):
+        """A confirmation the harness cannot show is a block, never a silent permission."""
+        results = [("guard", {"ask": "confirm this deploy"})]
+        out, err, code = dispatch.merge("PreToolUse", results, "codex")
+        self.assertEqual(2, code, f"an unshowable ask must block; stdout={out!r}")
+        self.assertIn("confirm this deploy", err)
+        self.assertIn("needs confirmation in an interactive session", err)
+
+    def test_an_ask_fails_closed_on_every_harness_without_a_confirmation_prompt(self):
+        """Fail closed by default: only harnesses known to render the ask may receive it."""
+        for harness in ("codex", "opencode", "cursor", "gemini", "some-future-harness"):
+            with self.subTest(harness=harness):
+                out, err, code = dispatch.merge("PreToolUse", [("guard", {"ask": "confirm"})], harness)
+                self.assertEqual(2, code)
+                self.assertIn("needs confirmation in an interactive session", err)
+
+    def test_context_still_flows_on_codex_when_nothing_asks(self):
+        """Negative control: fail-closed covers asks only, ordinary context is untouched."""
+        out, err, code = dispatch.merge("PreToolUse", [("hint", {"context": "commit style note"})], "codex")
+        self.assertEqual(0, code)
+        self.assertIn("commit style note", json.loads(out)["hookSpecificOutput"]["additionalContext"])
+
+    def test_claude_still_receives_the_permission_ask(self):
+        """Negative control: the degradation is scoped to Codex, not applied everywhere."""
+        results = [("guard", {"ask": "confirm this deploy"})]
+        payload = json.loads(dispatch.merge("PreToolUse", results, "claude")[0])
+        self.assertEqual("ask", payload["hookSpecificOutput"]["permissionDecision"])
+        self.assertIn("confirm this deploy",
+                      payload["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_a_block_still_blocks_on_codex(self):
+        out, err, code = dispatch.merge("PreToolUse", [("guard", {"block": "no"})], "codex")
+        self.assertEqual(2, code)
+        self.assertIn("no", err)
+
+    def codex_shell(self, command):
+        return {"event": "tool.before", "session_id": "codex-session", "cwd": self.s.work,
+                "tool": {"name": "shell", "input": {"command": command}}}
+
+    def test_careful_destructive_command_is_blocked_on_codex(self):
+        """End to end: careful mode on, a destructive command from Codex cannot run unconfirmed."""
+        self.s.write("home/.local/state/neva/safety-guard/careful", "")
+        r = self.s.dispatch("PreToolUse", self.codex_shell("rm -rf src"), NEVA_HARNESS="codex")
+        self.assertBlocked(r, "[careful]")
+        self.assertIn("needs confirmation in an interactive session", r.stderr)
+        self.assertEqual("", r.decision)
+
+    def test_careful_destructive_command_still_asks_on_claude(self):
+        """Negative control: the same command on Claude Code keeps the native prompt."""
+        self.s.write("home/.local/state/neva/safety-guard/careful", "")
+        r = self.s.dispatch("PreToolUse", self.base(tool_name="Bash", tool_input={"command": "rm -rf src"}))
+        self.assertAllowed(r)
+        self.assertEqual("ask", r.decision)
+        self.assertIn("[careful]", r.out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_careful_ordinary_command_is_allowed_on_codex(self):
+        """Negative control: fail-closed does not turn every Codex shell call into a block."""
+        self.s.write("home/.local/state/neva/safety-guard/careful", "")
+        self.assertAllowed(self.s.dispatch("PreToolUse", self.codex_shell("git status"), NEVA_HARNESS="codex"))
+
+    def test_protected_vault_write_is_blocked_on_codex(self):
+        payload = {"event": "tool.before", "session_id": "codex-session", "cwd": self.s.work,
+                   "tool": {"name": "write_file", "input": {"file_path": os.path.join(self.s.vault, "GOALS.md"),
+                                                             "content": "x"}}}
+        r = self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="codex")
+        self.assertBlocked(r, "GOALS.md")
+        self.assertIn("needs confirmation in an interactive session", r.stderr)
+
+    def test_opencode_protected_vault_write_is_blocked(self):
+        """OpenCode names the path filePath. Unmapped, the vault gate never sees the write."""
+        payload = {"hook_event_name": "PreToolUse", "cwd": self.s.work, "session_id": "open-session",
+                   "tool": {"name": "write", "input": {"filePath": os.path.join(self.s.vault, "GOALS.md"),
+                                                       "content": "x"}}}
+        r = self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="opencode")
+        self.assertBlocked(r, "GOALS.md")
+        self.assertIn("needs confirmation in an interactive session", r.stderr)
+
+    def test_opencode_write_inside_the_session_folders_is_allowed(self):
+        """Negative control: mapping filePath does not block an allowed vault write."""
+        payload = {"hook_event_name": "PreToolUse", "cwd": self.s.work, "session_id": "open-session",
+                   "tool": {"name": "write", "input": {"filePath": os.path.join(self.s.vault, "08 Journal", "a.md"),
+                                                       "content": "x"}}}
+        self.assertAllowed(self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="opencode"))
+
+    def test_each_harness_tags_its_observations(self):
+        for harness in ("codex", "opencode", "cursor"):
+            with self.subTest(harness=harness):
+                _, data, name = common.normalize_payload(
+                    "PreToolUse", {"tool": {"name": "shell"}}, harness)
+                self.assertEqual(harness, name)
+                self.assertEqual(harness, data["neva_harness"])
+
+
+class TestCodexNativeTools(HookTest):
+    """Payloads in the shape Codex documents for PreToolUse: tool_name, tool_input, turn_id.
+
+    Shell runs as Bash or as unified exec (exec_command, argument cmd). File edits arrive as
+    apply_patch with the patch text in tool_input.command, or as freeform text.
+    """
+
+    def codex(self, tool_name, tool_input, **env):
+        payload = {"hook_event_name": "PreToolUse", "session_id": "codex-session", "turn_id": "t1",
+                   "tool_use_id": "call-1", "transcript_path": None, "cwd": self.s.work, "model": "gpt",
+                   "permission_mode": "default", "tool_name": tool_name, "tool_input": tool_input}
+        return self.s.dispatch("PreToolUse", payload, NEVA_HARNESS="codex", **env)
+
+    def careful_on(self):
+        self.s.write("home/.local/state/neva/safety-guard/careful", "")
+
+    def patch(self, *headers):
+        return "*** Begin Patch\n" + "".join(h + "\n@@\n-a\n+b\n" for h in headers) + "*** End Patch\n"
+
+    def test_exec_command_destructive_cmd_is_blocked_in_careful_mode(self):
+        self.careful_on()
+        r = self.codex("exec_command", {"cmd": "rm -rf src", "workdir": self.s.work})
+        self.assertBlocked(r, "[careful]")
+        self.assertIn("needs confirmation in an interactive session", r.stderr)
+
+    def test_bash_canonical_destructive_command_is_blocked_in_careful_mode(self):
+        self.careful_on()
+        self.assertBlocked(self.codex("Bash", {"command": "rm -rf src"}), "[careful]")
+
+    def test_shell_argv_list_is_unwrapped_and_guarded(self):
+        self.careful_on()
+        self.assertBlocked(self.codex("shell", {"command": ["bash", "-lc", "rm -rf src"]}), "[careful]")
+
+    def test_exec_command_no_verify_is_blocked(self):
+        self.assertBlocked(self.codex("exec_command", {"cmd": "git commit --no-verify -m x"}),
+                           "skips the repository's git hooks")
+
+    def test_exec_command_ordinary_cmd_is_allowed(self):
+        """Negative control: careful mode on, a harmless unified-exec call still runs."""
+        self.careful_on()
+        self.assertAllowed(self.codex("exec_command", {"cmd": "git status"}))
+
+    def test_apply_patch_to_a_protected_vault_note_is_blocked(self):
+        goals = os.path.join(self.s.vault, "GOALS.md")
+        r = self.codex("apply_patch", {"command": self.patch("*** Update File: " + goals)})
+        self.assertBlocked(r, "GOALS.md")
+
+    def test_freeform_apply_patch_is_read(self):
+        goals = os.path.join(self.s.vault, "GOALS.md")
+        self.assertBlocked(self.codex("apply_patch", self.patch("*** Update File: " + goals)), "GOALS.md")
+
+    def test_every_patch_target_is_checked_not_only_the_first(self):
+        ok = os.path.join(self.s.work, "a.py")
+        goals = os.path.join(self.s.vault, "GOALS.md")
+        r = self.codex("apply_patch", {"command": self.patch("*** Add File: " + ok, "*** Update File: " + goals)})
+        self.assertBlocked(r, "GOALS.md")
+
+    def test_patch_move_destination_is_checked(self):
+        src = os.path.join(self.s.vault, "08 Journal", "a.md")
+        goals = os.path.join(self.s.vault, "GOALS.md")
+        r = self.codex("apply_patch", {"command": "*** Begin Patch\n*** Update File: " + src + "\n*** Move to: "
+                                                   + goals + "\n@@\n-a\n+b\n*** End Patch\n"})
+        self.assertBlocked(r, "GOALS.md")
+
+    def test_relative_patch_target_resolves_against_cwd(self):
+        r = self.s.dispatch("PreToolUse", {"hook_event_name": "PreToolUse", "session_id": "c", "cwd": self.s.vault,
+                                           "tool_name": "apply_patch",
+                                           "tool_input": {"command": self.patch("*** Update File: GOALS.md")}},
+                            NEVA_HARNESS="codex")
+        self.assertBlocked(r, "GOALS.md")
+
+    def test_apply_patch_inside_the_project_is_allowed(self):
+        """Negative control: an ordinary patch is not blocked."""
+        self.assertAllowed(self.codex("apply_patch", {"command": self.patch("*** Update File: "
+                                                                            + os.path.join(self.s.work, "a.py"))}))
+
+    def test_unreadable_shell_shape_fails_closed(self):
+        r = self.codex("exec_command", {"argv": {"weird": True}})
+        self.assertBlocked(r, "could not read")
+        self.assertIn("needs confirmation in an interactive session", r.stderr)
+
+    def test_unreadable_patch_fails_closed(self):
+        self.assertBlocked(self.codex("apply_patch", {"command": "not a patch"}), "could not read")
+
+    def test_claude_shapes_are_not_failed_closed(self):
+        """Negative control: the native harness keeps its behaviour for a bare Bash call."""
+        r = self.s.dispatch("PreToolUse", self.base(tool_name="Bash", tool_input={}))
+        self.assertAllowed(r)
+
+
+# ---------------------------------------------------------------- ck command safety
+
+CK_COPIES = {
+    "canonical": os.path.join(PLUGIN_SRC, "skills", "ck", "commands"),
+    "gemini": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "gemini", "skills", "ck", "commands"),
+    "opencode": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "opencode", "skills", "ck",
+                             "commands"),
+}
+
+
+@unittest.skipIf(shutil.which("node") is None, "node runs the ck commands")
+class TestCkCommandSafety(HookTest):
+    """forget must never delete outside the contexts root; bad state must never be replaced.
+
+    Every case runs against the canonical skill and both generated adapter copies.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ck_home = os.path.join(self.s.home, ".local", "share", "neva", "ck")
+        self.contexts = os.path.join(self.ck_home, "contexts")
+        self.projects = os.path.join(self.ck_home, "projects.json")
+        os.makedirs(self.contexts)
+        self.victim = os.path.join(self.s.tmp, "victim")
+        os.makedirs(self.victim)
+        with open(os.path.join(self.victim, "context.json"), "w") as fh:
+            json.dump({"name": "victim", "sessions": []}, fh)
+        with open(os.path.join(self.victim, "keep.txt"), "w") as fh:
+            fh.write("owner data\n")
+
+    def run_ck(self, copy, script, *args, stdin=""):
+        p = subprocess.run(["node", os.path.join(CK_COPIES[copy], script), *args], input=stdin,
+                           capture_output=True, text=True, env=self.s.env(PWD=self.s.work), cwd=self.s.work,
+                           timeout=60)
+        return p.returncode, p.stdout + p.stderr
+
+    def register(self, context_dir):
+        with open(self.projects, "w") as fh:
+            json.dump({self.s.work: {"name": "proj", "contextDir": context_dir}}, fh)
+
+    def assert_victim_intact(self):
+        self.assertTrue(os.path.exists(os.path.join(self.victim, "keep.txt")), "forget deleted outside its root")
+
+    def test_forget_refuses_an_absolute_context_dir(self):
+        for copy in CK_COPIES:
+            with self.subTest(copy=copy):
+                self.register(self.victim)
+                code, out = self.run_ck(copy, "forget.mjs", "proj")
+                self.assertEqual(1, code, out)
+                self.assertIn("contextDir", out)
+                self.assert_victim_intact()
+
+    def test_forget_refuses_a_traversing_context_dir(self):
+        for copy in CK_COPIES:
+            with self.subTest(copy=copy):
+                self.register(os.path.relpath(self.victim, self.contexts))
+                code, out = self.run_ck(copy, "forget.mjs", "proj")
+                self.assertEqual(1, code, out)
+                self.assert_victim_intact()
+
+    def test_forget_refuses_a_symlinked_context_dir(self):
+        os.symlink(self.victim, os.path.join(self.contexts, "proj"))
+        for copy in CK_COPIES:
+            with self.subTest(copy=copy):
+                self.register("proj")
+                code, out = self.run_ck(copy, "forget.mjs", "proj")
+                self.assertEqual(1, code, out)
+                self.assertIn("symlink", out)
+                self.assert_victim_intact()
+
+    def test_forget_refuses_a_symlinked_contexts_root(self):
+        os.rmdir(self.contexts)
+        os.symlink(os.path.dirname(self.victim), self.contexts)
+        for copy in CK_COPIES:
+            with self.subTest(copy=copy):
+                self.register("victim")
+                code, out = self.run_ck(copy, "forget.mjs", "proj")
+                self.assertEqual(1, code, out)
+                self.assert_victim_intact()
+
+    def test_forget_removes_a_real_context(self):
+        """Negative control: a legitimate forget still works."""
+        for copy in CK_COPIES:
+            with self.subTest(copy=copy):
+                os.makedirs(os.path.join(self.contexts, "proj"), exist_ok=True)
+                with open(os.path.join(self.contexts, "proj", "context.json"), "w") as fh:
+                    json.dump({"name": "proj", "sessions": []}, fh)
+                self.register("proj")
+                code, out = self.run_ck(copy, "forget.mjs", "proj")
+                self.assertEqual(0, code, out)
+                self.assertFalse(os.path.exists(os.path.join(self.contexts, "proj")))
+                with open(self.projects) as fh:
+                    self.assertEqual({}, json.load(fh))
+
+    INIT = json.dumps({"name": "fresh", "path": "/w/fresh", "goal": "g"})
+
+    def assert_untouched(self, raw, needle):
+        for copy in CK_COPIES:
+            for script, args, stdin in (("save.mjs", ["--init"], self.INIT), ("forget.mjs", ["proj"], ""),
+                                        ("list.mjs", [], "")):
+                with self.subTest(copy=copy, script=script):
+                    with open(self.projects, "w") as fh:
+                        fh.write(raw)
+                    code, out = self.run_ck(copy, script, *args, stdin=stdin)
+                    self.assertEqual(1, code, out)
+                    self.assertIn("projects.json", out)
+                    self.assertIn(needle, out)
+                    self.assertIn("left it unchanged", out)
+                    with open(self.projects) as fh:
+                        self.assertEqual(raw, fh.read(), "the registry was rewritten")
+
+    def test_malformed_registry_is_an_error_not_a_reset(self):
+        self.assert_untouched('{"broken": ', "not valid JSON")
+
+    def test_wrong_shape_registry_is_an_error_not_a_reset(self):
+        self.assert_untouched("[1, 2]", "must be a JSON object")
+        self.assert_untouched('{"/w/x": {"name": "x"}}', "contextDir")
+
+    def test_absent_registry_still_initialises(self):
+        """Negative control: no registry yet is normal, not an error."""
+        code, out = self.run_ck("canonical", "save.mjs", "--init", stdin=self.INIT)
+        self.assertEqual(0, code, out)
+        with open(self.projects) as fh:
+            self.assertEqual("fresh", json.load(fh)["/w/fresh"]["contextDir"])
+
+    def test_init_refuses_a_name_with_no_usable_characters(self):
+        """An empty contextDir resolves to the contexts root itself, which forget would delete."""
+        code, out = self.run_ck("canonical", "save.mjs", "--init",
+                                stdin=json.dumps({"name": "!!!", "path": "/w/bang"}))
+        self.assertEqual(1, code, out)
+        self.assertIn("contextDir", out)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATE_NAME = "install-state.json"
-KINDS = ("copy", "symlink", "merge-json", "merge-toml", "append-block")
+KINDS = ("copy", "symlink", "merge-json", "merge-toml", "append-block", "append-json")
+#: The marker that makes an entry in a shared JSON array Neva's. append-json adds, replaces and
+#: removes only entries whose JSON contains it; every other entry is the owner's and is kept.
+APPEND_MARKER = "neva-core"
 #: Manifest kinds for state that lives in Claude Code, not in a file Neva writes.
 REGISTRATIONS = ("claude-marketplace", "claude-plugin")
 
@@ -221,10 +224,10 @@ ENTRY_TYPES = {
     "key": (str,), "source": (str, type(None)), "backup": (str, type(None)), "existed": (bool,),
     "previous": (dict,), "created_parents": (list,), "links": (list,), "appended": (str, type(None)),
     "body": (str,), "leaf_link": (str, type(None)), "target_backup": (str, type(None)),
-    "created_dirs": (list,),
+    "created_dirs": (list,), "foreign": (list, dict),
 }
 REQUIRED = ("harness", "kind", "dest", "checksum")
-KEYED = ("merge-json", "merge-toml", "append-block") + REGISTRATIONS
+KEYED = ("merge-json", "merge-toml", "append-block", "append-json") + REGISTRATIONS
 
 
 def state_problem(state):
@@ -271,6 +274,8 @@ def state_problem(state):
         if entry["kind"] in ("copy", "symlink") and entry.get("existed") and not entry.get("backup"):
             return (where + ".backup is missing for a file that existed before install, so its "
                     "original could not be restored")
+        if entry["kind"] == "append-json" and "value" not in entry:
+            return where + ".value is missing, which holds the entries repair puts back"
         if entry["kind"] in ("merge-json", "merge-toml"):
             previous = entry.get("previous")
             if not isinstance(previous, dict):
@@ -416,7 +421,7 @@ def symlink_layout(path):
     return links
 
 
-FILE_KINDS = ("copy", "merge-json", "merge-toml", "append-block")
+FILE_KINDS = ("copy", "merge-json", "merge-toml", "append-block", "append-json")
 
 
 def write_target(path):
@@ -472,13 +477,33 @@ def guard_owned(path, kind, links, leaf_link=None):
 
 
 def source_path(adapter_path, raw):
+    """The adapter source an entry names, inside the adapter directory or the Neva checkout.
+
+    An absolute src, or one with a '..' part, is refused: a contract is data, and a src that
+    walks out of the checkout would let a directory entry copy anything readable into HOME.
+    """
     if not isinstance(raw, str) or not raw:
         raise AdapterError("adapter entry src must be a non-empty string. fix: set src in install.json")
     candidate = Path(raw)
-    if candidate.is_absolute():
-        return candidate
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise AdapterError("adapter entry src must be a path inside the adapter directory, got " + raw +
+                           ". fix: name the file relative to adapters/<harness>, with no '..'")
     local = adapter_path.parent / candidate
-    return local if local.exists() else REPO_ROOT / candidate
+    chosen = local if local.exists() else REPO_ROOT / candidate
+    roots = [adapter_path.parent.resolve(), REPO_ROOT.resolve()]
+    real = chosen.resolve()
+    if not any(real == root or root in real.parents for root in roots):
+        raise AdapterError("adapter entry src " + raw + " resolves to " + str(real) + ", outside the adapter "
+                           "and the Neva checkout. fix: replace the link with the file itself")
+    return chosen
+
+
+#: Files an operating system drops into folders. Never part of an adapter, never installed.
+OS_JUNK = (".DS_Store", "Thumbs.db", "desktop.ini")
+
+
+def is_os_junk(path):
+    return path.name in OS_JUNK or path.name.startswith("._")
 
 
 # ---------------------------------------------------------------- adapter contracts
@@ -514,6 +539,11 @@ def read_adapter(name):
             raise AdapterError("a " + entry["mode"] + " entry needs a key naming what to merge, "
                                "got " + repr(entry.get("key")) + ". fix: set key to a dotted path "
                                "such as tool.neva in install.json; Neva never merges a whole file")
+        if entry.get("mode") == "append-json" and not (
+                isinstance(entry.get("key"), str) and entry["key"].strip(".")):
+            raise AdapterError("an append-json entry needs a key naming the array, or the object of "
+                               "arrays, Neva adds its entries to, got " + repr(entry.get("key")) +
+                               ". fix: set key to a dotted path such as hooks in install.json")
         if entry.get("mode") == "append-block" and not entry.get("key"):
             raise AdapterError("an append-block entry needs a key for its begin and end markers. " +
                                "fix: add key to that entry in install.json")
@@ -634,11 +664,25 @@ def restore_backup(destination, backup_path):
 # ---------------------------------------------------------------- dotted keys
 
 
+def key_parts(dotted):
+    """The parts of a dotted key. A part may be quoted as TOML quotes it, plugins."a@b", and a
+    quoted part is one key whatever it holds. A key with no quotes splits on every dot."""
+    if '"' not in dotted and "'" not in dotted:
+        return dotted.split(".")
+    return _split_key(dotted, 0)
+
+
+def join_key(parts):
+    """The inverse of key_parts: bare parts as they are, anything else quoted."""
+    return ".".join(part if BARE_KEY.fullmatch(part) else json.dumps(part) for part in parts)
+
+
+
 def lookup(value, dotted, missing=None):
     if not dotted:
         return value
     current = value
-    for part in dotted.split("."):
+    for part in key_parts(dotted):
         if not isinstance(current, dict) or part not in current:
             return missing
         current = current[part]
@@ -650,7 +694,7 @@ def assign(value, dotted, replacement):
         raise ValueError("a merge needs a key; an empty key would replace the whole file. "
                          "fix: name the key in install.json")
     current = value
-    parts = dotted.split(".")
+    parts = key_parts(dotted)
     for part in parts[:-1]:
         if not isinstance(current.get(part), dict):
             current[part] = {}
@@ -664,7 +708,7 @@ def delete_key(value, dotted):
         raise ValueError("a merge needs a key; an empty key would empty the whole file. "
                          "fix: name the key in install.json")
     current = value
-    parts = dotted.split(".")
+    parts = key_parts(dotted)
     for part in parts[:-1]:
         if not isinstance(current, dict) or part not in current:
             return value
@@ -683,10 +727,10 @@ def missing_parents(value, dotted):
     """
     created = []
     current = value
-    parts = dotted.split(".") if dotted else []
+    parts = key_parts(dotted) if dotted else []
     for index, part in enumerate(parts[:-1]):
         if not isinstance(current, dict) or not isinstance(current.get(part), dict):
-            created.append(".".join(parts[:index + 1]))
+            created.append(join_key(parts[:index + 1]))
             current = None
         else:
             current = current[part]
@@ -701,19 +745,19 @@ def blocking_parent(value, dotted):
     uninstall could never hand the parent back. Callers refuse instead.
     """
     current = value
-    parts = dotted.split(".") if dotted else []
+    parts = key_parts(dotted) if dotted else []
     for index, part in enumerate(parts[:-1]):
         if not isinstance(current, dict) or part not in current:
             return None
         current = current[part]
         if not isinstance(current, dict):
-            return ".".join(parts[:index + 1]), current
+            return join_key(parts[:index + 1]), current
     return None
 
 
 def prune_keys(value, dotted_parents):
     """Delete each dotted parent, outermost last, as long as it is an empty mapping."""
-    for dotted in sorted(dotted_parents, key=lambda item: item.count("."), reverse=True):
+    for dotted in sorted(dotted_parents, key=lambda item: len(key_parts(item)), reverse=True):
         container = lookup(value, dotted, MISSING)
         if isinstance(container, dict) and not container:
             delete_key(value, dotted)
@@ -944,12 +988,12 @@ def toml_append(text, current, key, value):
     take exactly the appended bytes off again. It works only when the table it adds does not
     exist yet, and the result must read the same to Neva and, where present, to tomllib.
     """
-    parts = key.split(".")
+    parts = key_parts(key)
     if isinstance(value, dict):
         header, body = parts, value
     else:
         header, body = parts[:-1], {parts[-1]: value}
-    if header and lookup(current, ".".join(header), MISSING) is not MISSING:
+    if header and lookup(current, join_key(header), MISSING) is not MISSING:
         return None
     if not header and any(_strip_comment(raw).startswith("[") for raw in text.splitlines()):
         return None
@@ -1064,6 +1108,14 @@ def entry_checksum(record):
             return None
         value = lookup(load_mapping(destination, kind), record.get("key", ""), MISSING)
         return None if value is MISSING else sha256_value(value)
+    if kind == "append-json":
+        if not destination.is_file():
+            return None
+        recorded = record.get("value", [])
+        present = written_entries(lookup(read_json_object(destination), record["key"], MISSING), recorded)
+        if present == reshape(recorded, arrays(recorded)) or any(arrays(present).values()):
+            return sha256_value(present)
+        return None
     if kind == "append-block":
         if not destination.is_file():
             return None
@@ -1074,6 +1126,172 @@ def entry_checksum(record):
         return sha256_bytes(text.split(begin, 1)[1].split(end, 1)[0].encode("utf-8"))
     raise ValueError("unsupported manifest entry kind: " + str(kind) +
                      ". fix: re-run neva install to rewrite the install-state manifest")
+
+
+# ---------------------------------------------------------------- append-json
+
+
+def is_neva_entry(item):
+    return APPEND_MARKER in json.dumps(item, sort_keys=True)
+
+
+def append_shape(value, where):
+    """The arrays an append-json value holds: [(subkey or None, list)]. Anything else is refused."""
+    if isinstance(value, list):
+        return [(None, value)]
+    if isinstance(value, dict) and all(isinstance(items, list) for items in value.values()):
+        return list(value.items())
+    raise ValueError(where + " must be an array, or an object whose values are arrays, found " +
+                     type(value).__name__ + ". fix: correct it in that file, then re-run; Neva left it unchanged")
+
+
+def arrays(value):
+    """An append-json value as {subkey or None: list}: None for a plain array."""
+    if isinstance(value, list):
+        return {None: value}
+    if isinstance(value, dict):
+        return {sub: items for sub, items in value.items() if isinstance(items, list)}
+    return {}
+
+
+def reshape(template, by_sub):
+    """{subkey or None: list} back into the shape of ``template``, dropping empty arrays."""
+    if isinstance(template, list):
+        return list(by_sub.get(None, []))
+    return {sub: items for sub, items in by_sub.items() if items}
+
+
+def take_out(items, owned):
+    """``items`` without one occurrence of each ``owned`` entry, latest first, compared whole.
+
+    Returns (kept, missing): the entries left, and the owned entries that were not found.
+    Identity, never a substring: an owner entry that mentions neva-core is not Neva's.
+    """
+    kept, missing = list(items), []
+    for item in reversed(list(owned)):
+        for index in range(len(kept) - 1, -1, -1):
+            if kept[index] == item:
+                del kept[index]
+                break
+        else:
+            missing.append(item)
+    return kept, missing
+
+
+def slot_name(key, sub, index=None):
+    name = key if sub is None else join_key(key_parts(key) + [sub])
+    return name + ("" if index is None else "[" + str(index) + "]")
+
+
+def written_entries(destination_value, recorded):
+    """The entries of ``recorded`` (what Neva wrote) still present at the destination, in its shape."""
+    present = {}
+    current = arrays(destination_value) if destination_value is not MISSING else {}
+    for sub, items in arrays(recorded).items():
+        kept, missing = take_out(current.get(sub, []), items)
+        found = list(items)
+        for item in missing:
+            found.remove(item)
+        present[sub] = found
+    return reshape(recorded, present)
+
+
+def edited_slot(kept, missing, foreign_items):
+    """True when an entry Neva wrote is gone and a marker-carrying entry that was not the
+    owner's at install sits in that array instead: the owner edited Neva's entry."""
+    if not missing:
+        return False
+    new_marked = [item for item in kept if is_neva_entry(item)]
+    leftover, _ = take_out(new_marked, foreign_items)
+    return bool(leftover)
+
+
+def edited_message(destination, key, sub):
+    return (str(destination) + ": Neva's entry at " + slot_name(key, sub) + " was edited after Neva installed "
+            "it (it no longer matches what Neva wrote), so Neva keeps it as it is. fix: move your edits into "
+            "an entry of your own and run neva repair, or delete the entry yourself, then re-run")
+
+
+def append_into(data, key, value, destination, previous=None, foreign=None):
+    """Put Neva's entries from ``value`` beside the owner's at ``key`` in ``data``.
+
+    Neva owns exactly what it recorded writing, ``previous``: those entries are taken out and
+    the new ones added. Every other entry is the owner's and keeps its content and its place,
+    even one that mentions neva-core, and an entry the owner already holds is not added twice.
+    Only the arrays ``value`` and ``previous`` cover are touched.
+
+    Returns (created, written, marked, names): the dotted paths this call created, what Neva
+    wrote and the owner's entries that carry the marker, both in the shape of ``value``, and
+    those owner entries by slot name for the report.
+    """
+    created = missing_parents(data, key)
+    current = lookup(data, key, MISSING)
+    if current is MISSING:
+        created.append(key)
+    wanted, before = arrays(value), arrays(previous) if previous is not None else {}
+    if isinstance(value, list):
+        if current is not MISSING and not isinstance(current, list):
+            raise ValueError("cannot add Neva's entries to " + key + " in " + str(destination) + ": it holds a " +
+                             type(current).__name__ + ", not an array. fix: make it an array or remove it "
+                             "by hand, then re-run; Neva left the file unchanged")
+        holder, slots = None, [None]
+    else:
+        if current is not MISSING and not isinstance(current, dict):
+            raise ValueError("cannot add Neva's entries to " + key + " in " + str(destination) + ": it holds a " +
+                             type(current).__name__ + ", not an object. fix: make it an object or remove it "
+                             "by hand, then re-run; Neva left the file unchanged")
+        holder = dict(current) if current is not MISSING else {}
+        slots = list(wanted) + [sub for sub in before if sub not in wanted]
+    written, marked, names = {}, {}, []
+    foreign = arrays(foreign) if foreign is not None else {}
+    for sub in slots:
+        existing = (current if sub is None else holder.get(sub, MISSING))
+        existing = [] if existing is MISSING else existing
+        if not isinstance(existing, list):
+            raise ValueError("cannot add Neva's entries to " + slot_name(key, sub) + " in " + str(destination) +
+                             ": it holds a " + type(existing).__name__ + ", not an array. fix: make it an "
+                             "array or remove it by hand, then re-run; Neva left the file unchanged")
+        if sub is not None and sub not in holder:
+            created.append(slot_name(key, sub))
+        kept, missing = take_out(existing, before.get(sub, []))
+        if edited_slot(kept, missing, foreign.get(sub, [])):
+            raise ValueError(edited_message(destination, key, sub))
+        add = [item for item in wanted.get(sub, []) if item not in kept]
+        marked[sub] = [item for item in kept if is_neva_entry(item)]
+        names.extend(slot_name(key, sub, index) for index, item in enumerate(kept) if is_neva_entry(item))
+        written[sub] = add
+        if sub is None:
+            assign(data, key, kept + add)
+        else:
+            holder[sub] = kept + add
+    if holder is not None:
+        assign(data, key, holder)
+    return created, reshape(value, written), reshape(value, marked), names
+
+
+def strip_neva_entries(data, key, recorded, created, foreign=None, destination=""):
+    """Take out exactly the entries Neva recorded writing, then any container it created and left empty.
+
+    An entry Neva wrote that the owner has since edited is refused by name, never discarded,
+    the same rule copy mode keeps for an edited file.
+    """
+    current = lookup(data, key, MISSING)
+    foreign = arrays(foreign) if foreign is not None else {}
+    for sub, items in arrays(recorded).items():
+        existing = current if sub is None else (current.get(sub, MISSING) if isinstance(current, dict) else MISSING)
+        if not isinstance(existing, list):
+            continue
+        kept, missing = take_out(existing, items)
+        if edited_slot(kept, missing, foreign.get(sub, [])):
+            raise ValueError(edited_message(destination, key, sub))
+        if sub is None:
+            assign(data, key, kept)
+        else:
+            current[sub] = kept
+    for dotted in sorted(created, key=lambda item: len(key_parts(item)), reverse=True):
+        if lookup(data, dotted, MISSING) in ([], {}):
+            delete_key(data, dotted)
+    return data
 
 
 def missing_dirs(path):

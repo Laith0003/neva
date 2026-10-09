@@ -9,6 +9,8 @@ Neva's hooks live in the `neva-core` plugin: `plugins/neva-core/hooks/`. Python 
 - `hooks.json` registers each Claude Code event once. Tool events use matcher `*`, so one tool call starts one Python process per event, never one per rule.
 - That process is `dispatch.py <Event>`. It reads the hook JSON, picks the modules from `hooks.meta.json` that listen on the event, match the tool name (`tools`, fnmatch patterns) and the active profile, and runs them in table order.
 - Results merge: any `block` exits 2 with every reason; otherwise `ask` becomes `permissionDecision: ask`, `context` becomes `additionalContext`, and anything else a system message.
+- An `ask` reaches only a harness that can show a confirmation prompt (`ASK_HARNESSES` in `dispatch.py`, today Claude Code). On any other harness a PreToolUse `ask` fails closed: it exits 2 with the reason and a message that the action needs confirmation in an interactive session.
+- Foreign payloads are normalized before any module runs. Codex unified exec (`exec_command`, argument `cmd`) and argv-list shell calls become one Bash command string; `apply_patch`, structured or freeform, yields every added, updated, deleted and moved-to path, and each path runs the write guards. On a foreign harness, a Bash call with no readable command or a write with no readable path fails closed with exit 2.
 - A module that raises is logged to `~/.local/share/neva/hooks.log` and skipped. A hook error never breaks the session.
 
 ## Controls

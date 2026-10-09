@@ -17,6 +17,7 @@ Controls:
 Contract with Claude Code:
   exit 0, optional JSON on stdout (additionalContext, permissionDecision ask, systemMessage)
   exit 2, reason on stderr, only when a module deliberately blocks
+  On any harness outside ASK_HARNESSES a PreToolUse ask also exits 2: it fails closed.
 A module that raises is logged to <data dir>/hooks.log and skipped; it never breaks the session.
 """
 import fnmatch
@@ -85,12 +86,50 @@ def run_modules(ctx, mods):
     return results
 
 
-def merge(event, results):
+# Harnesses known to render a PreToolUse "ask" as a confirmation prompt to the human.
+# Everything else fails closed: Codex hard-errors on permissionDecision:ask, the OpenCode
+# and Cursor bridges have no prompt to show it in, and an unknown harness is assumed to be
+# the same. On those, an ask becomes a block, because a confirmation that nobody sees must
+# never turn into permission.
+ASK_HARNESSES = ("claude",)
+
+CONFIRM_BLOCK = ("This action needs confirmation in an interactive session, and the {harness} "
+                 "harness cannot show a confirmation prompt, so Neva blocked it. Fix: run it from "
+                 "Claude Code, where Neva asks first, or have the owner confirm and run it themselves.")
+
+
+GUARDED_WRITES = ("Write", "Edit", "MultiEdit")
+
+
+def unreadable(event, data, harness):
+    """On a foreign harness, a guarded call whose shape Neva cannot read fails closed.
+
+    The guards read a command string for Bash and a file path for writes. If normalization
+    could not find one, every guard would pass without looking, so the call is blocked.
+    """
+    if event != "PreToolUse" or harness in ASK_HARNESSES:
+        return ""
+    tool, ti = data.get("tool_name"), data.get("tool_input") or {}
+    source = data.get("neva_source_tool") or tool or "tool"
+    if tool == "Bash" and not (isinstance(ti.get("command"), str) and ti["command"].strip()):
+        what = "command"
+    elif tool in GUARDED_WRITES and not ti.get("file_path"):
+        what = "target file path"
+    else:
+        return ""
+    return (f"[dispatch] Neva could not read the {what} of this {source} call from {harness}, so its "
+            "guards cannot check it. " + CONFIRM_BLOCK.format(harness=harness))
+
+
+def merge(event, results, harness="claude"):
     """Return (stdout_text, stderr_text, exit_code)."""
     blocks = [f"[{mid}] {r['block']}" for mid, r in results if r.get("block")]
     if blocks:
         return "", "\n\n".join(blocks), 2
     asks = [r["ask"] for _, r in results if r.get("ask")]
+    if event == "PreToolUse" and asks and harness not in ASK_HARNESSES:
+        reasons = [f"[{mid}] {r['ask']}" for mid, r in results if r.get("ask")]
+        return "", "\n\n".join(reasons + [CONFIRM_BLOCK.format(harness=harness or "unknown")]), 2
     ctx_parts = [r["context"] for _, r in results if r.get("context")]
     systems = [r["system"] for _, r in results if r.get("system")]
     out = {}
@@ -125,6 +164,7 @@ def main(argv):
         data, parse_error = {}, True
     if not isinstance(data, dict):
         data, parse_error = {}, True
+    event, data, harness = common.normalize_payload(event, data)
     tool = str(data.get("tool_name") or "")
     profile = active_profile()
     try:
@@ -132,10 +172,21 @@ def main(argv):
     except Exception:
         common.log_exception("dispatch: hooks.meta.json unreadable")
         return 0
+    refused = unreadable(event, data, harness)
+    if refused:
+        common.emit_stderr(refused)
+        return 2
     if not mods:
         return 0
-    ctx = common.Ctx(event, "", data, profile, raw=raw, parse_error=parse_error)
-    stdout, stderr, code = merge(event, run_modules(ctx, mods))
+    ctx = common.Ctx(event, "", data, profile, raw=raw, parse_error=parse_error, harness=harness)
+    results = run_modules(ctx, mods)
+    # A patch can touch several files. The first target ran above; every other target runs
+    # the path guards (modules with a tools filter) so no file in the patch goes unchecked.
+    for target in (data.get("neva_patch_targets") or [])[1:]:
+        extra = dict(data, tool_input=dict(data.get("tool_input") or {}, file_path=target, edits=[]))
+        extra_ctx = common.Ctx(event, "", extra, profile, raw=raw, parse_error=parse_error, harness=harness)
+        results += run_modules(extra_ctx, [m for m in mods if m.get("tools")])
+    stdout, stderr, code = merge(event, results, harness)
     try:
         if stdout:
             sys.stdout.write(stdout)

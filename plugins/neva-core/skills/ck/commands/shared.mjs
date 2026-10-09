@@ -7,8 +7,8 @@
  * sessions record the git branch and modified files (from gstack context-save).
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { resolve, dirname, isAbsolute } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync, realpathSync } from 'fs';
+import { resolve, dirname, isAbsolute, sep } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
@@ -30,14 +30,34 @@ export const PROJECTS_FILE    = resolve(CK_HOME, 'projects.json');
 export const CURRENT_SESSION  = resolve(CK_HOME, 'current-session.json');
 export const SKILL_FILE       = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'SKILL.md');
 
+// ─── Errors ───────────────────────────────────────────────────────────────────
+
+/** A refusal with a message that names the file and the fix. Printed, exit 1. */
+export class CkError extends Error {}
+
+process.on('uncaughtException', (e) => {
+  if (e instanceof CkError) {
+    console.log(e.message);
+    process.exit(1);
+  }
+  console.error(e && e.stack ? e.stack : String(e));
+  process.exit(1);
+});
+
 // ─── JSON I/O ─────────────────────────────────────────────────────────────────
 
+/**
+ * null when the file is absent. A file that exists but is not valid JSON is an error,
+ * never "absent": treating it as empty is how a registry gets silently replaced.
+ */
 export function readJson(filePath) {
+  if (!existsSync(filePath)) return null;
+  const raw = readFileSync(filePath, 'utf8');
   try {
-    if (!existsSync(filePath)) return null;
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new CkError(`ck: ${filePath} is not valid JSON (${e.message}). ` +
+      'Fix: repair the file or move it aside, then retry. ck left it unchanged.');
   }
 }
 
@@ -48,7 +68,21 @@ export function writeJson(filePath, data) {
 }
 
 export function readProjects() {
-  return readJson(PROJECTS_FILE) || {};
+  const projects = readJson(PROJECTS_FILE);
+  if (projects === null) return {};
+  const unchanged = ' ck left it unchanged.';
+  if (typeof projects !== 'object' || Array.isArray(projects)) {
+    throw new CkError(`ck: ${PROJECTS_FILE} must be a JSON object of project path to entry. ` +
+      'Fix: repair the file or move it aside, then retry.' + unchanged);
+  }
+  for (const [path, entry] of Object.entries(projects)) {
+    if (!entry || typeof entry !== 'object' || typeof entry.contextDir !== 'string' ||
+        typeof entry.name !== 'string') {
+      throw new CkError(`ck: ${PROJECTS_FILE} entry "${path}" needs a string name and contextDir. ` +
+        'Fix: repair that entry or remove it, then retry.' + unchanged);
+    }
+  }
+  return projects;
 }
 
 export function writeProjects(projects) {
@@ -57,12 +91,46 @@ export function writeProjects(projects) {
 
 // ─── Context I/O ──────────────────────────────────────────────────────────────
 
+function isSymlink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The one way to turn a registry contextDir into a path. It must be a single plain
+ * directory name directly under the contexts root, and neither the root nor the
+ * directory may be a symlink, so a registry entry can never point a read, a write or
+ * forget's recursive delete anywhere else.
+ */
+export function contextDirPath(contextDir) {
+  const refuse = (why) => new CkError(`ck: contextDir ${JSON.stringify(contextDir)} ${why}. ` +
+    `Fix: correct that entry in ${PROJECTS_FILE}, then retry. ck changed nothing.`);
+  if (typeof contextDir !== 'string' || !contextDir || contextDir === '.' || contextDir === '..' ||
+      contextDir.includes('/') || contextDir.includes('\\') || contextDir.includes('\0')) {
+    throw refuse('is not a single directory name under the contexts folder');
+  }
+  const dir = resolve(CONTEXTS_DIR, contextDir);
+  if (dirname(dir) !== CONTEXTS_DIR) throw refuse('resolves outside the contexts folder');
+  if (isSymlink(CK_HOME) || isSymlink(CONTEXTS_DIR)) {
+    throw refuse(`cannot be used because ${CONTEXTS_DIR} or its parent is a symlink`);
+  }
+  if (isSymlink(dir)) throw refuse('is a symlink');
+  if (existsSync(dir)) {
+    const root = realpathSync(CONTEXTS_DIR);
+    if (!realpathSync(dir).startsWith(root + sep)) throw refuse('resolves outside the contexts folder');
+  }
+  return dir;
+}
+
 export function contextPath(contextDir) {
-  return resolve(CONTEXTS_DIR, contextDir, 'context.json');
+  return resolve(contextDirPath(contextDir), 'context.json');
 }
 
 export function contextMdPath(contextDir) {
-  return resolve(CONTEXTS_DIR, contextDir, 'CONTEXT.md');
+  return resolve(contextDirPath(contextDir), 'CONTEXT.md');
 }
 
 export function loadContext(contextDir) {
@@ -70,7 +138,7 @@ export function loadContext(contextDir) {
 }
 
 export function saveContext(contextDir, data) {
-  const dir = resolve(CONTEXTS_DIR, contextDir);
+  const dir = contextDirPath(contextDir);
   mkdirSync(dir, { recursive: true });
   writeJson(contextPath(contextDir), data);
   writeFileSync(contextMdPath(contextDir), renderContextMd(data), 'utf8');

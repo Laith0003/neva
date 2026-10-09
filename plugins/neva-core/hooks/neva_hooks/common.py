@@ -38,6 +38,205 @@ TRUE_VALUES = ("1", "true", "yes", "on", "enabled", "enable")
 FALSE_VALUES = ("0", "false", "no", "off", "disabled", "disable")
 
 
+# ---------------------------------------------------------------- harness payload normalization
+#
+# Neva's hook modules are written against the Claude Code payload: an event name plus
+# tool_name, tool_input, cwd, session_id and transcript_path. Other harnesses send the
+# same facts under different key names and different event names. Normalizing once here,
+# at the edge, is what lets every module stay harness-agnostic and unchanged.
+#
+# A Claude payload is passed through untouched. Rewriting the shape Claude already sends
+# could only introduce regressions, so the foreign-harness code path is never entered for
+# the harness Neva runs on natively.
+
+HARNESS_EVENTS = {
+    "opencode": {
+        # OpenCode plugin hooks, plus the two bus events the bridge subscribes to.
+        "tool.execute.before": "PreToolUse", "tool.execute.after": "PostToolUse",
+        "session.created": "SessionStart", "session.idle": "Stop",
+        "command.execute.before": "UserPromptSubmit",
+    },
+    "cursor": {
+        # Cursor hook events are camelCase; see .cursor/hooks.json.
+        "sessionstart": "SessionStart", "beforeshellexecution": "PreToolUse",
+        "aftershellexecution": "PostToolUse", "beforesubmitprompt": "UserPromptSubmit",
+        "beforereadfile": "PreToolUse", "beforemcpexecution": "PreToolUse",
+        "stop": "Stop", "sessionend": "Stop",
+    },
+}
+
+# Each harness names the shell tool differently, and pre_bash only runs for "Bash".
+TOOL_NAMES = {
+    "bash": "Bash", "shell": "Bash", "command": "Bash", "terminal": "Bash",
+    "run_shell_command": "Bash", "local_shell": "Bash", "exec": "Bash",
+    # Codex unified exec. Codex matches it as Bash but the argument is `cmd`, not `command`.
+    "exec_command": "Bash", "shell_command": "Bash",
+    "read": "Read", "read_file": "Read", "view": "Read",
+    "write": "Write", "write_file": "Write", "create_file": "Write",
+    "edit": "Edit", "replace": "Edit", "str_replace": "Edit", "apply_patch": "Edit",
+    "multiedit": "MultiEdit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch",
+}
+
+
+def _first(data, *keys):
+    """First non-empty value among keys. Harnesses disagree on spelling, not on meaning.
+
+    A list collapses to its first entry: Cursor sends the working directory as
+    `workspace_roots`, an array, where every other harness sends a plain string.
+    """
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def detect_harness(data, requested=""):
+    """Name the harness that sent this payload.
+
+    An explicit NEVA_HARNESS always wins: every adapter Neva generates sets it, so
+    sniffing is only the fallback for a hand-wired integration that forgot to.
+    """
+    value = (requested or env("NEVA_HARNESS")).strip().lower()
+    if value:
+        return value
+    event = str(_first(data, "hook_event_name", "event", "type")).lower()
+    if event.startswith(("tool.execute.", "command.execute.")) or event in ("session.created", "session.idle"):
+        return "opencode"
+    if "hook_event_name" in data or "transcript_path" in data:
+        return "claude"
+    if isinstance(data.get("tool"), dict):
+        return "codex"
+    return "claude"
+
+
+SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+PATCH_HEADER = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.M)
+
+
+def _normalize_shell(tool_input):
+    """Give the Bash guards one command string, whatever the harness called it.
+
+    Codex unified exec sends `cmd`; its shell tool sends an argv list, usually
+    ["bash", "-lc", script], where the script is what the guards must read. A shape that
+    yields no string leaves `command` absent, and the dispatcher fails that call closed.
+    """
+    command = tool_input.get("command")
+    if command in (None, ""):
+        command = tool_input.get("cmd")
+    if isinstance(command, (list, tuple)) and all(isinstance(x, str) for x in command):
+        argv = list(command)
+        if len(argv) >= 3 and os.path.basename(argv[0]) in SHELLS and argv[1] in ("-c", "-lc", "-ic"):
+            command = argv[2]
+        else:
+            command = " ".join(argv)
+    if isinstance(command, str) and command.strip():
+        tool_input["command"] = command
+    else:
+        tool_input.pop("command", None)
+
+
+def patch_targets(patch, cwd=""):
+    """Every path an apply_patch envelope adds, updates, deletes or moves to, absolute."""
+    targets = []
+    for raw in PATCH_HEADER.findall(patch or ""):
+        path = os.path.expanduser(raw.strip())
+        if not os.path.isabs(path) and cwd:
+            path = os.path.join(cwd, path)
+        if path not in targets:
+            targets.append(path)
+    return targets
+
+
+def _normalize_patch(normalized, original, tool, cwd):
+    """Codex edits files through apply_patch: the patch text in tool_input.command, or
+    freeform text with no object around it. The write guards need the target paths."""
+    ti = normalized["tool_input"]
+    patch = ""
+    for candidate in (ti.get("command"), ti.get("input"), ti.get("patch"), original.get("tool_input"),
+                      original.get("input"), tool.get("input")):
+        if isinstance(candidate, str) and candidate.strip():
+            patch = candidate
+            break
+    targets = patch_targets(patch, cwd)
+    new_input = {"command": patch} if patch else {}
+    if targets:
+        new_input["file_path"] = targets[0]
+        new_input["edits"] = [{"file_path": t} for t in targets[1:]]
+    normalized["tool_input"] = new_input
+    normalized["neva_patch_targets"] = targets
+
+
+def normalize_payload(event, data, harness=""):
+    """Return (canonical_event, claude_shaped_data, harness_name).
+
+    Unknown keys are carried through untouched so a harness-specific module could still
+    read them, and so a future field does not need a change here to survive the trip.
+    """
+    original = data if isinstance(data, dict) else {}
+    active = detect_harness(original, harness)
+    if active == "claude":
+        if original.get("neva_harness") != "claude":
+            original = dict(original, neva_harness="claude")
+        return event, original, "claude"
+
+    normalized = dict(original)
+    source_event = str(_first(original, "hook_event_name", "event", "type") or event)
+    canonical = HARNESS_EVENTS.get(active, {}).get(source_event.lower(), event)
+    tool = _mapping(original.get("tool"))
+    session = _mapping(original.get("session"))
+    context = _mapping(original.get("context"))
+
+    name = _first(original, "tool_name", "toolName", "tool_id") or _first(tool, "name", "id", "tool_name")
+    normalized["tool_name"] = TOOL_NAMES.get(str(name).lower(), str(name))
+    normalized["neva_source_tool"] = str(name)
+    cwd = str(_first(original, "cwd", "directory", "workspace", "worktree", "workspace_roots")
+              or _first(session, "cwd", "directory", "workspace")
+              or _first(context, "cwd", "directory") or "")
+
+    tool_input = original.get("tool_input")
+    for candidate in (tool_input, _first(tool, "input", "arguments", "args", "parameters"),
+                      _first(original, "input", "arguments", "args", "parameters")):
+        if isinstance(candidate, dict):
+            tool_input = candidate
+            break
+    normalized["tool_input"] = dict(tool_input) if isinstance(tool_input, dict) else {}
+    # OpenCode's read, write and edit tools name the path filePath. The write guards read
+    # file_path, so without this every protected-path check passes on that harness.
+    file_path = normalized["tool_input"].get("filePath")
+    if isinstance(file_path, str) and file_path and not normalized["tool_input"].get("file_path"):
+        normalized["tool_input"]["file_path"] = file_path
+    # Cursor's beforeShellExecution sends a bare `command` string and names no tool at
+    # all. Without this, tool_name stays empty, the Bash modules never match, and the
+    # no-verify guard silently stops guarding on that harness.
+    if not normalized["tool_input"]:
+        command = _first(original, "command", "shell_command") or _first(tool, "command")
+        if isinstance(command, str) and command:
+            normalized["tool_input"] = {"command": command}
+    if not normalized["tool_name"] and normalized["tool_input"].get("command"):
+        normalized["tool_name"] = "Bash"
+    if normalized["tool_name"] == "Bash":
+        _normalize_shell(normalized["tool_input"])
+    if str(name).lower() == "apply_patch":
+        _normalize_patch(normalized, original, tool, cwd)
+
+    normalized["cwd"] = cwd
+    normalized["session_id"] = str(_first(original, "session_id", "sessionId", "sessionID",
+                                          "conversation_id", "conversationId", "thread_id")
+                                   or _first(session, "id", "session_id") or "")
+    normalized["transcript_path"] = str(_first(original, "transcript_path", "transcriptPath",
+                                               "rollout_path", "rolloutPath")
+                                        or _first(session, "transcript_path", "transcriptPath") or "")
+    normalized["neva_harness"] = active
+    return canonical, normalized, active
+
+
 # ---------------------------------------------------------------- environment
 
 def env(name, default=""):
@@ -863,13 +1062,14 @@ def load_instincts(root, project_id=None, include_global=True):
 class Ctx:
     """Everything a module needs about the current hook call. Expensive parts are lazy."""
 
-    def __init__(self, event, group, data, profile, raw="", parse_error=False):
+    def __init__(self, event, group, data, profile, raw="", parse_error=False, harness="claude"):
         self.event = event
         self.group = group
         self.data = data if isinstance(data, dict) else {}
         self.profile = profile
         self.raw = raw or ""
         self.parse_error = parse_error
+        self.harness = str(harness or self.data.get("neva_harness") or "claude")
         self.session_id = str(self.data.get("session_id") or env("CLAUDE_SESSION_ID") or "")
         self.sid = sanitize_id(self.session_id) or "default"
         self.cwd = str(self.data.get("cwd") or env("CLAUDE_PROJECT_DIR") or os.getcwd())

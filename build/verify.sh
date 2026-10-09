@@ -862,6 +862,108 @@ else
 fi
 rm -rf "$BAD_HOOKS_DIR"
 
+head_ "26. cross-harness adapters are generated, valid and checked for drift"
+# plugins/neva-core is the source of truth and adapters/ is generated from it. What can rot
+# is the committed tree drifting from the plugin, so --check is the gate. Note the runs
+# below print to stdout AND stderr: capture both and match the whole output, never a tail,
+# or unittest's summary gets lost behind the generator's own progress lines.
+ADAPTER_CHECK="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 build/adapters.py --check 2>&1)"
+if printf '%s\n' "$ADAPTER_CHECK" | grep -q '^adapters: clean$'; then
+  ok "generated harness adapters are in sync with plugins/neva-core"
+else
+  bad "adapter drift" "run: python3 build/adapters.py, then commit adapters/"
+fi
+
+ADAPTER_TESTS="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 build/tests/test_adapters.py 2>&1)"
+if printf '%s\n' "$ADAPTER_TESTS" | grep -q '^OK$'; then
+  ok "adapter generator suite: $(printf '%s\n' "$ADAPTER_TESTS" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "adapter generator suite" \
+      "run: python3 build/tests/test_adapters.py ($(printf '%s\n' "$ADAPTER_TESTS" | tail -1))"
+fi
+
+NORM_TESTS="$(cd "$REPO/plugins/neva-core/hooks" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  tests.test_hooks.TestHarnessPayloadNormalization 2>&1)"
+if printf '%s\n' "$NORM_TESTS" | grep -q '^OK$'; then
+  ok "harness payload normalization: $(printf '%s\n' "$NORM_TESTS" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "harness payload normalization" \
+      "run: python3 -m unittest tests.test_hooks.TestHarnessPayloadNormalization"
+fi
+
+# Every adapter promises the neva CLI a contract. A contract naming a file the generator
+# never wrote installs nothing, and nothing else in the build would notice.
+if (cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY' >/dev/null 2>&1
+import json
+from pathlib import Path
+
+modes = {"copy", "symlink", "merge-json", "merge-toml", "append-block", "append-json"}
+contracts = sorted(Path("adapters").glob("*/install.json"))
+assert len(contracts) >= 10, "expected an install.json for every harness"
+for path in contracts:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert value["harness"] == path.parent.name, path
+    assert value["entries"], path
+    for item in value["entries"]:
+        assert set(item) == {"src", "dest", "mode", "key"}, path
+        assert item["mode"] in modes, path
+        assert (path.parent / item["src"]).exists(), (path, item["src"])
+        if item["mode"] in ("merge-json", "merge-toml", "append-block", "append-json"):
+            assert item["key"], path
+PY
+); then
+  ok "every install.json is valid and its entries point at files that exist"
+else
+  bad "install.json contract" "an adapter contract is malformed or names a missing src"
+fi
+
+# Two negative controls. A check never seen to fail is not known to work.
+NEG_DIR="$(mktemp -d "$SANDBOX/adapters-neg-XXXXXX")"
+if (cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 NEG_DIR="$NEG_DIR" python3 - <<'PY' >/dev/null 2>&1
+import importlib.util
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("adapter_check", Path.cwd() / "build" / "adapters.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.OUT = Path(os.environ["NEG_DIR"]) / "adapters"
+assert module.generate(verbose=False) == 0
+assert module.check(verbose=False) == 0, "a freshly generated tree must be clean"
+target = module.OUT / "codex" / "AGENTS.md"
+target.write_text(target.read_text(encoding="utf-8") + "edited by hand\n", encoding="utf-8")
+assert module.check(verbose=False) == 1, "a hand edit must be caught"
+target.unlink()
+assert module.check(verbose=False) == 1, "a deleted generated file must be caught"
+PY
+); then
+  ok "negative control: --check rejects a hand edit and a deleted file"
+else
+  bad "adapter negative control" "build/adapters.py --check did not reject a modified tree"
+fi
+rm -rf "$NEG_DIR"
+
+# The regression this locks: a "do not edit" marker written above YAML frontmatter pushes
+# the frontmatter off line 1, and every harness then refuses to parse the file.
+if (cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY' >/dev/null 2>&1
+from pathlib import Path
+
+broken = []
+for path in Path("adapters").rglob("*"):
+    if path.suffix.lower() not in (".md", ".mdc") or not path.is_file():
+        continue
+    lines = path.read_text(encoding="utf-8").split("\n")
+    if lines[0].startswith("<!--") and len(lines) > 1 and lines[1].strip() == "---":
+        broken.append(str(path))
+assert not broken, broken
+assert any(Path("adapters").rglob("*.mdc")), "expected generated Cursor .mdc rules"
+PY
+); then
+  ok "no generated file hides its frontmatter behind a comment"
+else
+  bad "frontmatter is not first" "a generated markdown file starts with a comment above ---"
+fi
+
 head_ "27. the neva CLI installs into a harness and can take itself back out again (2026-10-04)"
 # Added with the installer. An installer that writes into somebody else's home directory is only
 # as good as its undo: a buyer who tries Neva and removes it must get their machine back exactly

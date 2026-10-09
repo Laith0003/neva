@@ -120,6 +120,39 @@ def remove_merge(entry, destination, dry_run):
     return "removed " + key + " from " + str(destination)
 
 
+def remove_append_json(entry, destination, dry_run):
+    """Take out only Neva's marked entries, then hand back the owner's bytes when nothing else changed."""
+    if not destination.is_file():
+        return "already gone " + str(destination)
+    core.guard_destination(destination)
+    data = core.read_json_object(destination)
+    loaded = copy.deepcopy(data)
+    key = entry.get("key", "")
+    core.strip_neva_entries(data, key, entry.get("value", []), entry.get("created_parents", []),
+                            entry.get("foreign"), destination)
+    if data == loaded and (data or entry.get("existed")):
+        return "already removed Neva's entries at " + key + " from " + str(destination)
+    if dry_run:
+        return "would remove Neva's entries at " + key + " from " + str(destination)
+    if not data and not entry.get("existed"):
+        destination.unlink()
+        return "removed " + str(destination) + " (Neva created it)"
+    target = core.write_target(destination)
+    saved = entry.get("target_backup") or entry.get("backup")
+    if saved:
+        core.guard_data_path(Path(saved))
+    if saved and Path(saved).is_file() and not Path(saved).name.endswith(".symlink"):
+        try:
+            original = core.read_json_object(Path(saved))
+        except (OSError, ValueError):
+            original = None
+        if original == data:
+            core.restore_backup(target, saved)
+            return "restored " + str(destination)
+    core.write_json(target, data)
+    return "removed Neva's entries at " + key + " from " + str(destination)
+
+
 def remove_block(entry, destination, dry_run):
     if not destination.is_file():
         return "already gone " + str(destination)
@@ -173,6 +206,8 @@ def remove_entry(entry, dry_run):
         return remove_merge(entry, destination, dry_run)
     if kind == "append-block":
         return remove_block(entry, destination, dry_run)
+    if kind == "append-json":
+        return remove_append_json(entry, destination, dry_run)
     raise ValueError("unsupported manifest entry kind: " + str(kind) +
                      ". fix: delete " + str(core.state_path()) + " and re-run neva install")
 

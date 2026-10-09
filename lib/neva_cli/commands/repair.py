@@ -41,6 +41,9 @@ def repair_entry(entry, installer):
     if kind in ("merge-json", "merge-toml"):
         return installer.apply_merge(harness, destination, kind, entry.get("key", ""),
                                      entry.get("value"), entry.get("source"))
+    if kind == "append-json":
+        return installer.apply_append_json(harness, destination, entry.get("key", ""),
+                                           entry.get("source_value", entry.get("value")), entry.get("source"))
     if kind == "append-block":
         return installer.apply_block(harness, Path(entry["source"]), destination, entry["key"])
     if kind in core.REGISTRATIONS:

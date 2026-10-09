@@ -1,0 +1,10 @@
+{
+  "version": "2.1-neva",
+  "analyze": {
+    "min_observations_to_analyze": 20,
+    "max_analysis_lines": 500,
+    "model": "haiku",
+    "timeout_seconds": 120,
+    "max_turns": 0
+  }
+}

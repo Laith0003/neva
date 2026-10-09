@@ -98,6 +98,7 @@ def observe(ctx):
         "session": ctx.session_id or "unknown",
         "project_id": proj["id"],
         "project_name": proj["name"],
+        "harness": ctx.harness,
     }
     if ctx.data.get("tool_use_id"):
         rec["tool_use_id"] = str(ctx.data["tool_use_id"])

@@ -12,8 +12,7 @@
  */
 
 import { rmSync } from 'fs';
-import { resolve } from 'path';
-import { resolveContext, readProjects, writeProjects, CONTEXTS_DIR } from './shared.mjs';
+import { resolveContext, readProjects, writeProjects, contextDirPath } from './shared.mjs';
 
 const arg = process.argv[2];
 const cwd = process.env.PWD || process.cwd();
@@ -27,10 +26,11 @@ if (!resolved) {
 
 const { name, contextDir, projectPath } = resolved;
 
-// Remove context directory
-const contextDirPath = resolve(CONTEXTS_DIR, contextDir);
+// Remove context directory. contextDirPath refuses anything that is not a plain
+// directory directly under the contexts root, so this delete cannot leave it.
+const dirPath = contextDirPath(contextDir);
 try {
-  rmSync(contextDirPath, { recursive: true, force: true });
+  rmSync(dirPath, { recursive: true, force: true });
 } catch (e) {
   console.log(`ck: could not remove context directory - ${e.message}`);
   process.exit(1);

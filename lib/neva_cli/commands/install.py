@@ -14,12 +14,15 @@ by a data contract at adapters/<harness>/install.json:
      "entries": [{"src": "...", "dest": "~/...", "mode": "copy", "key": "..."}],
      "post": ["commands to print, never run"]}
 
-mode is copy, symlink, merge-json, merge-toml or append-block. Adding a directory under
+mode is copy, symlink, merge-json, merge-toml, append-block or append-json. Adding a directory under
 adapters/ is the whole of adding a harness: no code changes here.
 
 Everything written is recorded in the install-state manifest so repair and uninstall can put
 the machine back exactly as it was found.
 """
+import contextlib
+import copy
+import io
 import json
 import os
 import sys
@@ -103,6 +106,10 @@ class Installer:
         self.state = state
         self.dry_run = dry_run
         self.data = {}
+        # The text of each TOML destination as this run has left it. A dry run (and the
+        # rehearsal before a real one) never writes, so the next table appended to the same
+        # file must be planned against the text the earlier ones would have produced.
+        self.toml_texts = {}
         self.backups = {}
         self.changed = []
 
@@ -188,7 +195,7 @@ class Installer:
             self.backups[key] = core.backup(destination)
         return self.backups[key]
 
-    # -- the five modes ------------------------------------------------------
+    # -- the six modes -------------------------------------------------------
 
     def apply_file(self, harness, source, destination, mode):
         if not source.is_file():
@@ -217,6 +224,28 @@ class Installer:
                             "source": str(source), "existed": existed, "backup": saved,
                             "checksum": checksum, "links": core.symlink_layout(destination),
                             "created_dirs": dirs})
+
+    def apply_tree(self, harness, source, destination, mode):
+        """A directory src: every file under it, each its own entry, so repair and uninstall
+        treat it like any single copy. A symlink anywhere in the tree is refused before any
+        file is written, never followed."""
+        files = []
+        for path in sorted(source.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("adapter source " + str(path) + " is a symlink, which Neva never "
+                                 "follows. fix: replace it with the file itself in the adapter")
+            if path.is_file() and "__pycache__" not in path.parts and not core.is_os_junk(path):
+                files.append(path)
+        if not files:
+            raise ValueError("adapter source directory " + str(source) + " holds no files. fix: "
+                             "restore its contents or remove the entry from install.json")
+        for path in files:
+            target = destination / path.relative_to(source)
+            if (target.exists() or target.is_symlink()) and self.any_prior(target) is None:
+                raise ValueError(str(target) + " already exists and is not Neva's, so Neva will not "
+                                 "replace it. fix: move it aside or rename it, then re-run")
+        for path in files:
+            self.apply_file(harness, path, destination / path.relative_to(source), mode)
 
     def merge_mapping(self, destination, kind):
         key = str(destination)
@@ -266,10 +295,12 @@ class Installer:
         appended = earlier.get("appended") if earlier is not None else None
         if plan[0] == "append":
             appended = plan[2]
+            self.toml_texts[str(destination)] = plan[1]
             if not self.dry_run:
                 core.atomic_write_bytes(core.write_target(destination), plan[1].encode("utf-8"))
         elif plan[0] == "rewrite":
             appended = None
+            self.toml_texts.pop(str(destination), None)
             self.flush_mapping(destination, kind)
         record = {"harness": harness, "kind": kind, "dest": str(destination),
                   "source": str(source) if source else None, "key": key, "value": value,
@@ -282,8 +313,7 @@ class Installer:
             record["appended"] = appended
         return self.record(record)
 
-    @staticmethod
-    def toml_plan(destination, data, key, value):
+    def toml_plan(self, destination, data, key, value):
         """How a TOML merge will change the file, decided before anything is backed up.
 
         ("same",) when the key already holds the value; ("append", text, appended) when the
@@ -294,7 +324,9 @@ class Installer:
         if core.lookup(data, key, core.MISSING) == value:
             return ("same",)
         target = core.write_target(destination)
-        text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        text = self.toml_texts.get(str(destination))
+        if text is None:
+            text = target.read_text(encoding="utf-8") if target.is_file() else ""
         appended = core.toml_append(text, data, key, value)
         if appended is not None:
             return ("append",) + appended
@@ -304,6 +336,62 @@ class Installer:
                              "already exists there. fix: set " + key + " by hand, or remove the "
                              "comments, then re-run; Neva left the file unchanged")
         return ("rewrite",)
+
+    def apply_append_json(self, harness, destination, key, value, source=None):
+        """Add Neva's marked entries beside the owner's in a shared JSON array.
+
+        The array at ``key`` (or each array under the object at ``key``) is shared with the
+        owner. Only entries carrying core.APPEND_MARKER are Neva's: a reinstall replaces those,
+        uninstall removes those, and every other entry keeps its content and its place.
+        """
+        if value is core.MISSING:
+            raise ValueError("adapter source key missing: " + (key or "<root>") +
+                             ". fix: add that key to the adapter source file")
+        where = "the adapter source value at " + key
+        for sub, items in core.append_shape(value, where):
+            for item in items:
+                if not core.is_neva_entry(item):
+                    raise ValueError(where + (("." + sub) if sub else "") + " holds an entry without "
+                                     "the " + core.APPEND_MARKER + " marker, so uninstall could never "
+                                     "tell it from the owner's. fix: mark every Neva entry with " +
+                                     core.APPEND_MARKER + " in the adapter source")
+        core.guard_destination(destination)
+        self.guard_owned(destination, "append-json")
+        data = self.merge_mapping(destination, "merge-json")
+        blocked = core.blocking_parent(data, key)
+        if blocked is not None:
+            prefix, found = blocked
+            shown = "null" if found is None else type(found).__name__
+            raise ValueError("cannot add Neva's entries to " + key + " in " + str(destination) + ": " +
+                             prefix + " holds a " + shown + ", not an object. fix: rename or remove " +
+                             prefix + " in that file by hand, then re-run; Neva left it unchanged")
+        # Validated on a copy, so a refusal leaves the in-run cache exactly as it was. Neva owns
+        # exactly what it recorded writing last time; nothing else at the key is Neva's.
+        earlier = self.prior(destination, key)
+        previous = earlier.get("value") if earlier is not None else None
+        foreign = earlier.get("foreign") if earlier is not None else None
+        trial = json.loads(json.dumps(data))
+        created, written, marked, names = core.append_into(trial, key, value, destination, previous, foreign)
+        for name in names:
+            print(str(destination) + ": " + name + " mentions " + core.APPEND_MARKER + " but Neva did not "
+                  "write it, so it stays yours and untouched")
+        dirs = self.created_dirs(destination, key)
+        existed = self.pristine(destination)
+        saved = self.backup(destination)
+        target_saved = self.backup_target(destination)
+        if earlier is not None:
+            created = list(dict.fromkeys(list(earlier.get("created_parents", [])) + created))
+        data.clear()
+        data.update(trial)
+        self.flush_mapping(destination, "merge-json")
+        return self.record({"harness": harness, "kind": "append-json", "dest": str(destination),
+                            "source": str(source) if source else None, "key": key, "value": written,
+                            "source_value": value, "foreign": marked,
+                            "existed": existed, "backup": saved, "created_parents": created,
+                            "checksum": core.sha256_value(written),
+                            "links": core.symlink_layout(destination),
+                            "leaf_link": self.leaf_link(destination), "target_backup": target_saved,
+                            "created_dirs": dirs})
 
     def apply_block(self, harness, source, destination, key):
         if not source.is_file():
@@ -350,12 +438,29 @@ class Installer:
     # -- contract driver -----------------------------------------------------
 
     def apply_adapter(self, harness, contract, adapter_path):
+        """Rehearse the whole contract, then apply it.
+
+        The rehearsal is a dry run of every entry against the real files: each destination is
+        read, shape-checked and boundary-checked, each tree scanned. Any refusal surfaces there,
+        before the first write, so a refused harness leaves nothing half installed.
+        """
+        if not self.dry_run:
+            rehearsal = Installer(copy.deepcopy(self.state), dry_run=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rehearsal.apply_entries(harness, contract, adapter_path)
+        self.apply_entries(harness, contract, adapter_path)
+        for command in contract.get("post", []):
+            print("post " + harness + ": run this yourself: " + str(command))
+
+    def apply_entries(self, harness, contract, adapter_path):
         for entry in contract.get("entries", []):
             mode = entry["mode"]
             destination = core.expand_destination(entry.get("dest"))
             source = core.source_path(adapter_path, entry.get("src"))
             key = entry.get("key", "")
-            if mode in ("copy", "symlink"):
+            if mode in ("copy", "symlink") and source.is_dir() and not source.is_symlink():
+                self.apply_tree(harness, source, destination, mode)
+            elif mode in ("copy", "symlink"):
                 self.apply_file(harness, source, destination, mode)
             elif mode in ("merge-json", "merge-toml"):
                 if not source.is_file():
@@ -365,10 +470,14 @@ class Installer:
                           else core.read_json_object(source))
                 self.apply_merge(harness, destination, mode, key,
                                  core.lookup(loaded, key, core.MISSING), source)
+            elif mode == "append-json":
+                if not source.is_file():
+                    raise ValueError("adapter source missing: " + str(source) +
+                                     ". fix: restore that file or correct src in install.json")
+                self.apply_append_json(harness, destination, key,
+                                       core.lookup(core.read_json_object(source), key, core.MISSING), source)
             elif mode == "append-block":
                 self.apply_block(harness, source, destination, key)
-        for command in contract.get("post", []):
-            print("post " + harness + ": run this yourself: " + str(command))
 
 
 # ---------------------------------------------------------------- Claude Code
