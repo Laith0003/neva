@@ -1,6 +1,6 @@
 """Tests for the Neva instinct CLI and the proposal contract.
 
-Run: python3 -m pytest scripts/test_instinct_cli.py
+Run: PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider scripts/test_instinct_cli.py
 Every test runs in a throwaway HOME, vault and XDG tree; nothing touches the real machine.
 """
 
@@ -22,10 +22,11 @@ def sandbox(tmp_path):
     vault = tmp_path / "vault"
     (vault / "00 Inbox").mkdir(parents=True)
     home.mkdir()
-    env = dict(os.environ, HOME=str(home), NEVA_VAULT=str(vault),
+    # Host NEVA_*, CLAUDE_*, ANTHROPIC_* and XDG_* vars never reach the CLI: a developer's own
+    # NEVA_INBOX would otherwise move the proposal file and fail every proposal test.
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("NEVA_", "CLAUDE_", "ANTHROPIC_", "XDG_"))}
+    env = dict(base, HOME=str(home), NEVA_VAULT=str(vault),
                XDG_DATA_HOME=str(tmp_path / "data"), XDG_STATE_HOME=str(tmp_path / "state"))
-    env.pop("CLAUDE_CONFIG_DIR", None)
-    env.pop("CLAUDE_PROJECT_DIR", None)
     repos = {}
     for name in ("repoA", "repoB"):
         repo = tmp_path / name
@@ -217,3 +218,30 @@ def test_observations_and_state_follow_neva_dirs(sandbox, tmp_path):
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert (obs / "projects.json").exists(), "the registry lives next to the hook's observations"
+
+
+def test_stats_reports_the_promotion_approve_reject_rate(sandbox):
+    run = sandbox["run"]
+    _add(run, "repoA", "prefer-explicit-errors", 0.9)
+    _add(run, "repoB", "prefer-explicit-errors", 0.85)
+    run("propose")
+    _tick(_proposal(sandbox["vault"]), "promote-global:prefer-explicit-errors", "approve")
+    run("apply-promotions")
+
+    _add(run, "repoA", "avoid-mocks", 0.9)
+    _add(run, "repoB", "avoid-mocks", 0.85)
+    run("propose")
+    _tick(_proposal(sandbox["vault"]), "promote-global:avoid-mocks", "reject")
+    run("apply-promotions")
+
+    out = run("stats").stdout
+    assert "PROMOTIONS_APPLIED: 1" in out
+    assert "PROMOTIONS_REJECTED: 1" in out
+    assert "PROMOTIONS_APPROVE_RATE: 0.50" in out
+
+
+def test_stats_reports_no_rate_before_any_decision(sandbox):
+    out = sandbox["run"]("stats").stdout
+    assert "PROMOTIONS_APPLIED: 0" in out
+    assert "PROMOTIONS_REJECTED: 0" in out
+    assert "PROMOTIONS_APPROVE_RATE: n/a" in out

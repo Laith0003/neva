@@ -78,6 +78,9 @@ try:
 except ImportError:
     _HAS_FCNTL = False  # Windows: skip file locking
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import learning_io  # noqa: E402  managed writes refuse symlinks below their root
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -108,17 +111,18 @@ def _resolve_observations_root() -> Path:
     return Path.home() / ".local" / "share" / "neva" / "observations"
 
 
-def _resolve_state_dir() -> Path:
+def _resolve_state_dir() -> tuple:
+    """(allowed root, instinct state dir). The root is the configured location and is trusted;
+    managed writes refuse any symlink below it."""
     override = _abs_env_path("NEVA_INSTINCT_STATE_DIR")
     if override:
-        return override
+        return override, override
     root = _abs_env_path("NEVA_STATE_DIR")
     if root:
-        return root / "instincts"
+        return root, root / "instincts"
     xdg = _abs_env_path("XDG_STATE_HOME")
-    if xdg:
-        return xdg / "neva" / "instincts"
-    return Path.home() / ".local" / "state" / "neva" / "instincts"
+    root = (xdg / "neva") if xdg else Path.home() / ".local" / "state" / "neva"
+    return root, root / "instincts"
 
 
 def _vault_from_identity() -> Optional[Path]:
@@ -141,7 +145,7 @@ def _vault_from_identity() -> Optional[Path]:
 VAULT = _abs_env_path("NEVA_VAULT") or _vault_from_identity()
 OBS_ROOT = _resolve_observations_root()
 REGISTRY_FILE = OBS_ROOT / "projects.json"
-STATE_DIR = _resolve_state_dir()
+STATE_ROOT, STATE_DIR = _resolve_state_dir()
 PROMOTIONS_LEDGER = STATE_DIR / "promotions.json"
 
 INSTINCTS_REL = Path("06 Memory") / "instincts"
@@ -809,6 +813,11 @@ def cmd_search(args) -> int:
 
 
 def cmd_stats(args) -> int:
+    try:
+        events = _load_promotion_events()
+    except PromotionEventsError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     project = detect_project()
     instincts = load_all_instincts(project)
     by_scope, by_domain, by_source = defaultdict(int), defaultdict(int), defaultdict(int)
@@ -826,6 +835,28 @@ def cmd_stats(args) -> int:
     print(f"AVG_CONFIDENCE: {(total_conf / len(instincts)) if instincts else 0:.2f}")
     print(f"PENDING: {len(_collect_pending_instincts())}")
     print(f"OBSERVATIONS_WAITING: {_count_lines(project['observations_file'])}")
+    ledger = _load_ledger()
+    applied = sum(1 for v in ledger.values() if v.get('status') == 'applied')
+    rejected = sum(1 for v in ledger.values() if v.get('status') == 'rejected')
+    decided = applied + rejected
+    rate = f"{applied / decided:.2f}" if decided else "n/a"
+    print(f"PROMOTIONS_APPLIED: {applied}")
+    print(f"PROMOTIONS_REJECTED: {rejected}")
+    print(f"PROMOTIONS_APPROVE_RATE: {rate}")
+
+    made = sum(1 for e in events if e['event'] == 'made')
+    approved = sum(1 for e in events if e['event'] == 'approved')
+    ev_rejected = sum(1 for e in events if e['event'] == 'rejected')
+    ev_decided = approved + ev_rejected
+    ev_rate = f"{approved / ev_decided:.2f}" if ev_decided else "n/a"
+    by_week: dict = defaultdict(lambda: {"made": 0, "approved": 0, "rejected": 0})
+    for e in events:
+        by_week[_event_week_key(e.get('ts', ''))][e['event']] += 1
+    print(f"PROPOSALS_MADE: {made}")
+    print(f"PROPOSALS_APPROVED: {approved}")
+    print(f"PROPOSALS_REJECTED: {ev_rejected}")
+    print(f"PROPOSALS_APPROVE_RATE: {ev_rate}")
+    print(f"PROPOSALS_BY_WEEK: {json.dumps(dict(sorted(by_week.items())))}")
     return 0
 
 
@@ -1513,11 +1544,95 @@ def _load_ledger() -> dict:
 
 
 def _save_ledger(ledger: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _preflight_state()
     _write_text_atomic(PROMOTIONS_LEDGER, json.dumps(ledger, indent=2) + "\n")
 
 
+PROMOTION_EVENTS_FILE = STATE_DIR / "promotion-events.jsonl"
+PROMOTION_EVENT_KINDS = ("made", "approved", "rejected")
+
+
+def _preflight_state() -> None:
+    """Check every managed write in STATE_DIR (the ledger and the event log) before anything
+    else is written, so a refusal leaves the vault, the inbox and the state exactly as they
+    were instead of a proposal file with no ledger entry behind it."""
+    try:
+        learning_io.ensure_dir(STATE_ROOT, STATE_DIR)
+        learning_io.check(STATE_ROOT, PROMOTIONS_LEDGER)
+        learning_io.check(STATE_ROOT, PROMOTION_EVENTS_FILE)
+    except learning_io.ManagedPathError as exc:
+        raise learning_io.ManagedPathError(
+            f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
+            f"absolute directory instead of linking to it. Nothing was written.") from None
+
+
+def _log_promotion_event(event: str, block_id: str) -> None:
+    """One JSONL line per proposal event: made (propose/promote writes the block), approved
+    (checkbox ticked and applied) or rejected (checkbox ticked, or the whole block deleted
+    from the proposal file without a tick)."""
+    line = json.dumps({"ts": _now_iso(), "event": event, "block_id": block_id})
+    with learning_io.open_append(STATE_ROOT, PROMOTION_EVENTS_FILE) as f:
+        f.write(line + "\n")
+
+
+class PromotionEventsError(Exception):
+    """promotion-events.jsonl holds a line that is not a valid event."""
+
+
+def _event_problem(line: str) -> Optional[str]:
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError as exc:
+        return f"not JSON ({exc.msg})"
+    if not isinstance(obj, dict):
+        return "not a JSON object"
+    if obj.get("event") not in PROMOTION_EVENT_KINDS:
+        return f"event is {obj.get('event')!r}, expected one of {', '.join(PROMOTION_EVENT_KINDS)}"
+    for key in ("ts", "block_id"):
+        if not isinstance(obj.get(key), str) or not obj[key]:
+            return f"missing or empty {key}"
+    return None
+
+
+def _load_promotion_events() -> list[dict]:
+    """Every event, or PromotionEventsError naming the first bad line. A damaged history is
+    never silently shortened: the metrics would look plausible and be wrong."""
+    events = []
+    try:
+        with open(PROMOTION_EVENTS_FILE, encoding="utf-8") as f:
+            for number, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                problem = _event_problem(line)
+                if problem:
+                    raise PromotionEventsError(
+                        f"{PROMOTION_EVENTS_FILE}: line {number} is not a valid promotion event "
+                        f"({problem}). Fix: correct or delete that line; each line must be a JSON "
+                        f'object like {{"ts": "...", "event": "made|approved|rejected", "block_id": "..."}}. '
+                        f"The file was not changed.")
+                events.append(json.loads(line))
+    except FileNotFoundError:
+        pass
+    except UnicodeDecodeError as exc:
+        raise PromotionEventsError(
+            f"{PROMOTION_EVENTS_FILE}: byte {exc.start} is not UTF-8 text. Fix: restore the file from a "
+            f"backup or delete the damaged line. The file was not changed.") from None
+    return events
+
+
+def _event_week_key(ts: str) -> str:
+    try:
+        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return "unknown"
+    year, week, _ = d.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
+    if not dry_run:
+        _preflight_state()
     ledger = _load_ledger()
     fresh = []
     for block in blocks:
@@ -1549,6 +1664,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
     _write_text_atomic(path, content)
     for block in fresh:
         ledger[block['block_id']] = {'status': 'proposed', 'file': str(path), 'date': _today()}
+        _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
     _inbox_pointer(path, done=False)
     kinds = defaultdict(int)
@@ -1613,6 +1729,7 @@ def cmd_propose(args) -> int:
 # ---------------------------------------------------------------------------
 
 BLOCK_SPLIT = re.compile(r'^## .*\n<!-- block_id: (\S+) -->\n', re.M)
+BLOCK_MARKER = re.compile(r'<!-- block_id: (\S+) -->')
 
 
 def _parse_blocks(text: str) -> list[dict]:
@@ -1756,6 +1873,7 @@ def _open_proposal_files() -> list[Path]:
 
 
 def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
+    _preflight_state()
     ledger = _load_ledger()
     applied = rejected = failed = 0
     for path in files:
@@ -1764,7 +1882,28 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             failed += 1
             continue
         text = path.read_text(encoding="utf-8")
-        for block in _parse_blocks(text):
+        parsed = _parse_blocks(text)
+        parsed_ids = {b['block_id'] for b in parsed}
+        # A marker still in the file but not parsed is a block someone reformatted (a blank line
+        # after the heading, a ### heading). It is still pending: report it, never reject it.
+        malformed = sorted(set(BLOCK_MARKER.findall(text)) - parsed_ids)
+        for bid in malformed:
+            if only_ids is not None and bid not in only_ids:
+                continue
+            print(f"{path.name}: block {bid} cannot be read: the line directly above "
+                  f"'<!-- block_id: {bid} -->' must be its '## ' heading, with no blank line between. "
+                  f"Fix: restore that heading line and run apply-promotions again. Its status is unchanged.",
+                  file=sys.stderr)
+            failed += 1
+        removed_ids = [bid for bid, info in ledger.items()
+                       if info.get('status') == 'proposed' and info.get('file') == str(path)
+                       and bid not in parsed_ids and bid not in malformed
+                       and (only_ids is None or bid in only_ids)]
+        for bid in removed_ids:
+            ledger[bid] = {'status': 'rejected', 'file': str(path), 'date': _today()}
+            _log_promotion_event("rejected", bid)
+            rejected += 1
+        for block in parsed:
             if block['resolved']:
                 continue
             bid = block['block_id']
@@ -1779,6 +1918,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             if block['reject']:
                 text = _mark_block(text, block, f"Rejected {_today()}.", False)
                 ledger[bid] = {'status': 'rejected', 'file': str(path), 'date': _today()}
+                _log_promotion_event("rejected", bid)
                 rejected += 1
                 continue
             go = block['approve'] or mode in ("all", "ids")
@@ -1793,8 +1933,9 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             dest = block['fields'].get('Proposed destination', '')
             text = _mark_block(text, block, f"Applied {_today()} to {dest}.", not block['approve'])
             ledger[bid] = {'status': 'applied', 'file': str(path), 'date': _today()}
+            _log_promotion_event("approved", bid)
             applied += 1
-        finished = all(b['resolved'] for b in _parse_blocks(text))
+        finished = not malformed and all(b['resolved'] for b in _parse_blocks(text))
         if finished:
             text = re.sub(r'^status: open$', 'status: done', text, count=1, flags=re.M)
         _write_text_atomic(path, text)
@@ -2207,7 +2348,11 @@ def main(argv: Optional[list] = None) -> int:
         parser.print_help()
         return 1
     _require_vault()
-    return handler(args)
+    try:
+        return handler(args)
+    except learning_io.ManagedPathError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':

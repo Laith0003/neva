@@ -32,6 +32,7 @@ Exit 0 clean, exit 1 on any finding.
 """
 import os
 import re
+import subprocess
 import sys
 
 # ---- tier 1: the enumerated denylist (case-insensitive) ----
@@ -103,11 +104,23 @@ TIER2_ALLOW = {
     "-@dev.md",                    # markdown anchor fragment
     "/users/by/", "/users/migrations/", "/users/tests/",  # URL path segments, not home dirs
 }
-# "build" and "__pycache__" used to be here. That is exactly why two real leaks survived:
-# a person's name in build/verify.sh and a tracked .pyc embedding an absolute home path were
-# both invisible to the tool meant to catch them. A scanner that does not scan itself is not
-# a scanner. Only .git is skipped now, because its object store is checked separately.
+# "build" used to be here too. That is exactly why a real leak survived: a person's name in
+# build/verify.sh was invisible to the tool meant to catch them. A scanner that does not scan
+# itself is not a scanner, so "build" is not skipped.
+#
+# Interpreter and test caches (__pycache__, .pytest_cache, any .pyc) are NOT skipped by name.
+# A .pyc bakes the compiler's absolute source path into co_filename, so it is exactly where a
+# home path hides. They are skipped only when they are demonstrably disposable: the scan root
+# is a git checkout and git does not track the file. Such a file cannot ship, because releases
+# and CI start from a fresh checkout. Outside a checkout (an export, an unzipped artifact, a
+# directory git cannot read) they are scanned like everything else, and a cache file forced
+# into the index with `git add -f` is scanned too. PYTHONDONTWRITEBYTECODE=1 in build/verify.sh
+# and the documented test commands keeps most of them from being written in the first place,
+# but that is hygiene, not the guarantee. The controls in build/verify.sh (section 11) plant
+# leaks in a cache directory and a .pyc, in an export and as a force-added file.
 SKIP_DIRS = {".git", "node_modules", ".obsidian"}
+CACHE_DIRS = {"__pycache__", ".pytest_cache"}
+CACHE_EXT = {".pyc"}
 # The personal denylist is gitignored and never ships. Scanning it would report every
 # pattern it contains as a leak, which is noise that teaches people to ignore this tool.
 SKIP_FILES = {"leak-scan.local",
@@ -130,8 +143,26 @@ T1 = re.compile("|".join(f"({p})" for p in TIER1), re.I) if TIER1 else None
 # carry an attribution keyword. It is deliberately NOT a substring allowlist: that design
 # is what let a real secret hide beside a placeholder and it is not coming back. A real
 # leak anywhere else in these files, or on any other line in them, still fails the scan.
+def tracked_files(root):
+    """Paths git tracks under `root`, relative to it, or None when `root` is not a readable git
+    checkout. None means nothing can be shown to be disposable, so every cache file is scanned."""
+    try:
+        r = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return {p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p}
+
+
+def _is_cache(rel):
+    parts = rel.replace(os.sep, "/").split("/")
+    return any(p in CACHE_DIRS for p in parts[:-1]) or os.path.splitext(parts[-1])[1].lower() in CACHE_EXT
+
+
 def scan(root):
     findings = []
+    tracked = tracked_files(root)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
@@ -141,6 +172,8 @@ def scan(root):
                 continue
             path = os.path.join(dirpath, fn)
             rel = os.path.relpath(path, root)
+            if tracked is not None and _is_cache(rel) and rel.replace(os.sep, "/") not in tracked:
+                continue  # an untracked cache artifact in a git checkout: it cannot ship
             try:
                 text = open(path, encoding="utf-8", errors="replace").read()
             except OSError:

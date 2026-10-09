@@ -102,17 +102,60 @@ Properties: atomic, confidence-weighted, domain-tagged, evidence-backed, scope-a
 ### Pipeline
 
 1. The `observe` hook appends each tool call and outcome to the project's observations file. Secrets are scrubbed, inputs and outputs cut to 5000 characters, file tools carry a `path`.
-2. A nightly job (`instinct-analyze`, 03:30, launchd or systemd timer rendered by `install.sh`, not a daemon) takes every project with at least 20 new observations, samples the newest 500 lines, and asks a small model to write project-scoped instinct notes. A run counts only when the model prints the exact completion record; then the analyzed lines move to the archive. On any failure the observations stay for the next night.
+2. A nightly job (`instinct-analyze`, 03:30, launchd or systemd timer rendered by `install.sh`, not a daemon) takes every project with at least 20 new observations and, oldest first, sends them to a small model in batches of at most 500 lines (up to 4 batches per project per run) to write project-scoped instinct notes. New observations are the live file plus any file the hook rotated unread into `observations.pending/` at 10 MB; pending files go first and are never pruned, only archived once analysed. Each batch is one model call, so a run makes at most 4 calls per qualifying project. A batch counts only when the model prints the exact completion record; then exactly that batch moves to the archive. On any failure that batch and everything after it stay for the next run, and anything a run did not reach stays in place. Nothing is archived unread.
 3. The same job decays confidence by 0.02 per week without observation, prunes pending instincts older than 30 days, and files proposals: promote to global, evolve into a skill, command or agent, become a rule, or retire.
 4. Nothing leaves project scope and nothing becomes a skill, command, agent or rule until you tick `approve` in the proposal file or say "apply instinct promotions".
 
 | Job setting | Default |
 |------------------|---------|
 | schedule | nightly, 03:30 (not enabled until you enable it) |
+| same-day run | off (`NEVA_INSTINCT_SAMEDAY=1` turns it on, see below) |
 | minimum new observations before analysis | 20 (`NEVA_INSTINCT_MIN_OBSERVATIONS`) |
-| lines sampled per project | 500 |
+| lines per batch | 500 (`NEVA_INSTINCT_MAX_ANALYSIS_LINES`) |
+| batches per project per run | 4 (`NEVA_INSTINCT_MAX_BATCHES`) |
 | model | haiku (`NEVA_INSTINCT_MODEL`) |
-| timeout per project | 120 s |
+| timeout per batch | 120 s |
+
+### Same-day trigger
+
+A SessionEnd hook module (`sameday_trigger`, `plugins/neva-core/hooks/neva_hooks/learning_trigger.py`)
+can fire `instinct-analyze.py` early when a lot of observations pile up in one day, instead of
+waiting for 03:30. It is off by default and stays off until you opt in, whether or not you enabled
+the nightly timer. When on, each launch runs `claude --print` once per batch: up to 4
+(`NEVA_INSTINCT_MAX_BATCHES`) batches of at most 500 lines for every qualifying project, which
+spends model credit and writes instinct notes, proposals and the archive, exactly like a nightly
+run. Turn it on by exporting `NEVA_INSTINCT_SAMEDAY=1` in the environment Claude Code starts with
+(for example the `env` block of your Claude Code settings). It runs in the `standard` and `strict`
+profiles only, the same ones that run `observe`.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `NEVA_INSTINCT_SAMEDAY` | unset (off) | exactly `1` turns the trigger on; any other value leaves it off |
+| `NEVA_INSTINCT_SAMEDAY_MIN` | 200 | observations needed to fire, live plus pending, counted only in project buckets the analyzer would analyze (at least `NEVA_INSTINCT_MIN_OBSERVATIONS`, default 20, each), so many small projects never launch a run that skips them all |
+| `NEVA_INSTINCT_SAMEDAY_HOURS` | 6 | hours that must have passed since the analyze lock file was last touched by a real run before firing again |
+| `NEVA_HEADLESS` | unset | any truthy value makes the trigger (and every other hook) a no-op |
+
+The trigger only decides and returns: it probes the lock `instinct-analyze.py` takes at startup,
+skips when a run already holds it, then launches the job detached
+(`subprocess.Popen(start_new_session=True)`) and returns immediately, so a session never waits on
+it. The probe is released before the launch, so two sessions ending in the same instant can both
+launch; the second job exits at once on the analyzer's own lock, which is what guarantees a
+single run.
+
+### Model routing
+
+`instinct-analyze.py` runs its analysis child with `claude --print`. Two env vars route that
+child at a different Anthropic-compatible endpoint instead of the default one:
+
+| Env var | Effect |
+|---|---|
+| `NEVA_INSTINCT_BASE_URL` | sets the child's `ANTHROPIC_BASE_URL` |
+| `NEVA_INSTINCT_AUTH_TOKEN` | sets the child's `ANTHROPIC_AUTH_TOKEN` |
+
+Setting `NEVA_INSTINCT_AUTH_TOKEN` also clears the child's `ANTHROPIC_API_KEY` (set to an empty
+string), so the token wins over a key already in the environment. `NEVA_INSTINCT_BASE_URL` alone
+keeps that key, for a gateway that forwards it. Neither set means the child's environment is
+exactly what it was before: no `ANTHROPIC_*` override.
 
 ### Confidence
 
@@ -162,6 +205,40 @@ instincts/
 ```
 
 Raw observation logs are machine data and stay under `~/.local/share/neva/`, not in the vault. Only instincts are exported, never raw observations, code or conversation content.
+
+### Stats
+
+`instinct-cli.py stats` prints one `KEY: value` line per metric, plus two JSON lines:
+
+```
+Project: <name> (<project-id>)
+UNIQUE: <n>
+BY_SCOPE: {"project": <n>, "global": <n>}
+BY_DOMAIN: {"<domain>": <n>, ...}
+BY_SOURCE: {"<source>": <n>, ...}
+AVG_CONFIDENCE: <0.00-1.00>
+PENDING: <n>
+OBSERVATIONS_WAITING: <n>
+PROMOTIONS_APPLIED: <n>
+PROMOTIONS_REJECTED: <n>
+PROMOTIONS_APPROVE_RATE: <0.00-1.00 or n/a>
+PROPOSALS_MADE: <n>
+PROPOSALS_APPROVED: <n>
+PROPOSALS_REJECTED: <n>
+PROPOSALS_APPROVE_RATE: <0.00-1.00 or n/a>
+PROPOSALS_BY_WEEK: {"<YYYY-Www>": {"made": <n>, "approved": <n>, "rejected": <n>}, ...}
+```
+
+`PROMOTIONS_*` reads the ledger (`<state dir>/instincts/promotions.json`): one entry per block,
+its most recent outcome only. `PROPOSALS_*` reads an append-only event log instead
+(`<state dir>/instincts/promotion-events.jsonl`, one JSON line per proposal made, approved or
+rejected), so it is a full history rather than a snapshot, and `PROPOSALS_BY_WEEK` breaks it down
+by ISO week (`YYYY-Www`). A block counts as rejected either from an explicit `- [x] reject` tick
+or from the whole block, including its `<!-- block_id: ... -->` marker, being deleted from the
+proposal file without a tick. A block whose marker is still there but no longer sits directly
+under its `## ` heading is not a rejection: `apply-promotions` names the block, exits 1, leaves
+its status alone and keeps the file open until the heading is restored. A line in the event
+log that is not valid JSON is skipped rather than failing the command.
 
 ## Memory is an attack surface
 

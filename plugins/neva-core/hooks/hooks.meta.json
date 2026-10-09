@@ -457,6 +457,19 @@
         "strict"
       ],
       "description": "One audit line per session id in today's journal log, updated in place on resume."
+    },
+    {
+      "id": "sameday_trigger",
+      "module": "learning_trigger",
+      "function": "run",
+      "events": [
+        "SessionEnd"
+      ],
+      "profiles": [
+        "standard",
+        "strict"
+      ],
+      "description": "continuous-learning-v2 same-day trigger, off unless NEVA_INSTINCT_SAMEDAY=1 (it makes model calls): fire instinct-analyze.py in the background once NEVA_INSTINCT_SAMEDAY_MIN (default 200) observations are pending in buckets the analyzer would analyze (each at or above its own minimum) and NEVA_INSTINCT_SAMEDAY_HOURS (default 6) have passed since the analyze lock last moved. No-op under NEVA_HEADLESS; blocked by the same lock instinct-analyze.py takes at startup."
     }
   ]
 }

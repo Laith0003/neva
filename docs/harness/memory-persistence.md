@@ -13,12 +13,16 @@ What survives a session, where it lives, who writes it, and when it is deleted. 
 
 Raw tool traces never go into the vault, and only instincts can be exported.
 
+The learning engine's own writes (the promotion event log, the analyzer lock, temp batches, archives) refuse to pass through a symlink anywhere below their configured root and name the path to fix. If archiving fails part way, the batch goes back to `observations.pending/`: a line may be analysed twice, never lost.
+
 ## Everything that persists
 
 | What | Path | Written by | Read by | Deleted |
 |---|---|---|---|---|
 | Session state | `~/.local/share/neva/sessions/YYYY-MM-DD-<short-id>-session.tmp` | Stop and PreCompact hooks | the next session start, same worktree or repo | after `NEVA_SESSION_RETENTION_DAYS` (30) |
-| Tool observations | `~/.local/share/neva/observations/<project-id>/observations.jsonl` | `observe` hook | nightly `instinct-analyze` | moved to `observations.archive/` when analyzed or at 10 MB; archives after 30 days |
+| Tool observations, live | `~/.local/share/neva/observations/<project-id>/observations.jsonl` | `observe` hook | nightly `instinct-analyze`; the same-day trigger counts them | each analysed batch moves to `observations.archive/`; at 10 MB (`NEVA_OBSERVE_MAX_MB`) the whole file moves to `observations.pending/` unread |
+| Tool observations, pending | `.../<project-id>/observations.pending/observations-<YYYYmmdd-HHMMSS>-<pid>.jsonl` | `observe` hook at rotation; the nightly job when it recovers an interrupted run | nightly `instinct-analyze`, before the live file; the same-day trigger counts them | never pruned: a pending file leaves only once every line in it is analysed, so unread data waits as long as analysis is off |
+| Tool observations, analysed | `.../<project-id>/observations.archive/processed-<ts>-<pid>.jsonl` | nightly `instinct-analyze`, only after the model printed its completion record for that batch | nothing | after 30 days, at session start |
 | Project registry | `~/.local/share/neva/observations/projects.json` | hook and instinct CLI | CLI, nightly job | `instinct-cli.py projects gc` |
 | Project instincts | `<vault>/06 Memory/instincts/project/<project-id>/<id>.md` | nightly job, `add`, `import` | session start (0.7 and up), `/instinct-status` | never; retired by `status: archived` |
 | Global instincts | `<vault>/06 Memory/instincts/global/<id>.md` | `apply-promotions` after your approval | every project | never; retired by `status: archived` |
@@ -70,6 +74,7 @@ Agents never tick boxes and never apply on their own.
 | recording tool observations | `NEVA_SKIP_OBSERVE=1`, or create `~/.local/share/neva/observations/disabled` |
 | recording in one tree | add a path fragment to `NEVA_OBSERVE_SKIP_PATHS` |
 | nightly analysis | do not enable the `instinct-analyze` timer (it ships disabled) |
+| same-day analysis | leave `NEVA_INSTINCT_SAMEDAY` unset (it ships off; only `1` turns it on) |
 | context at session start | `NEVA_SESSION_START_CONTEXT=off` |
 | any single hook | `NEVA_DISABLED_HOOKS=<id>` |
 

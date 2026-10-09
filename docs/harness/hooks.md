@@ -58,6 +58,7 @@ In run order. "Tools: all" means the module sees every tool call of that event a
 | `journal_nudge` | Stop | all | standard, strict | `stop.py` | Once per session, block the stop when 5 or more tool calls ran and nothing was written to the journal. |
 | `notify` | Stop | all | standard, strict | `stop.py` | Optional macOS notification when a response is ready. Off unless NEVA_NOTIFY=1. |
 | `session_audit` | SessionEnd | all | minimal, standard, strict | `session_end.py` | One audit line per session id in today's journal log, updated in place on resume. |
+| `sameday_trigger` | SessionEnd | all | standard, strict | `learning_trigger.py` | continuous-learning-v2 same-day trigger, off unless `NEVA_INSTINCT_SAMEDAY=1` (it makes model calls): fire instinct-analyze.py in the background once NEVA_INSTINCT_SAMEDAY_MIN (default 200) observations are pending in buckets the analyzer would analyze (each at or above its own minimum) and NEVA_INSTINCT_SAMEDAY_HOURS (default 6) have passed since the analyze lock last moved. No-op under NEVA_HEADLESS; blocked by the same lock instinct-analyze.py takes at startup. |
 
 ## Environment by module
 
@@ -81,26 +82,28 @@ In run order. "Tools: all" means the module sees every tool call of that event a
 | `plan_canvas_pending` | `NEVA_PLAN_CANVAS_STATE_DIR` (`<NEVA_STATE_DIR>/plan-canvas`), `NEVA_PLAN_CANVAS_STOP_SCOPE` (`all` widens past the working directory) |
 | `delivery_gate` | `NEVA_MEMORY_DIR`, `NEVA_DELIVERY_DISK_REMIND_GB` (50), `NEVA_DELIVERY_DISK_WARN_GB` (30), `NEVA_DELIVERY_DISK_CRIT_GB` (15), `NEVA_DELIVERY_GATE_EXTENDED` |
 | `notify` | `NEVA_NOTIFY` (off) |
+| `sameday_trigger` | `NEVA_INSTINCT_SAMEDAY` (off; `1` turns it on), `NEVA_INSTINCT_SAMEDAY_MIN` (200), `NEVA_INSTINCT_SAMEDAY_HOURS` (6), `NEVA_HEADLESS` |
 
 ## Files the hooks write
 
 | Path | Written by | Pruned |
 |---|---|---|
 | `~/.local/share/neva/sessions/*-session.tmp` | `session_summary`, `pre_compact` | after 30 days |
-| `~/.local/share/neva/observations/<project-id>/observations.jsonl` | `observe` | rotated at 10 MB; archives after 30 days |
+| `~/.local/share/neva/observations/<project-id>/observations.jsonl` | `observe` | rotated unread to `observations.pending/` at 10 MB and kept until analysed; analysed archives after 30 days |
 | `~/.local/share/neva/observations/projects.json` | `observe` (and the instinct CLI) | never |
 | `~/.local/share/neva/metrics/costs.jsonl` | `cost_tracker` | never |
 | `~/.local/share/neva/hooks.log` | dispatcher | rotated at 1 MB |
 | `~/.local/state/neva/hooks/` | per-session counters and markers | after `COMPACT_STATE_TTL_DAYS` |
 | `~/.local/state/neva/gateguard/<session>.json` | `gateguard` | never (small) |
 | `~/.local/state/neva/safety-guard.log` | `safety_careful`, `safety_freeze` | never |
+| `~/.local/state/neva/instincts/promotion-events.jsonl` | `instinct-cli.py` (propose, apply-promotions) | never: append-only by design, the full proposal history `stats` reads |
 | vault journal, inbox | `session_audit`, `pre_compact`, journal nudges | never |
 
 ## Tests
 
 ```bash
-python3 plugins/neva-core/hooks/tests/test_hooks.py
-python3 -m pytest plugins/neva-core/skills/continuous-learning-v2/scripts/test_instinct_cli.py
+PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider plugins/neva-core/skills/continuous-learning-v2/scripts/test_instinct_cli.py
 ```
 
 The hook suite runs every module end to end against a copied plugin, a temporary home and vault, and realistic hook JSON, including the instinct round trip: observe, nightly analysis with a fake `claude`, instinct note, session start injection, proposal, approval.

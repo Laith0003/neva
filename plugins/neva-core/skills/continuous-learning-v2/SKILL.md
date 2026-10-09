@@ -96,7 +96,7 @@ Bodies must use `***` or `___` for horizontal rules. A line of `---` is always a
 | Global instincts | `$NEVA_VAULT/06 Memory/instincts/global/<id>.md` | `apply-promotions` only (or `add --scope global` / `import --scope global` run by the human) |
 | Pending instincts | `<either dir>/pending/<id>.md` | `import --pending`; pruned after 30 days unless moved out |
 | Observations | `<data dir>/observations/<project-id>/observations.jsonl` | observe hook (`hooks/neva_hooks/observe.py`) |
-| Rotated and analyzed observations | `.../<project-id>/observations.archive/` (`observations-<ts>-<pid>.jsonl` from rotation, `processed-<ts>-<pid>.jsonl` from the nightly job); deleted after 30 days at session start | hook, nightly job |
+| Rotated and analyzed observations | `.../<project-id>/observations.archive/` (`processed-<ts>-<pid>.jsonl`, written only after the nightly job analysed them; rotated files wait in `observations.pending/`, never pruned); deleted after 30 days at session start | hook, nightly job |
 | Project registry | `<data dir>/observations/projects.json` | hook and CLI |
 | Proposal ledger | `<state dir>/instincts/promotions.json` | `propose`, `apply-promotions` |
 | Job log | `<state dir>/instinct-analyze.log` | nightly job |
@@ -142,7 +142,7 @@ Implemented by the `observe` module of the neva-core hook runtime (`hooks/neva_h
 | Secret scrubbing | before writing, replace the value of every match of `(?i)(api[_-]?key\|token\|secret\|password\|authorization\|credentials?\|auth)(["'\s:=]{1,8})((?:bearer\|basic\|token\|bot)\s+)?([A-Za-z0-9_\-/.+=]{8,256})` with `[REDACTED]`, keeping groups 1 to 3. The quantifiers are bounded on purpose (linear time, no catastrophic backtracking). |
 | Parse failure | write `{"timestamp", "event": "parse_error", "raw": <first 2000 chars, scrubbed>}` |
 | Timeout | the dispatcher's 15 s hook timeout; a module error is logged to `<data dir>/hooks.log` and never reaches the session |
-| Rotation | when the live file reaches `NEVA_OBSERVE_MAX_MB` (10), rename it to `observations.archive/observations-<YYYYmmdd-HHMMSS>-<pid>.jsonl` |
+| Rotation | when the live file reaches `NEVA_OBSERVE_MAX_MB` (10), rename it to `observations.pending/observations-<YYYYmmdd-HHMMSS>-<pid>.jsonl`; the nightly job analyses pending files first and archives only what it analysed |
 | Retention | at session start, delete archive files older than 30 days |
 | Registry | update `projects.json` under an exclusive lock, atomic replace, on each project cache miss (at most every 10 minutes per directory) |
 
@@ -158,17 +158,17 @@ python3 <install prefix>/plugins/neva-core/skills/continuous-learning-v2/scripts
 
 1. **apply-promotions**: apply blocks the human ticked since the last run.
 2. **analyze**, for every observation bucket with at least `min_observations_to_analyze` (20) lines:
-   - sample the newest `max_analysis_lines` (500) lines into a temp file (never pass multi-MB payloads to the model);
+   - split the complete lines, oldest first, into near-equal batches of at most `max_analysis_lines` (500) lines and take up to `max_batches_per_run` (4) of them; each batch goes to the model through its own temp file (never pass multi-MB payloads to the model);
    - render `analyzer-prompt.md` and run `claude --model haiku --max-turns N --print --allowedTools Read,Write -p <prompt>` with cwd = the project instinct dir, stdin closed, `NEVA_SKIP_OBSERVE=1 NEVA_HEADLESS=1 NEVA_HOOK_PROFILE=minimal`;
-   - `N` = 1 turn per 10 sampled lines, floor 20, cap 100 (override `NEVA_INSTINCT_MAX_TURNS`, values below 4 fall back to 20);
+   - `N` = 1 turn per 10 lines in the batch, floor 20, cap 100 (override `NEVA_INSTINCT_MAX_TURNS`, values below 4 fall back to 20);
    - timeout 120 s, then SIGTERM to the process group, then SIGKILL;
    - **accept only** when the exit code is 0 and the last non-empty output line is exactly `{"status":"analysis_complete"}` and it appears once. Exit 0 alone is not success;
-   - on success, archive the bytes that existed at sample time as `processed-<ts>-<pid>.jsonl` and keep anything the hook appended since; on any failure, retain everything for the next night.
+   - on success, archive exactly that batch as `processed-<ts>-<pid>.jsonl` and keep everything after it, including anything the hook appended since; on any failure, stop and retain that batch and everything after it for the next run. Observations a run did not reach stay in place; nothing is archived unread.
 3. **decay** (below).
 4. **prune** pending instincts older than 30 days.
 5. **propose** (below).
 
-Config: `config.json` next to this file (`analyze.min_observations_to_analyze`, `max_analysis_lines`, `model`, `timeout_seconds`, `max_turns`); env overrides `NEVA_INSTINCT_MIN_OBSERVATIONS`, `NEVA_INSTINCT_MAX_ANALYSIS_LINES`, `NEVA_INSTINCT_MODEL` (use `opus` for higher-quality extraction and raise the timeout), `NEVA_INSTINCT_TIMEOUT_SECONDS`, `NEVA_INSTINCT_MAX_TURNS`. Flags: `--dry-run` (calls nothing, logs what would run), `--project <id>`, `--skip-analysis`.
+Config: `config.json` next to this file (`analyze.min_observations_to_analyze`, `max_analysis_lines`, `model`, `timeout_seconds`, `max_turns`, `max_batches_per_run`); env overrides `NEVA_INSTINCT_MIN_OBSERVATIONS`, `NEVA_INSTINCT_MAX_ANALYSIS_LINES`, `NEVA_INSTINCT_MODEL` (use `opus` for higher-quality extraction and raise the timeout), `NEVA_INSTINCT_TIMEOUT_SECONDS`, `NEVA_INSTINCT_MAX_TURNS`, `NEVA_INSTINCT_MAX_BATCHES`. Flags: `--dry-run` (calls nothing, logs what would run), `--project <id>`, `--skip-analysis`.
 
 The upstream 5-minute observer daemon, its PID files, SIGUSR1 nudges, active-hours and idle guards, and start/stop scripts are gone: a nightly batch needs none of them.
 

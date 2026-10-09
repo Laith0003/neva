@@ -14,7 +14,7 @@ observe (PreToolUse, PostToolUse, PostToolUseFailure): the observation hook cont
   minimal (hooks.meta.json), agent_id is present (subagent), CLAUDE_CODE_ENTRYPOINT is set and
   not an interactive surface, the cwd contains an entry of NEVA_OBSERVE_SKIP_PATHS, or the file
   <observations dir>/disabled exists.
-  The live file rotates into <project-id>/observations.archive/ at NEVA_OBSERVE_MAX_MB
+  The live file rotates into <project-id>/observations.pending/ at NEVA_OBSERVE_MAX_MB
   (default 10); archive files older than 30 days are pruned at session start.
   Observations are machine data: they never go into the vault and are never exported.
 
@@ -63,7 +63,8 @@ def _rotate(path):
     limit = c.env_int("NEVA_OBSERVE_MAX_MB", 10, 1, 1000) * 1024 * 1024
     try:
         if os.path.getsize(path) >= limit:
-            arch = c.ensure_dir(os.path.join(os.path.dirname(path), "observations.archive"))
+            # pending, not archive: the nightly analyser reads these first and archives only what it analysed
+            arch = c.ensure_dir(os.path.join(os.path.dirname(path), "observations.pending"))
             stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             os.replace(path, os.path.join(arch, f"observations-{stamp}-{os.getpid()}.jsonl"))
     except OSError:

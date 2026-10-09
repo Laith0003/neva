@@ -304,6 +304,61 @@ else
   ok "negative control: a planted identifier is caught"
 fi
 rm -rf "$NEGLEAK"
+# negative control: a planted home-path leak in an ordinary file beside cache directories is
+# caught.
+# Assembled at runtime, never written whole, same reason as the email plant above: a literal
+# home path in this file would itself be flagged when leak-scan scans build/.
+NEGCACHE=$(mktemp -d /tmp/neva-leak-negctrl-cache-XXXXXX)
+mkdir -p "$NEGCACHE/__pycache__" "$NEGCACHE/.pytest_cache" "$NEGCACHE/src"
+PLANT_SLASH="/"; PLANT_HOME="home"; PLANT_NAME="realuser"
+echo "stray ${PLANT_SLASH}${PLANT_HOME}${PLANT_SLASH}${PLANT_NAME}${PLANT_SLASH} left in a sibling file" > "$NEGCACHE/src/notes.md"
+if python3 "$REPO/build/leak-scan.py" "$NEGCACHE" >/dev/null 2>&1; then
+  bad "negative control" "leak-scan did not flag a planted home path outside __pycache__/.pytest_cache"
+else
+  ok "negative control: a planted home path outside __pycache__/.pytest_cache is caught"
+fi
+rm -rf "$NEGCACHE"
+# negative controls: cache directories and bytecode are skipped ONLY as untracked files of a git
+# checkout. Outside a checkout (an export, an unzipped artifact) they are scanned like anything
+# else, and a cache file forced into the index is scanned too.
+NEGPYC=$(mktemp -d /tmp/neva-leak-negctrl-pyc-XXXXXX)
+mkdir -p "$NEGPYC/export/pkg/__pycache__" "$NEGPYC/export/.pytest_cache" "$NEGPYC/export/src"
+PLANT_PATH="${PLANT_SLASH}${PLANT_HOME}${PLANT_SLASH}${PLANT_NAME}${PLANT_SLASH}"
+printf 'stray %s in a cache note\n' "$PLANT_PATH" > "$NEGPYC/export/pkg/__pycache__/notes.md"
+if python3 "$REPO/build/leak-scan.py" "$NEGPYC/export" 2>/dev/null | grep -q '__pycache__/notes.md'; then
+  ok "negative control: a home path in __pycache__ of an export is caught"
+else
+  bad "negative control" "leak-scan skipped a planted home path inside __pycache__ of a non-git tree"
+fi
+rm -f "$NEGPYC/export/pkg/__pycache__/notes.md"
+printf '\x00\x01co_filename %s/mod.py\x00' "$PLANT_PATH" > "$NEGPYC/export/pkg/__pycache__/mod.cpython-314.pyc"
+if python3 "$REPO/build/leak-scan.py" "$NEGPYC/export" 2>/dev/null | grep -q 'mod.cpython-314.pyc'; then
+  ok "negative control: a home path in a .pyc of an export is caught"
+else
+  bad "negative control" "leak-scan skipped a planted home path inside a .pyc of a non-git tree"
+fi
+mkdir -p "$NEGPYC/repo/pkg/__pycache__"
+git -C "$NEGPYC/repo" init -q
+printf 'clean\n' > "$NEGPYC/repo/pkg/mod.py"
+cp "$NEGPYC/export/pkg/__pycache__/mod.cpython-314.pyc" "$NEGPYC/repo/pkg/__pycache__/"
+git -C "$NEGPYC/repo" add pkg/mod.py
+if python3 "$REPO/build/leak-scan.py" "$NEGPYC/repo" >/dev/null 2>&1; then
+  ok "control: an untracked .pyc in a git checkout is skipped as a disposable artifact"
+else
+  bad "untracked cache skip" "leak-scan flagged an untracked .pyc in a git checkout; it never ships"
+fi
+git -C "$NEGPYC/repo" add -f pkg/__pycache__/mod.cpython-314.pyc
+if python3 "$REPO/build/leak-scan.py" "$NEGPYC/repo" 2>/dev/null | grep -q 'mod.cpython-314.pyc'; then
+  ok "negative control: a force-added .pyc with a home path is caught"
+else
+  bad "negative control" "leak-scan skipped a .pyc that git add -f put in the index"
+fi
+rm -rf "$NEGPYC"
+if [ -z "$(git -C "$REPO" ls-files -- '*.pyc' '*/__pycache__/*' '*/.pytest_cache/*' 2>/dev/null)" ]; then
+  ok "no bytecode or test cache is tracked"
+else
+  bad "tracked cache" "git ls-files lists .pyc or cache files; git rm --cached them"
+fi
 
 head_ "12. PROMISE: cadence notices a note edited seconds ago, on a REAL stock machine (not this one)"
 # The known-worst defect on record: the cadence timer has never fired once in six weeks

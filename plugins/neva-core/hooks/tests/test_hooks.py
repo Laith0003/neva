@@ -5,7 +5,7 @@
 Every test runs against a COPY of the hooks folder (the way an installed plugin lives in a cache),
 with a temporary HOME, a temporary vault and realistic hook JSON on stdin.
 
-Run:  python3 plugins/neva-core/hooks/tests/test_hooks.py
+Run:  PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks.py
 """
 import datetime
 import hashlib
@@ -486,14 +486,16 @@ class TestObserveAndMcp(HookTest):
         self.s.dispatch("PreToolUse", read)
         self.assertEqual(len(self.s.obs_lines()), 1, "the disabled file stops observation")
 
-    def test_observe_rotates_into_archive(self):
+    def test_observe_rotates_into_pending_not_archive(self):
         live = self.s.obs_file()
         os.makedirs(os.path.dirname(live), exist_ok=True)
         with open(live, "w") as fh:
             fh.write("x" * (1024 * 1024 + 10) + "\n")
         self.s.dispatch("PreToolUse", self.base(tool_name="Read", tool_input={}), NEVA_OBSERVE_MAX_MB=1)
+        pend = os.path.join(os.path.dirname(live), "observations.pending")
+        self.assertEqual(len([n for n in os.listdir(pend) if n.startswith("observations-")]), 1)
         arch = os.path.join(os.path.dirname(live), "observations.archive")
-        self.assertEqual(len([n for n in os.listdir(arch) if n.startswith("observations-")]), 1)
+        self.assertFalse(os.path.isdir(arch) and os.listdir(arch), "nothing is archived unread at rotation")
         self.assertEqual(len(self.s.obs_lines()), 1)
 
     def test_observe_honors_observations_dir(self):
@@ -656,6 +658,56 @@ class TestLifecycle(HookTest):
         d = datetime.date.fromisoformat(today_utc())
         expect = os.path.join(self.s.vault, "08 Journal", str(d.year), f"{d.month:02d} {d.strftime('%B')}", f"{d}.md")
         self.assertTrue(os.path.exists(expect), expect)
+
+
+class TestSameDayTrigger(HookTest):
+    """sameday_trigger through dispatch.py SessionEnd, so a typo in its hooks.meta.json module,
+    function or events fields fails here instead of silently never firing. The copied plugin's
+    instinct-analyze.py is replaced by a stub that only writes a marker: no model is called."""
+
+    def setUp(self):
+        super().setUp()
+        self.marker = os.path.join(self.s.tmp, "analyze-fired")
+        stub = os.path.join(self.s.plugin, "skills", "continuous-learning-v2", "scripts", "instinct-analyze.py")
+        with open(stub, "w") as fh:
+            fh.write(f"import pathlib\npathlib.Path({self.marker!r}).write_text('fired')\n")
+
+    def observations(self, n, pid="p1"):
+        self.s.write(os.path.join("home", ".local", "share", "neva", "observations", pid, "observations.jsonl"),
+                     '{"x":1}\n' * n)
+
+    def end(self, **env):
+        r = self.s.dispatch("SessionEnd", self.base(reason="exit"), **env)
+        self.assertAllowed(r)
+        return r
+
+    def fired(self, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if os.path.exists(self.marker):
+                return True
+            time.sleep(0.05)
+        return os.path.exists(self.marker)
+
+    def test_fires_through_dispatch_when_opted_in(self):
+        self.observations(250)
+        self.end(NEVA_INSTINCT_SAMEDAY=1)
+        self.assertTrue(self.fired(5), "dispatch SessionEnd did not reach learning_trigger.run")
+
+    def test_below_threshold_is_a_no_op(self):
+        self.observations(10)
+        self.end(NEVA_INSTINCT_SAMEDAY=1)
+        self.assertFalse(self.fired(1))
+
+    def test_off_without_opt_in(self):
+        self.observations(250)
+        self.end()
+        self.assertFalse(self.fired(1))
+
+    def test_minimal_profile_never_fires(self):
+        self.observations(250)
+        self.end(NEVA_INSTINCT_SAMEDAY=1, NEVA_HOOK_PROFILE="minimal")
+        self.assertFalse(self.fired(1))
 
 
 # ---------------------------------------------------------------- profiles, disabling, resilience
@@ -834,6 +886,14 @@ class TestDispatchFiltering(unittest.TestCase):
         self.assertIn("delivery_gate", self.ids("Stop", "", "strict"))
         self.assertEqual(self.ids("PreToolUse", "Bash", "minimal"),
                          ["no_verify", "safety_careful", "hookify_pre_tool"])
+
+    def test_sameday_trigger_tracks_observe_profiles(self):
+        """The same-day trigger launches model calls; a lean profile must not carry it, and it
+        runs exactly where observe, its only input, runs."""
+        self.assertNotIn("sameday_trigger", self.ids("SessionEnd", "", "minimal"))
+        for profile in ("standard", "strict"):
+            self.assertIn("sameday_trigger", self.ids("SessionEnd", "", profile))
+            self.assertIn("observe", self.ids("PostToolUse", "Read", profile))
 
 
 # ---------------------------------------------------------------- project identity: hook and CLI agree
