@@ -38,7 +38,8 @@ class SuiteGateTests(unittest.TestCase):
                 result = self.gate("python", run.returncode, run.stdout + run.stderr)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("refused", result.stderr)
-                self.assertEqual(run.returncode, 1 if failing else 0)
+                # an empty suite exits 0 on Python up to 3.11 and 5 ("no tests ran") from 3.12; the gate refuses both
+                self.assertIn(run.returncode, (1,) if failing else (0, 5))
             if not shutil.which("node"):
                 return
             for failing in (False, True):
