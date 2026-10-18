@@ -94,10 +94,27 @@ def check_hooks(report):
                     "restore plugins/neva-core/hooks/dispatch.py from the template")
         return
     try:
-        registered = set(json.loads((hooks_dir / "hooks.json").read_text(encoding="utf-8"))["hooks"])
-        meta = json.loads((hooks_dir / "hooks.meta.json").read_text(encoding="utf-8"))
+        registration_path = hooks_dir / "hooks.json"
+        metadata_path = hooks_dir / "hooks.meta.json"
+        registration = core.read_json_object(registration_path).get("hooks")
+        if not isinstance(registration, dict):
+            raise ValueError(str(registration_path) + ": hooks must be an object")
+        registered = set(registration)
+        meta = json.loads(metadata_path.read_text(encoding="utf-8"))
         modules = meta["modules"] if isinstance(meta, dict) and "modules" in meta else meta
-        wanted = {event for module in modules for event in module.get("events", [])}
+        if not isinstance(modules, list):
+            raise ValueError(str(metadata_path) + ": modules must be an array")
+        wanted = set()
+        for index, module in enumerate(modules):
+            field = "modules[" + str(index) + "]"
+            if not isinstance(module, dict):
+                raise ValueError(str(metadata_path) + ": " + field + " must be an object")
+            events = module.get("events", [])
+            if not isinstance(events, list) or any(
+                    not isinstance(event, str) or not event.strip() for event in events):
+                raise ValueError(str(metadata_path) + ": " + field +
+                                 ".events must be an array of non-empty strings")
+            wanted.update(events)
     except (OSError, ValueError, KeyError, TypeError) as error:
         report.fail("Claude hook registration unreadable: " + str(error),
                     "repair plugins/neva-core/hooks/hooks.json and hooks.meta.json")
@@ -172,7 +189,13 @@ def check_env(report, record=None):
     if missing:
         report.fail("Claude settings env missing " + ", ".join(missing) + " in " + str(settings),
                     "run neva install --harness claude --yes")
-    else:
+    invalid = [name for name in ("NEVA_HOOK_PROFILE", "NEVA_PLUGINS")
+               if isinstance(env, dict) and name in env and
+               (not isinstance(env[name], str) or not env[name].strip())]
+    for name in invalid:
+        report.fail(str(settings) + ": env." + name + " must be a non-empty string",
+                    "set env." + name + " to a non-empty string, or run neva repair --harness claude")
+    if not missing and not invalid:
         report.ok("Claude settings env has NEVA_HOOK_PROFILE=" + env["NEVA_HOOK_PROFILE"] +
                   " and NEVA_PLUGINS=" + env["NEVA_PLUGINS"])
 

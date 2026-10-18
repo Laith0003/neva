@@ -27,6 +27,17 @@ CONFIG_DIR="$HOME/.config/neva"
 CONFIG="$CONFIG_DIR/identity.env"
 STATE="$HOME/.local/state/neva"
 
+# Validate explicit consent before any installation writes. Unset keeps the recorded choice.
+SETTINGS_FLAG=""
+if [ "${NEVA_CLAUDE_SETTINGS+x}" = "x" ]; then
+  SETTINGS_CHOICE="$(printf '%s' "$NEVA_CLAUDE_SETTINGS" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$SETTINGS_CHOICE" in
+    y|yes|1|true|on) SETTINGS_FLAG="--claude-settings" ;;
+    n|no|0|false|off) SETTINGS_FLAG="--no-claude-settings" ;;
+    *) printf '%s\n' 'NEVA_CLAUDE_SETTINGS must be yes or no (also y/n, true/false, on/off, 1/0). fix: set NEVA_CLAUDE_SETTINGS=yes or no, or unset it to keep the recorded choice' >&2; exit 64 ;;
+  esac
+fi
+
 say()  { printf "%s\n" "$*"; }
 ask()  { # ask VAR "question" "default"
   local var="$1" q="$2" def="${3:-}" cur
@@ -297,20 +308,18 @@ say "Claude Code marketplace and plugins for: $ENABLED"
 say "  claude plugin marketplace add \"$PREFIX\""
 for P in $ENABLED; do say "  claude plugin install neva-$P@neva"; done
 NEVA_PROFILE="${NEVA_HOOK_PROFILE:-standard}"
-# Writing into Claude Code's own settings.json and plugin registry is on by default, also in a
-# hands-free install or upgrade, so it is announced here and can be turned off:
+# A first install writes Claude settings and plugin registrations by default. Re-runs and
+# upgrades keep the recorded choice unless explicitly overridden:
 # NEVA_CLAUDE_SETTINGS=no installs only the rules and prints the rest for you to do by hand.
-SETTINGS_FLAG=""
-case "${NEVA_CLAUDE_SETTINGS:-yes}" in
-  no|NO|No|0|false|off) SETTINGS_FLAG="--no-claude-settings" ;;
-esac
 case "$NEVA_HARNESS" in
   none|no|skip) : ;;
   *)
-    if [ -n "$SETTINGS_FLAG" ]; then
+    if [ "$SETTINGS_FLAG" = "--no-claude-settings" ]; then
       say "NEVA_CLAUDE_SETTINGS=no: Claude Code's settings.json and plugin registry stay untouched; only the rules are installed"
+    elif [ -z "$SETTINGS_FLAG" ]; then
+      say "next: neva install keeps your recorded Claude settings choice; a first install enables settings and plugin registration. Set NEVA_CLAUDE_SETTINGS=yes or no to override it."
     else
-      say "next: neva install merges NEVA_HOOK_PROFILE, NEVA_PLUGINS and NEVA_CLAUDE_BIN into the env object of ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json and runs the claude plugin commands above."
+      say "next: neva install merges NEVA_HOOK_PROFILE, NEVA_PLUGINS and NEVA_CLAUDE_BIN into the env object of $HOME/.claude/settings.json and runs the claude plugin commands above."
       say "      it prints each change before making it. To skip that, re-run with NEVA_CLAUDE_SETTINGS=no"
     fi
     ;;
@@ -325,7 +334,7 @@ case "$NEVA_HARNESS" in
     # harness keeps working after this folder is moved or deleted.
     if "$PREFIX/bin/neva" install --harness "$NEVA_HARNESS" --plugins "$ENABLED" \
          --profile "$NEVA_PROFILE" --yes $SETTINGS_FLAG; then
-      say "harness install finished. rules are in ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/rules/neva/"
+      say "harness install finished. rules are in $HOME/.claude/rules/neva/"
       say "check it any time with: $BIN/neva doctor, undo it with: $BIN/neva uninstall"
     else
       say "harness install did not complete. fix: re-run $BIN/neva install --harness $NEVA_HARNESS --plugins \"$ENABLED\" --yes and read the rows it prints"

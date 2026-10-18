@@ -230,6 +230,40 @@ REQUIRED = ("harness", "kind", "dest", "checksum")
 KEYED = ("merge-json", "merge-toml", "append-block", "append-json") + REGISTRATIONS
 
 
+def home_bases():
+    """HOME as spelled and HOME resolved, most specific first. Recorded paths use either."""
+    spelled = home()
+    try:
+        resolved = spelled.resolve()
+    except (OSError, RuntimeError):
+        resolved = spelled
+    bases = {spelled, resolved}
+    return sorted(bases, key=lambda base: len(base.parts), reverse=True)
+
+
+def created_dirs_problem(directories):
+    """What is wrong with the shape of a created_dirs list, naming the item, or None.
+
+    Shape only: a non-empty absolute string, no ``..``, strictly inside HOME as spelled or
+    resolved. Symlinks are not checked here, because the owner may later move a directory
+    into dotfiles and leave a link; that is not a corrupt manifest. prune_created skips such
+    directories when it removes them.
+    """
+    if not isinstance(directories, list):
+        return " is a " + type(directories).__name__ + ", not a list"
+    bases = home_bases()
+    for index, raw in enumerate(directories):
+        prefix = "[" + str(index) + "] " + repr(raw) + " "
+        if not isinstance(raw, str) or not raw:
+            return prefix + "must be a non-empty absolute string inside HOME"
+        path = Path(raw)
+        if not path.is_absolute() or ".." in path.parts:
+            return prefix + "must be absolute without .. components"
+        if not any(base in path.parents for base in bases):
+            return prefix + "is not inside HOME (" + str(home()) + ") or names HOME itself"
+    return None
+
+
 def state_problem(state):
     """What is wrong with a parsed manifest, naming the field, or None when it is well formed."""
     if not isinstance(state, dict):
@@ -244,6 +278,9 @@ def state_problem(state):
             return "harnesses." + name + " is a " + type(value).__name__ + ", not an object"
     if not isinstance(state.get("entries"), list):
         return "entries is a " + type(state.get("entries")).__name__ + ", not a list"
+    problem = created_dirs_problem(state.get("created_dirs", []))
+    if problem:
+        return "created_dirs" + problem
     for index, entry in enumerate(state["entries"]):
         where = "entries[" + str(index) + "]"
         if not isinstance(entry, dict):
@@ -254,6 +291,9 @@ def state_problem(state):
         for field, types in ENTRY_TYPES.items():
             if field in entry and not isinstance(entry[field], types):
                 return where + "." + field + " is a " + type(entry[field]).__name__
+        problem = created_dirs_problem(entry.get("created_dirs", []))
+        if problem:
+            return where + ".created_dirs" + problem
         if entry["kind"] not in KINDS + REGISTRATIONS:
             return where + ".kind is " + repr(entry["kind"]) + ", not one of " + ", ".join(KINDS + REGISTRATIONS)
         if not entry["harness"] or not entry["dest"]:
@@ -978,7 +1018,8 @@ def _standard_toml(text):
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
-        raise ValueError(str(error)) from error
+        raise ValueError("invalid TOML: " + str(error) +
+                         ". fix: correct the TOML syntax in that file before re-running Neva") from error
 
 
 def toml_append(text, current, key, value):
@@ -1017,7 +1058,9 @@ def read_toml(path):
     if not path.is_file():
         return {}
     try:
-        return parse_toml(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        _standard_toml(text)
+        return parse_toml(text)
     except (UnicodeDecodeError, ValueError) as error:
         raise ConfigError(str(path) + ": " + str(error)) from error
 
@@ -1305,7 +1348,7 @@ def missing_dirs(path):
     for part in relative.parts:
         current = current / part
         if not os.path.lexists(current):
-            missing.append(str(current))
+            missing.append(str(current.resolve()))
     return missing
 
 
@@ -1313,12 +1356,27 @@ def prune_created(directories):
     """Remove the directories install created, deepest first, and only while they are empty.
 
     A directory the owner had before install is never in this list, so it is never removed,
-    even when it is empty. Symlinks and paths outside HOME are skipped.
+    even when it is empty. A malformed list raises before anything is removed. A directory
+    that now passes through a symlink below HOME, or resolves outside HOME, is skipped.
     """
-    boundary = home()
-    for raw in sorted(set(directories), key=lambda item: item.count(os.sep), reverse=True):
+    problem = created_dirs_problem(directories)
+    if problem:
+        raise ConfigError("created_dirs" + problem +
+                          ". fix: correct created_dirs in " + str(state_path()) + " before uninstall")
+    bases = home_bases()
+    boundary = home().resolve()
+    for raw in sorted(set(directories), key=lambda item: len(Path(item).parts), reverse=True):
         path = Path(raw)
-        if boundary not in path.parents or path.is_symlink() or not path.is_dir():
+        base = next(base for base in bases if base in path.parents)
+        # Checked immediately before removal: every component between HOME and the directory.
+        if any(component.is_symlink()
+               for component in (path,) + tuple(path.parents)[:len(path.parts) - len(base.parts) - 1]):
+            continue
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if boundary not in resolved.parents or not path.is_dir():
             continue
         try:
             path.rmdir()

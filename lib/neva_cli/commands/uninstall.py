@@ -255,8 +255,18 @@ def run(args):
     if args.dry_run:
         return 1 if failures else 0
     # Only directories install created, and only once nothing Neva still owns sits in them.
-    core.prune_created([directory for entry in removed for directory in entry.get("created_dirs", [])])
+    # The prune covers every recorded directory, from every harness still in the manifest, not
+    # only the entries this run removed: `neva uninstall --harness codex` also tries Claude's.
+    # That is safe because rmdir removes empty directories only, so a directory that still
+    # holds another harness's files, or anything of the owner's, stays.
+    directories = sorted(set(state.get("created_dirs", []) +
+                             [directory for entry in state["entries"]
+                              for directory in entry.get("created_dirs", [])]))
+    core.prune_created(directories)
     drop_state(state, removed)
+    # Entries successfully removed may be the only record of a shared parent. Keep their
+    # directory ownership until the last refused or unselected entry is gone.
+    state["created_dirs"] = directories
     if state["entries"]:
         core.save_state(state)
     else:

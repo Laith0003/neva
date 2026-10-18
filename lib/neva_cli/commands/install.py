@@ -46,7 +46,10 @@ def add_arguments(parser):
                         help="hook profile written as NEVA_HOOK_PROFILE")
     parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
     parser.add_argument("--yes", action="store_true", help="confirm a non-interactive install")
-    parser.add_argument("--no-claude-settings", action="store_true",
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument("--claude-settings", dest="no_claude_settings", action="store_false", default=None,
+                        help="enable Claude settings and plugin writes, overriding a remembered opt-out")
+    choice.add_argument("--no-claude-settings", action="store_true", default=None,
                         help="leave ~/.claude/settings.json and the claude plugin registry untouched; "
                              "only the rules are installed")
 
@@ -277,7 +280,8 @@ class Installer:
             raise ValueError("cannot merge " + key + " into " + str(destination) + ": " + prefix +
                              " holds a " + shown + ", not a table. fix: rename or remove " + prefix +
                              " in that file by hand, then re-run; Neva left it unchanged")
-        plan = self.toml_plan(destination, data, key, value) if kind == "merge-toml" else ("rewrite",)
+        plan = (self.toml_plan(destination, data, key, value) if kind == "merge-toml" else
+                (("same",) if core.lookup(data, key, core.MISSING) == value else ("rewrite",)))
         dirs = self.created_dirs(destination, key)
         existed = self.pristine(destination)
         saved = self.backup(destination)
@@ -623,13 +627,16 @@ def run(args):
         print("install cancelled, nothing was written")
         return 64
     state = core.load_state()
+    no_settings = getattr(args, "no_claude_settings", None)
+    if no_settings is None:
+        no_settings = state.get("harnesses", {}).get("claude", {}).get("claude_settings") is False
     installer = Installer(state, args.dry_run)
     failures, skipped, installed = 0, [], []
     for harness in targets:
         before = len(installer.changed)
         try:
             reason = install_harness(harness, installer, selected, args.profile,
-                                     getattr(args, "no_claude_settings", False))
+                                     no_settings)
         except (OSError, ValueError, RuntimeError) as error:
             failures += 1
             print(harness + ": " + str(error))

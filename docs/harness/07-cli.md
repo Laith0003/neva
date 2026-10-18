@@ -35,12 +35,16 @@ and the file is backed up before the first write either way. If `settings.json` 
 a dotfiles repository, Neva writes through it to the file it points at and leaves the link in
 place; uninstall puts that file's bytes back.
 
-Writing into Claude Code's own settings and plugin registry is on by default, including a
-hands-free `install.sh` or `upgrade.sh`. Before it writes, `neva install` prints each settings key
-and value it will set and each `claude plugin` command it will run. To keep Claude Code's settings
-and plugin registry untouched, pass `--no-claude-settings` (for `install.sh`, set
-`NEVA_CLAUDE_SETTINGS=no`): only the rules are installed, and the keys and commands are printed for
-you to apply by hand. `neva doctor` then reports the settings as skipped, not missing.
+Writing into Claude Code's own settings and plugin registry is on by default on a first install.
+Re-runs and upgrades keep the recorded choice unless you explicitly override it. Before it writes,
+`neva install` prints each settings key and value it will set and each `claude plugin` command it
+will run. To keep Claude Code's settings and plugin registry untouched, pass
+`--no-claude-settings` (for `install.sh`, set `NEVA_CLAUDE_SETTINGS=no`): only the rules are
+installed, and the keys and commands are printed for you to apply by hand. `neva doctor` then
+reports the settings as skipped, not missing. To enable settings later, pass `--claude-settings`
+or set `NEVA_CLAUDE_SETTINGS=yes` for `install.sh` or `upgrade.sh`. The shell installer accepts
+yes/no, y/n, true/false, on/off and 1/0, ignoring surrounding whitespace and case; any other
+value, including an explicitly empty value, fails before writes.
 
 **Every other harness** comes from a data contract, so adding one is adding a directory rather
 than changing code. That includes instruction-only targets that have no CLI of their own: give
