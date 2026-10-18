@@ -407,7 +407,13 @@ class TestGeneratedMarkers(AdapterTest):
         for path in self.files("*.json"):
             if path.name in self.AUTHORED_JSON or "skills" not in path.parts:
                 continue
-            source = adapters.CORE / "skills" / Path(*path.parts[path.parts.index("skills") + 1:])
+            rel = Path(*path.parts[path.parts.index("skills") + 1:])
+            if path.relative_to(self.out).parts[0] == "opencode":
+                name = rel.parts[0]
+                if not (adapters.CORE / "skills" / name).is_dir():
+                    name = name.removeprefix("neva-")
+                rel = Path(name, *rel.parts[1:])
+            source = adapters.CORE / "skills" / rel
             with self.subTest(path=str(path.relative_to(self.out))):
                 self.assertTrue(source.exists(), "a copied asset has no source")
                 self.assertEqual(source.read_bytes(), path.read_bytes())
@@ -636,6 +642,65 @@ class TestOpenCodeNamespaces(AdapterTest):
         for src in ("agents", "commands", "skills"):
             with self.subTest(src=src):
                 self.assertEqual("~/.config/opencode/" + src + "/neva", dests[src])
+
+    def test_mismatched_source_skill_name_is_refused(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            core = root / "core"
+            page = core / "skills" / "owner" / "SKILL.md"
+            page.parent.mkdir(parents=True)
+            page.write_text("---\nname: wrong\ndescription: fixture\n---\nBody\n", encoding="utf-8")
+            output = root / "output"
+            output.mkdir()
+            with patch.object(adapters, "CORE", core):
+                with self.assertRaisesRegex(SystemExit, "name must match its folder"):
+                    adapters.build_opencode(output, "test", "MIT")
+
+    def source_skill_names(self):
+        return sorted(path.parent.name for path in (adapters.CORE / "skills").glob("*/SKILL.md"))
+
+    def test_already_prefixed_skill_names_are_not_prefixed_twice(self):
+        folders = sorted(path.name for path in (self.out / "opencode" / "skills").iterdir())
+        self.assertIn("neva-guide", folders)
+        self.assertIn("neva-recipes", folders)
+        self.assertEqual([], [name for name in folders if name.startswith("neva-neva-")])
+
+    def test_skill_bodies_name_skills_that_exist_on_opencode(self):
+        """A body that says to use `tdd-workflow` must say neva-tdd-workflow there."""
+        unprefixed = [name for name in self.source_skill_names() if not name.startswith("neva-")]
+        generated = {page.parent.name for page in (self.out / "opencode" / "skills").glob("*/SKILL.md")}
+        alt = "|".join(re.escape(name) for name in sorted(unprefixed, key=len, reverse=True))
+        stale = re.compile(r"neva-core:(" + alt + r")(?![\w-])|`(" + alt + r")`(?!\s+(?:Stop\s+)?(?:hook|module)\b)"
+                           r"|(?<![\w/.`-])(" + alt + r")(?=\s+skill\b)")
+        named = re.compile(r"`(neva-[a-z0-9-]+)`")
+        seen = set()
+        for page in sorted((self.out / "opencode" / "skills").glob("*/SKILL.md")):
+            body = adapters.split_frontmatter(page.read_text(encoding="utf-8"))[1]
+            with self.subTest(skill=page.parent.name):
+                hits = [match.group(0) for match in stale.finditer(body)]
+                hits = [hit for hit in hits if (page.parent.name, hit.strip("`")) not in adapters.OPENCODE_NOT_SKILL_REFS]
+                self.assertEqual([], hits, "names a skill OpenCode does not have")
+                for match in named.finditer(body):
+                    if match.group(1) not in ("neva-core",) and not match.group(1).startswith("neva-core"):
+                        seen.add(match.group(1))
+        self.assertIn("neva-tdd-workflow", seen)
+        self.assertEqual(set(), {name for name in seen if name.removeprefix("neva-") in unprefixed} - generated)
+
+    def test_skill_names_and_folders_cannot_shadow_owner_names(self):
+        sources = sorted((adapters.CORE / "skills").glob("*/SKILL.md"))
+        self.assertTrue(sources)
+        # A source name already in the neva- namespace is Neva's own and keeps its name (no
+        # neva-neva-); every other source name is one an owner may also use.
+        owner_names = {adapters.field(adapters.split_frontmatter(adapters.read(p))[0], "name")
+                       for p in sources} - {p.parent.name for p in sources if p.parent.name.startswith("neva-")}
+        generated = list((self.out / "opencode" / "skills").glob("*/SKILL.md"))
+        self.assertEqual(len(sources), len(generated))
+        for page in generated:
+            name = adapters.field(adapters.split_frontmatter(page.read_text())[0], "name")
+            self.assertEqual(page.parent.name, name)
+            self.assertTrue(name.startswith("neva-"))
+            self.assertNotIn(name, owner_names)
 
 
 class TestOpenCodeBridge(AdapterTest):
@@ -898,7 +963,9 @@ class TestExecutableBits(AdapterTest):
             if source.is_file() and executable(source) and "__pycache__" not in source.parts:
                 rel = source.relative_to(adapters.CORE / "skills")
                 for harness in ("opencode", "gemini"):
-                    yield source, self.out / harness / "skills" / rel
+                    native_rel = (Path(adapters.opencode_skill_name(rel.parts[0]), *rel.parts[1:])
+                                  if harness == "opencode" else rel)
+                    yield source, self.out / harness / "skills" / native_rel
 
     def test_executable_sources_stay_executable(self):
         pairs = list(self.copies_of_executables())
@@ -909,11 +976,11 @@ class TestExecutableBits(AdapterTest):
                 self.assertTrue(executable(copy), "the executable bit was lost in generation")
 
     def test_plain_files_do_not_become_executable(self):
-        skill = self.out / "opencode" / "skills" / "orch-pipeline" / "SKILL.md"
+        skill = self.out / "opencode" / "skills" / "neva-orch-pipeline" / "SKILL.md"
         self.assertFalse(executable(skill))
 
     def test_generated_orch_workspace_runs_directly(self):
-        script = self.out / "opencode" / "skills" / "orch-pipeline" / "scripts" / "orch-workspace"
+        script = self.out / "opencode" / "skills" / "neva-orch-pipeline" / "scripts" / "orch-workspace"
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init", "-q", tmp], check=True)
             (Path(tmp) / "plan.md").write_text("# plan\n", encoding="utf-8")
@@ -935,7 +1002,7 @@ class TestDriftCheckSeesModes(unittest.TestCase):
 
     def test_a_removed_executable_bit_is_drift(self):
         """Negative control: byte-only comparison could not see this."""
-        script = adapters.OUT / "opencode" / "skills" / "orch-pipeline" / "scripts" / "orch-workspace"
+        script = adapters.OUT / "opencode" / "skills" / "neva-orch-pipeline" / "scripts" / "orch-workspace"
         self.assertEqual(0, adapters.check(verbose=False))
         script.chmod(0o644)
         self.assertEqual(1, adapters.check(verbose=False))

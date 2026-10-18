@@ -100,7 +100,8 @@ class TestShippedCodex(ShippedInstall):
             self.assertTrue((self.home / ".codex" / "neva" / "agents" / "architect.toml").is_file())
             rules = agents.read_text(encoding="utf-8")
             self.assertTrue(rules.startswith(OWNER_RULES))
-            self.assertEqual(1, rules.count("# neva begin neva-core"))
+            self.assertEqual(1, rules.count("<!-- neva begin neva-core -->"))
+            self.assertNotIn("# neva begin", rules, "a # marker renders as an H1 heading in AGENTS.md")
 
 
 class TestShippedOpenCode(ShippedInstall):
@@ -118,7 +119,7 @@ class TestShippedOpenCode(ShippedInstall):
             self.assertTrue(agents.read_text(encoding="utf-8").startswith(OWNER_RULES))
             base = self.home / ".config" / "opencode"
             self.assertTrue((base / "plugins" / "neva-hooks.js").is_file())
-            self.assertTrue((base / "skills" / "neva" / "ck" / "SKILL.md").is_file())
+            self.assertTrue((base / "skills" / "neva" / "neva-ck" / "SKILL.md").is_file())
             self.assertTrue((base / "rules" / "neva-core" / "process.md").is_file())
             self.assertTrue((base / "agents" / "neva" / "architect.md").is_file())
             self.assertTrue((base / "commands" / "neva" / "plan.md").is_file())

@@ -230,6 +230,6 @@
     "codex plugin add neva-core@neva",
     "codex plugin list   # confirm neva-core is installed",
     "Codex will not run a hook until it is trusted. Review the hooks in Codex and accept them: an untrusted hooks.json is silently inert.",
-    "Codex does not expand ${CODEX_HOME} or ${NEVA_ROOT} in config.toml. Replace them with real paths when you merge the tables by hand."
+    "neva install writes real paths for ${CODEX_HOME} and ${NEVA_ROOT} into config.toml; Codex does not expand them, so replace them with real paths if you merge the tables by hand."
   ]
 }

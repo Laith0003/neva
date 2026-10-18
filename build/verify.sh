@@ -881,7 +881,8 @@ PYEOF
 then ok "every hook module's event is registered in hooks.json, and plugin.json does not double-declare hooks"
 else bad "hook registration" "a module listens to an event hooks.json never registers, or plugin.json declares hooks; see the python error above"
 fi
-HT_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks.py 2>&1)"
+# Discovery, not one file: every test_*.py in the folder runs, so a new test file cannot sit unrun.
+HT_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/hooks/tests -p 'test_*.py' 2>&1)"
 HT_OUT="$(printf '%s\n' "$HT_FULL" | tail -3)"
 if printf '%s' "$HT_OUT" | grep -q '^OK'; then
   ok "hook runtime suite: $(printf '%s' "$HT_OUT" | grep -o 'Ran [0-9]* tests')"
@@ -929,12 +930,12 @@ else
   bad "adapter drift" "run: python3 build/adapters.py, then commit adapters/"
 fi
 
-ADAPTER_TESTS="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 build/tests/test_adapters.py 2>&1)"
-if printf '%s\n' "$ADAPTER_TESTS" | grep -q '^OK$'; then
+ADAPTER_TESTS="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s build/tests 2>&1)"
+if printf '%s\n' "$ADAPTER_TESTS" | grep -Eq '^OK( \(skipped=[0-9]+\))?$'; then
   ok "adapter generator suite: $(printf '%s\n' "$ADAPTER_TESTS" | grep -o 'Ran [0-9]* tests')"
 else
   bad "adapter generator suite" \
-      "run: python3 build/tests/test_adapters.py ($(printf '%s\n' "$ADAPTER_TESTS" | tail -1))"
+      "run: python3 -m unittest discover -s build/tests ($(printf '%s\n' "$ADAPTER_TESTS" | tail -1))"
 fi
 
 NORM_TESTS="$(cd "$REPO/plugins/neva-core/hooks" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \

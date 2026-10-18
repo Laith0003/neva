@@ -1,6 +1,6 @@
 {
   "_attribution": "Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.",
-  "_about": "Module registry for dispatch.py. events: hook events the module listens on (every event is one * matcher in hooks.json). tools: optional fnmatch list of tool names; the module runs only for those tools. profiles: which NEVA_HOOK_PROFILE values run it. Order inside an event is run order. Disable any id with NEVA_DISABLED_HOOKS. The human-readable table is docs/harness/hooks.md.",
+  "_about": "Module registry for dispatch.py. events: hook events the module listens on (every event is one * matcher in hooks.json). tools: optional fnmatch list of tool names; the module runs only for those tools. profiles: which NEVA_HOOK_PROFILE values run it. guard (PreToolUse modules): true when the module can block or ask; on a harness without a confirmation prompt a guard that crashes blocks the call, a module with guard false is logged and skipped. Order inside an event is run order. Disable any id with NEVA_DISABLED_HOOKS. The human-readable table is docs/harness/hooks.md.",
   "version": 2,
   "profiles": [
     "minimal",
@@ -77,6 +77,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "Block git hook bypasses: --no-verify (and prefixes), commit -n clusters, -c core.hooksPath, git config core.hooksPath, HUSKY=0."
     },
     {
@@ -94,6 +95,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "safety-guard careful mode (on while <NEVA_STATE_DIR>/safety-guard/careful exists): ask before destructive commands."
     },
     {
@@ -110,6 +112,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "On git commit: block secret shapes and debugger statements in the staged diff; warn on console.log, possible hardcoded secrets and non-conventional messages."
     },
     {
@@ -126,6 +129,7 @@
         "standard",
         "strict"
       ],
+      "guard": false,
       "description": "On git push: remind to check what will be published; flag shared branches and force pushes."
     },
     {
@@ -142,6 +146,7 @@
         "standard",
         "strict"
       ],
+      "guard": false,
       "description": "Dev server started in the foreground outside tmux: warn (standard) or block (strict), with the exact tmux command. run_in_background is allowed."
     },
     {
@@ -161,6 +166,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "Writes into the vault outside NEVA_VAULT_WRITABLE folders ask the user first."
     },
     {
@@ -180,6 +186,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "safety-guard freeze mode (on while <NEVA_STATE_DIR>/safety-guard/freeze-dir.txt names a directory): deny edits outside it."
     },
     {
@@ -198,6 +205,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "Block edits that loosen lint, format or type configs: rules turned off or to warn, strict flags off, new ignores or excludes, removed rules, lowered levels."
     },
     {
@@ -216,6 +224,7 @@
         "standard",
         "strict"
       ],
+      "guard": false,
       "description": "Warn on ad-hoc NOTES/TODO/SCRATCH style files outside structured doc folders."
     },
     {
@@ -233,6 +242,7 @@
       "profiles": [
         "strict"
       ],
+      "guard": true,
       "description": "GateGuard first-edit gate: deny the first Edit, Write or MultiEdit of each file until the model lists importers or callers, affected API, data shapes and the user's instruction verbatim; the retry passes."
     },
     {
@@ -251,6 +261,7 @@
         "standard",
         "strict"
       ],
+      "guard": false,
       "description": "strategic-compact nudge: context size from the transcript (160k of a 200k window, 800k of a 1M window, then every 60k more); edit-count fallback at 50 then every 25 when no usage is recorded yet."
     },
     {
@@ -271,6 +282,7 @@
         "standard",
         "strict"
       ],
+      "guard": true,
       "description": "hookify rules from .claude/hookify.*.local.md with event bash, file or all: warn with context or block the call."
     },
     {
@@ -290,6 +302,7 @@
         "standard",
         "strict"
       ],
+      "guard": false,
       "description": "Mark an MCP server unhealthy after a transport, auth, rate-limit or availability failure and block calls to it until its backoff passes. Runs for mcp__* tools only."
     },
     {
@@ -305,6 +318,7 @@
         "standard",
         "strict"
       ],
+      "guard": false,
       "description": "continuous-learning-v2 observation hook: append scrubbed, truncated tool events (with `path` on tool_start) to <observations dir>/<project-id>/observations.jsonl for the nightly instinct analyzer. NEVA_SKIP_OBSERVE=1 skips."
     },
     {

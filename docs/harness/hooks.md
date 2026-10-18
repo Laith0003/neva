@@ -11,6 +11,7 @@ Neva's hooks live in the `neva-core` plugin: `plugins/neva-core/hooks/`. Python 
 - Results merge: any `block` exits 2 with every reason; otherwise `ask` becomes `permissionDecision: ask`, `context` becomes `additionalContext`, and anything else a system message.
 - An `ask` reaches only a harness that can show a confirmation prompt (`ASK_HARNESSES` in `dispatch.py`, today Claude Code). On any other harness a PreToolUse `ask` fails closed: it exits 2 with the reason and a message that the action needs confirmation in an interactive session.
 - Foreign payloads are normalized before any module runs. Codex unified exec (`exec_command`, argument `cmd`) and argv-list shell calls become one Bash command string; `apply_patch`, structured or freeform, yields every added, updated, deleted and moved-to path, and each path runs the write guards. On a foreign harness, a Bash call with no readable command or a write with no readable path fails closed with exit 2.
+- On a foreign harness, a PreToolUse module marked `"guard": true` in `hooks.meta.json` that raises or returns a malformed decision blocks the call; the message names the exception and `NEVA_DISABLED_HOOKS=<id>`. Modules marked `"guard": false` (`observe`, `push_reminder`, `tmux_dev`, `doc_file_warning`, `suggest_compact`, `mcp_health`) are logged and skipped, so a read-only data directory never stops a read.
 - A module that raises is logged to `~/.local/share/neva/hooks.log` and skipped. A hook error never breaks the session.
 
 ## Controls

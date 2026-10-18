@@ -25,8 +25,8 @@
  * ${CLAUDE_PLUGIN_ROOT}, which only Claude Code sets. shell.env supplies it, pointing at
  * plugins/neva-core in the checkout, so every script and its dependencies resolve.
  *
- * Set NEVA_ROOT to the Neva checkout. Without it the bridge stays silent rather
- * than guessing a path and failing on every single event.
+ * Set NEVA_ROOT to the Neva checkout. Without it the system context warns that
+ * guards are off, rather than guessing a path and failing on every single event.
  */
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -136,6 +136,9 @@ export const NevaHooks = async ({ directory, worktree }) => {
         output.env.CLAUDE_PLUGIN_ROOT || join(NEVA_ROOT, "plugins", "neva-core");
     },
     "experimental.chat.system.transform": async (input, output) => {
+      if (!NEVA_ROOT) {
+        output.system.push("Neva guards are off because NEVA_ROOT is unset. Fix: set NEVA_ROOT to the Neva checkout before starting OpenCode.");
+      }
       const id = input.sessionID || "";
       const base = sessionContext.get(id);
       if (base) output.system.push(base);

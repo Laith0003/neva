@@ -1,5 +1,5 @@
 ---
-name: neva-guide
+name: "neva-guide"
 description: Use when someone asks what Neva includes, which plugin, skill, agent, command, or rule fits a task, how to install, enable, or reset a Neva plugin, or how the pieces relate. Answers from the live repo and install, never from memory.
 metadata:
   origin: neva (adapted from ECC ecc-guide)
@@ -90,7 +90,7 @@ Give a short menu:
 - run the health check (`bin/doctor`)
 - find a specific workflow
 
-Point to `SETUP GUIDE.md` for install order and to the `agent-sort` skill for a project-specific DAILY vs LIBRARY plan.
+Point to `SETUP GUIDE.md` for install order and to the `neva-agent-sort` skill for a project-specific DAILY vs LIBRARY plan.
 
 ### Feature Discovery
 
@@ -127,7 +127,7 @@ claude plugin list --json                  # verify
 When the user wants Neva configured for a target repo, the expected sequence is:
 
 1. detect the stack from project files
-2. map the stack to plugins (the `agent-sort` skill produces the evidence-backed plan)
+2. map the stack to plugins (the `neva-agent-sort` skill produces the evidence-backed plan)
 3. inspect existing `CLAUDE.md` and `.claude/settings*.json`
 4. ask before installing or changing anything
 5. keep generated guidance minimal and repo-specific
@@ -178,7 +178,7 @@ Needs approval before apply: <yes/no>
 ## Related Surfaces
 
 - `neva-recipes`: which command group runs a workflow, in what order, and when to stop
-- `agent-sort`: evidence-backed DAILY vs LIBRARY plan for one repo
-- `prompt-optimizer`: rewrite a draft prompt against the Neva catalogue
-- `skill-stocktake`: skill quality review
-- `security-scan`: inspect Claude Code configuration security
+- `neva-agent-sort`: evidence-backed DAILY vs LIBRARY plan for one repo
+- `neva-prompt-optimizer`: rewrite a draft prompt against the Neva catalogue
+- `neva-skill-stocktake`: skill quality review
+- `neva-security-scan`: inspect Claude Code configuration security

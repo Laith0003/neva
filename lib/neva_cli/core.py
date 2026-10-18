@@ -10,6 +10,7 @@ Python standard library only.
 """
 import copy
 import datetime
+import difflib
 import hashlib
 import json
 import os
@@ -368,11 +369,44 @@ def guard_data_path(path):
     return path
 
 
+def adapter_vars():
+    """The variables Neva fills in itself, each with the default its harness uses when unset.
+
+    CODEX_HOME defaults to ~/.codex, as Codex does; NEVA_ROOT to the checkout running this
+    installer. An exported value always wins.
+    """
+    values = {"CODEX_HOME": str(home() / ".codex"), "NEVA_ROOT": str(REPO_ROOT)}
+    for name in values:
+        exported = os.environ.get(name, "").strip()
+        if exported:
+            values[name] = os.path.expanduser(exported)
+    return values
+
+
+def expand_adapter_vars(text):
+    """Replace ${CODEX_HOME} and ${NEVA_ROOT} (and their $NAME forms) in one string."""
+    for name, value in adapter_vars().items():
+        text = re.sub(r"\$(\{" + name + r"\}|" + name + r"(?![A-Za-z0-9_]))", lambda _: value, text)
+    return text
+
+
+def expand_value(value):
+    """An adapter TOML value with ${CODEX_HOME} and ${NEVA_ROOT} filled in. Codex reads
+    config.toml literally, so a path left as ${VAR} text would point nowhere."""
+    if isinstance(value, str):
+        return expand_adapter_vars(value)
+    if isinstance(value, list):
+        return [expand_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: expand_value(item) for key, item in value.items()}
+    return value
+
+
 def expand_destination(raw):
     """Expand ~ and ${VAR} in an adapter destination, then insist it is a safe absolute path."""
     if not isinstance(raw, str) or not raw:
         raise AdapterError("adapter entry dest must be a non-empty string. fix: set dest in install.json")
-    expanded = os.path.expandvars(str(home()) + raw[1:] if raw.startswith("~") else raw)
+    expanded = os.path.expandvars(expand_adapter_vars(str(home()) + raw[1:] if raw.startswith("~") else raw))
     if "${" in expanded or re.search(r"\$[A-Za-z_]", expanded):
         raise AdapterError("adapter entry dest has an unset variable: " + raw +
                            ". fix: export the variable or hardcode the path in install.json")
@@ -1115,13 +1149,26 @@ def write_toml(path, value):
 # ---------------------------------------------------------------- manifest entries
 
 
-def block_markers(key):
+MARKDOWN = (".md", ".markdown", ".mdx")
+
+
+def block_markers(key, destination=None):
+    """The begin and end lines around a block. A "# ..." line renders as an H1 heading in
+    Markdown, so Markdown destinations get an HTML comment, which renders as nothing."""
+    if destination is not None and str(destination).lower().endswith(MARKDOWN):
+        return "<!-- neva begin " + key + " -->", "<!-- neva end " + key + " -->"
     return "# neva begin " + key, "# neva end " + key
 
 
+def all_block_markers(key):
+    """Every marker pair Neva has written, newest first: installs made before the Markdown
+    markers still repair and uninstall."""
+    return [block_markers(key, "x.md"), block_markers(key)]
+
+
 def block_pattern(key):
-    begin, end = block_markers(key)
-    return re.compile(re.escape(begin) + r"\n.*?" + re.escape(end) + r"\n?", re.S)
+    return re.compile("|".join(re.escape(begin) + r"\n.*?" + re.escape(end) + r"\n?"
+                               for begin, end in all_block_markers(key)), re.S)
 
 
 def load_mapping(destination, kind):
@@ -1163,10 +1210,10 @@ def entry_checksum(record):
         if not destination.is_file():
             return None
         text = destination.read_text(encoding="utf-8")
-        begin, end = block_markers(record["key"])
-        if begin not in text or end not in text:
-            return None
-        return sha256_bytes(text.split(begin, 1)[1].split(end, 1)[0].encode("utf-8"))
+        for begin, end in all_block_markers(record["key"]):
+            if begin in text and end in text.split(begin, 1)[1]:
+                return sha256_bytes(text.split(begin, 1)[1].split(end, 1)[0].encode("utf-8"))
+        return None
     raise ValueError("unsupported manifest entry kind: " + str(kind) +
                      ". fix: re-run neva install to rewrite the install-state manifest")
 
@@ -1240,13 +1287,27 @@ def written_entries(destination_value, recorded):
 
 
 def edited_slot(kept, missing, foreign_items):
-    """True when an entry Neva wrote is gone and a marker-carrying entry that was not the
-    owner's at install sits in that array instead: the owner edited Neva's entry."""
+    """An unfamiliar marked entry with the same structure may be an edit, never silently removed."""
     if not missing:
         return False
     new_marked = [item for item in kept if is_neva_entry(item)]
     leftover, _ = take_out(new_marked, foreign_items)
-    return bool(leftover)
+    return any(
+        (isinstance(candidate, dict) and isinstance(old, dict) and
+         (set(candidate) == set(old) or
+          ("matcher" in candidate and "matcher" in old and candidate["matcher"] == old["matcher"]))) or
+        (isinstance(candidate, str) and isinstance(old, str) and similar_strings(candidate, old))
+        for candidate in leftover for old in missing)
+
+
+def similar_strings(candidate, old):
+    """Could ``candidate`` be ``old`` after an edit? Paths match on their folder or file name;
+    other strings must be nearly the same text. Any marked string is not enough."""
+    if "/" in candidate or "/" in old:
+        head, tail = os.path.split(candidate)
+        old_head, old_tail = os.path.split(old)
+        return bool(head and head == old_head) or bool(tail and tail == old_tail)
+    return difflib.SequenceMatcher(None, candidate, old).ratio() >= 0.8
 
 
 def edited_message(destination, key, sub):
@@ -1255,7 +1316,7 @@ def edited_message(destination, key, sub):
             "an entry of your own and run neva repair, or delete the entry yourself, then re-run")
 
 
-def append_into(data, key, value, destination, previous=None, foreign=None):
+def append_into(data, key, value, destination, previous=None, foreign=None, previous_source=None, created_parents=()):
     """Put Neva's entries from ``value`` beside the owner's at ``key`` in ``data``.
 
     Neva owns exactly what it recorded writing, ``previous``: those entries are taken out and
@@ -1301,7 +1362,13 @@ def append_into(data, key, value, destination, previous=None, foreign=None):
             raise ValueError(edited_message(destination, key, sub))
         add = [item for item in wanted.get(sub, []) if item not in kept]
         marked[sub] = [item for item in kept if is_neva_entry(item)]
-        names.extend(slot_name(key, sub, index) for index, item in enumerate(kept) if is_neva_entry(item))
+        old_source = arrays(previous_source).get(sub, []) if previous_source is not None else []
+        for index, item in enumerate(kept):
+            if is_neva_entry(item):
+                name = slot_name(key, sub, index)
+                if item in foreign.get(sub, []) and item in old_source and item not in wanted.get(sub, []):
+                    name += " (an older Neva entry you added by hand; remove it to avoid running twice)"
+                names.append(name)
         written[sub] = add
         if sub is None:
             assign(data, key, kept + add)
@@ -1309,6 +1376,13 @@ def append_into(data, key, value, destination, previous=None, foreign=None):
             holder[sub] = kept + add
     if holder is not None:
         assign(data, key, holder)
+    required = [key_parts(key)] + [key_parts(slot_name(key, sub)) for sub in wanted]
+    for dotted in sorted(set(created_parents), key=lambda item: len(key_parts(item)), reverse=True):
+        parts = key_parts(dotted)
+        if any(parts == path[:len(parts)] for path in required):
+            continue
+        if lookup(data, dotted, MISSING) in ([], {}):
+            delete_key(data, dotted)
     return created, reshape(value, written), reshape(value, marked), names
 
 
@@ -1327,6 +1401,11 @@ def strip_neva_entries(data, key, recorded, created, foreign=None, destination="
         kept, missing = take_out(existing, items)
         if edited_slot(kept, missing, foreign.get(sub, [])):
             raise ValueError(edited_message(destination, key, sub))
+        unfamiliar, _ = take_out([item for item in kept if is_neva_entry(item)], foreign.get(sub, []))
+        for index, item in enumerate(kept):
+            if item in unfamiliar:
+                print(str(destination) + ": " + slot_name(key, sub, index) +
+                      " mentions " + APPEND_MARKER + " but does not match Neva's recorded entry; kept as yours")
         if sub is None:
             assign(data, key, kept)
         else:

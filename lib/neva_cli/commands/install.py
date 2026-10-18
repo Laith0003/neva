@@ -115,6 +115,8 @@ class Installer:
         self.toml_texts = {}
         self.backups = {}
         self.changed = []
+        # Destinations of every entry in the contract being applied (see remove_stale).
+        self.planned = []
 
     # -- manifest bookkeeping ------------------------------------------------
 
@@ -247,8 +249,45 @@ class Installer:
             if (target.exists() or target.is_symlink()) and self.any_prior(target) is None:
                 raise ValueError(str(target) + " already exists and is not Neva's, so Neva will not "
                                  "replace it. fix: move it aside or rename it, then re-run")
-        for path in files:
-            self.apply_file(harness, path, destination / path.relative_to(source), mode)
+        written = [self.apply_file(harness, path, destination / path.relative_to(source), mode)
+                   for path in files]
+        self.remove_stale(harness, destination, mode, {item["dest"] for item in written}, written[0])
+
+    def remove_stale(self, harness, destination, mode, current, keeper):
+        """Take out the files an earlier install copied under ``destination`` that the source
+        no longer has, so an old copy cannot shadow anything. Only a file that still matches
+        its recorded checksum is removed; an edited one is the owner's work, named and kept."""
+        from neva_cli.commands import uninstall
+        # A path another entry of this contract writes is that entry's, never stale here.
+        others = [path for path in self.planned if path != destination]
+        stale = [entry for entry in self.state["entries"]
+                 if entry.get("harness") == harness and entry.get("kind") == mode
+                 and entry.get("dest") not in current and destination in Path(entry["dest"]).parents
+                 and not any(path == Path(entry["dest"]) or path in Path(entry["dest"]).parents
+                             for path in others)]
+        created = []
+        for entry in stale:
+            path = Path(entry["dest"])
+            core.guard_destination(path, follow_leaf=False)
+            core.guard_owned(path, mode, entry.get("links"), entry.get("leaf_link"))
+            found = core.entry_checksum(entry)
+            if found is not None and found != entry.get("checksum"):
+                print("kept " + str(path) + ": it was edited after Neva installed it and this version of "
+                      "Neva no longer ships it. fix: move your edits elsewhere and delete it, or keep it "
+                      "as yours")
+                continue
+            print(uninstall.remove_file(entry, path, self.dry_run))
+            if self.dry_run:
+                continue
+            self.state["entries"].remove(entry)
+            created += entry.get("created_dirs", [])
+        # Pruned once, deepest first, after every stale file is gone. A directory the stale
+        # files' install created that still holds current files passes to a current entry,
+        # so uninstall can still prune it.
+        core.prune_created(created)
+        for item in dict.fromkeys(created):
+            if os.path.isdir(item) and item not in keeper["created_dirs"]:
+                keeper["created_dirs"].append(item)
 
     def merge_mapping(self, destination, kind):
         key = str(destination)
@@ -334,12 +373,40 @@ class Installer:
         appended = core.toml_append(text, data, key, value)
         if appended is not None:
             return ("append",) + appended
+        replaced = self.toml_replace(destination, text, data, key, value)
+        if replaced is not None:
+            return ("append",) + replaced
         if core.toml_has_comments(text):
             raise ValueError(str(destination) + " has comments that rewriting it to set " + key +
                              " would drop, and " + key + " cannot be added by appending because it "
                              "already exists there. fix: set " + key + " by hand, or remove the "
                              "comments, then re-run; Neva left the file unchanged")
         return ("rewrite",)
+
+    def toml_replace(self, destination, text, data, key, value):
+        """(new text, appended) that swaps the exact bytes Neva appended for this key last time
+        for the new value's table, or None. Every other byte, comments included, stays put.
+        This is how a table written with ${VAR} text by an older installer gets real paths."""
+        earlier = self.prior(destination, key)
+        old = earlier.get("appended") if earlier is not None else None
+        if not old or text.count(old) != 1:
+            return None
+        parts = core.key_parts(key)
+        header, body = (parts, value) if isinstance(value, dict) else (parts[:-1], {parts[-1]: value})
+        lines = core.toml_lines(body, tuple(header))
+        if not lines:
+            return None
+        lead = old[:len(old) - len(old.lstrip("\n"))]
+        new = lead + "\n".join(lines) + "\n"
+        result = text.replace(old, new, 1)
+        expected = copy.deepcopy(data)
+        core.assign(expected, key, value)
+        try:
+            if core.parse_toml(result) != expected or core._standard_toml(result) != expected:
+                return None
+        except ValueError:
+            return None
+        return result, new
 
     def apply_append_json(self, harness, destination, key, value, source=None):
         """Add Neva's marked entries beside the owner's in a shared JSON array.
@@ -375,7 +442,10 @@ class Installer:
         previous = earlier.get("value") if earlier is not None else None
         foreign = earlier.get("foreign") if earlier is not None else None
         trial = json.loads(json.dumps(data))
-        created, written, marked, names = core.append_into(trial, key, value, destination, previous, foreign)
+        created, written, marked, names = core.append_into(
+            trial, key, value, destination, previous, foreign,
+            earlier.get("source_value") if earlier else None,
+            earlier.get("created_parents", []) if earlier else [])
         for name in names:
             print(str(destination) + ": " + name + " mentions " + core.APPEND_MARKER + " but Neva did not "
                   "write it, so it stays yours and untouched")
@@ -402,7 +472,7 @@ class Installer:
             raise ValueError("adapter source missing: " + str(source) +
                              ". fix: restore that file or correct src in install.json")
         body = source.read_text(encoding="utf-8").rstrip("\n")
-        begin, end = core.block_markers(key)
+        begin, end = core.block_markers(key, destination)
         core.guard_destination(destination)
         self.guard_owned(destination, "append-block")
         dirs = self.created_dirs(destination, key)
@@ -421,6 +491,11 @@ class Installer:
         earlier = self.prior(destination, key)
         if earlier is not None and earlier.get("appended"):
             appended = earlier["appended"]
+            # The block may have been rewritten with newer markers: keep the recorded bytes
+            # in step, so uninstall can still take exactly them off the end.
+            lead = appended[:len(appended) - len(appended.lstrip("\n"))]
+            if not text.endswith(appended) and text.endswith(lead + replacement):
+                appended = lead + replacement
         return self.record({"harness": harness, "kind": "append-block", "dest": str(destination),
                             "source": str(source), "key": key, "body": body, "existed": existed,
                             "backup": saved, "appended": appended,
@@ -457,6 +532,7 @@ class Installer:
             print("post " + harness + ": run this yourself: " + str(command))
 
     def apply_entries(self, harness, contract, adapter_path):
+        self.planned = [core.expand_destination(entry.get("dest")) for entry in contract.get("entries", [])]
         for entry in contract.get("entries", []):
             mode = entry["mode"]
             destination = core.expand_destination(entry.get("dest"))
@@ -472,8 +548,11 @@ class Installer:
                                      ". fix: restore that file or correct src in install.json")
                 loaded = (core.read_toml(source) if source.suffix.lower() == ".toml"
                           else core.read_json_object(source))
-                self.apply_merge(harness, destination, mode, key,
-                                 core.lookup(loaded, key, core.MISSING), source)
+                value = core.lookup(loaded, key, core.MISSING)
+                if mode == "merge-toml" and value is not core.MISSING:
+                    # Recorded expanded, so repair and uninstall compare against what was written.
+                    value = core.expand_value(value)
+                self.apply_merge(harness, destination, mode, key, value, source)
             elif mode == "append-json":
                 if not source.is_file():
                     raise ValueError("adapter source missing: " + str(source) +

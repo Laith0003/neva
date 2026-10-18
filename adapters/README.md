@@ -70,7 +70,7 @@ know, or any entry it would refuse, leaves nothing written.
 | `detect.binaries` | Executables that, on `PATH`, suggest the harness is installed. Reported by `neva list`, never proof. |
 | `detect.paths` | Config files or directories that suggest the same. `~` and `${VAR}` are allowed. |
 | `entries[].src` | Relative to the harness directory. A file, or a directory whose files are installed one by one, each its own manifest entry. A symlink in the source is refused. |
-| `entries[].dest` | Where it goes. `~` and `${VAR}` expand; an unset variable is refused by name (export `CODEX_HOME` for Codex). The result must be absolute and inside HOME. A relative dest is a project file the installer refuses: copy those into the project by hand. |
+| `entries[].dest` | Where it goes. `~` and `${VAR}` expand; `CODEX_HOME` defaults to `~/.codex` and `NEVA_ROOT` to the checkout running the installer; any other unset variable is refused by name. The result must be absolute and inside HOME. A relative dest is a project file the installer refuses: copy those into the project by hand. |
 | `entries[].mode` | How to apply it, below. |
 | `entries[].key` | The dotted JSON key, TOML table, or block name. A part may be quoted as TOML quotes it, `plugins."neva-core@neva"`. Required for `merge-json`, `merge-toml`, `append-block` and `append-json`; empty otherwise. |
 | `post` | Lines the installer prints after the entries. It never runs them. Some are commands, some are caveats about the harness. |
@@ -79,16 +79,18 @@ know, or any entry it would refuse, leaves nothing written.
 
 | Mode | Behaviour |
 |---|---|
-| `copy` | Copy the file to `dest`, or every file of a directory under `dest`. A single file that was there is backed up first and restored on uninstall; for a directory, a file already at a destination that Neva does not own is refused by name and nothing is written. |
+| `copy` | Copy the file to `dest`, or every file of a directory under `dest`. A single file that was there is backed up first and restored on uninstall; for a directory, a file already at a destination that Neva does not own is refused by name and nothing is written. On a reinstall, a file an earlier install copied under that directory that the source no longer has is removed if it still matches its recorded checksum, and named and kept if it was edited. |
 | `symlink` | Link `dest` at `src` so plugin edits appear without reinstalling. |
 | `merge-json` | Set `key` in the JSON object at `dest` to the value at `key` in `src`, leaving every other key alone. Uninstall puts back the value that was there, or removes the key. |
 | `merge-toml` | The same for one TOML table or value. A new table is appended at the end so every other byte and comment stays; uninstall takes exactly those bytes off. One entry per table. |
 | `append-json` | The value at `key` in `src` is an array, or an object whose values are arrays. Its entries are added beside the owner's in the matching arrays at `dest`, and every source entry must contain `neva-core`. Neva owns exactly the entries the manifest records it wrote, compared whole and only in the arrays the source covers: a reinstall replaces those, uninstall removes those and any container Neva created, and an entry the owner already had is never added twice. Any other entry that mentions `neva-core` is the owner's, named on install and left alone, and a Neva entry the owner has edited is refused by name rather than discarded. Used for Codex hooks and OpenCode instructions. |
-| `append-block` | Add `src` to `dest` between the lines `# neva begin neva-core` and `# neva end neva-core` (the key names the block), replacing an existing block of that name. Uninstall removes the block and restores the file to its prior bytes. |
+| `append-block` | Add `src` to `dest` between the lines `<!-- neva begin neva-core -->` and `<!-- neva end neva-core -->` in a Markdown `dest`, or `# neva begin neva-core` and `# neva end neva-core` elsewhere (the key names the block), replacing an existing block of that name. A block an older install wrote with the `#` markers is still found, repaired and removed. Uninstall removes the block and restores the file to its prior bytes. |
 
 `post` is printed, never executed. An adapter cannot make the installer run a command
 silently, which is the point: the contract carries data, not instructions to obey.
 
-The installer expands `~` and `${VAR}` in `dest` only, never inside merged values. Codex's
-`config.toml` tables carry `${CODEX_HOME}` and `${NEVA_ROOT}` literally, so its `post` lines
-say to replace them by hand.
+The installer expands `~` and `${VAR}` in `dest`. Inside merged values it fills in only
+`${CODEX_HOME}` and `${NEVA_ROOT}`, and only in `merge-toml` tables, because Codex reads
+`config.toml` literally. The manifest records the expanded value, so repair and uninstall
+compare against what was written; a table an older installer wrote with the literal text is
+swapped for real paths on the next install.

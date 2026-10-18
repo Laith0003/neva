@@ -1,5 +1,5 @@
 ---
-name: neva-recipes
+name: "neva-recipes"
 description: Use when asked which Neva command group runs a workflow, the command sequence and stop condition for a task, or to list all pipelines. Advisory only, never executes. Not for single-command docs (neva-guide) or prompt rewrites (prompt-optimizer).
 argument-hint: <workflow description | empty=list all>
 author: KyawZinLatt
@@ -18,7 +18,7 @@ order, and when do I stop." Also browses every command-group recipe family.
 Fills the gap between two existing skills:
 
 - `neva-guide`: lists commands and where to read docs, but as a flat catalog.
-- `prompt-optimizer`: matches a task to components, but outputs a single prompt,
+- `neva-prompt-optimizer`: matches a task to components, but outputs a single prompt,
   not a multi-command group with run-order and stop condition.
 
 This skill adds: **family grouping + run-order + stop condition.**
@@ -35,7 +35,7 @@ This skill adds: **family grouping + run-order + stop condition.**
 
 - User wants the task done now: route to the actual command, don't describe it.
 - User wants deep docs for ONE command: use `neva-guide`.
-- User wants a draft prompt rewritten: use `prompt-optimizer`.
+- User wants a draft prompt rewritten: use `neva-prompt-optimizer`.
 
 ## Core Principle
 
@@ -148,7 +148,7 @@ review until done` → Best fit: `loop-*` (autonomous) wrapping `gan-*` or
 `loop-start rfc-dag --mode safe` then monitor `loop-status`; STOP when all units
 pass review N consecutive times (add a max-iteration backstop to bound burn).
 
-**Match:** `/neva-recipes fix a bug in my Go service` → Best fit: `orch-fix-defect`
+**Match:** `/neva-recipes fix a bug in my Go service` → Best fit: `neva-orch-fix-defect`
 (reproduce, fix, review, commit). Alt: `go-test` then `go-build` then
 `go-review`. STOP: regression test green and review pass.
 
@@ -156,5 +156,5 @@ pass review N consecutive times (add a max-iteration backstop to bound burn).
 
 - Not an executor: advisory only.
 - Not per-command deep docs: that's `neva-guide`.
-- Not prompt rewriting: that's `prompt-optimizer`.
+- Not prompt rewriting: that's `neva-prompt-optimizer`.
 - Never hardcode command counts or member lists: always live-read.

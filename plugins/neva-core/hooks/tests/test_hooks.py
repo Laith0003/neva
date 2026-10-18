@@ -1797,6 +1797,24 @@ class TestCodexNativeTools(HookTest):
         r = self.codex("apply_patch", {"command": self.patch("*** Add File: " + ok, "*** Update File: " + goals)})
         self.assertBlocked(r, "GOALS.md")
 
+    def test_indented_second_patch_header_is_guarded(self):
+        goals = os.path.join(self.s.vault, "GOALS.md")
+        for indent in ("\t", "  "):
+            for action in ("Update File", "Delete File", "Move to"):
+                with self.subTest(indent=indent, action=action):
+                    patch = self.patch("*** Add File: " + os.path.join(self.s.work, "a.py"),
+                                       indent + "*** " + action + ": " + goals)
+                    self.assertBlocked(self.codex("apply_patch", {"command": patch}), "GOALS.md")
+
+    def test_unknown_patch_marker_after_known_target_fails_closed(self):
+        patch = self.patch("*** Add File: " + os.path.join(self.s.work, "a.py"),
+                           "  *** Rename File: hidden.md")
+        self.assertBlocked(self.codex("apply_patch", {"command": patch}), "could not read")
+
+    def test_indented_ordinary_patch_is_allowed(self):
+        patch = self.patch("  *** Update File: " + os.path.join(self.s.work, "a.py"))
+        self.assertAllowed(self.codex("apply_patch", {"command": patch}))
+
     def test_patch_move_destination_is_checked(self):
         src = os.path.join(self.s.vault, "08 Journal", "a.md")
         goals = os.path.join(self.s.vault, "GOALS.md")
@@ -1835,7 +1853,7 @@ class TestCodexNativeTools(HookTest):
 CK_COPIES = {
     "canonical": os.path.join(PLUGIN_SRC, "skills", "ck", "commands"),
     "gemini": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "gemini", "skills", "ck", "commands"),
-    "opencode": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "opencode", "skills", "ck",
+    "opencode": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "opencode", "skills", "neva-ck",
                              "commands"),
 }
 

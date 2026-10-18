@@ -13,6 +13,7 @@ off the top of the file and every harness would stop parsing it.
 """
 import argparse
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -281,8 +282,8 @@ OPENCODE_BRIDGE = '''/**
  * ${CLAUDE_PLUGIN_ROOT}, which only Claude Code sets. shell.env supplies it, pointing at
  * plugins/neva-core in the checkout, so every script and its dependencies resolve.
  *
- * Set NEVA_ROOT to the Neva checkout. Without it the bridge stays silent rather
- * than guessing a path and failing on every single event.
+ * Set NEVA_ROOT to the Neva checkout. Without it the system context warns that
+ * guards are off, rather than guessing a path and failing on every single event.
  */
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -392,6 +393,9 @@ export const NevaHooks = async ({ directory, worktree }) => {
         output.env.CLAUDE_PLUGIN_ROOT || join(NEVA_ROOT, "plugins", "neva-core");
     },
     "experimental.chat.system.transform": async (input, output) => {
+      if (!NEVA_ROOT) {
+        output.system.push("Neva guards are off because NEVA_ROOT is unset. Fix: set NEVA_ROOT to the Neva checkout before starting OpenCode.");
+      }
       const id = input.sessionID || "";
       const base = sessionContext.get(id);
       if (base) output.system.push(base);
@@ -414,13 +418,54 @@ export const NevaHooks = async ({ directory, worktree }) => {
 '''
 
 
+def opencode_skill_name(name):
+    """A skill's name on OpenCode: neva-<name>, unless it is already in the neva- namespace."""
+    return name if name.startswith("neva-") else "neva-" + name
+
+
+# Backticked names in a skill body that are not references to that skill: the gateguard hook
+# module, the delivery-gate Stop hook, and the growth-log folder delivery-gate checks.
+OPENCODE_NOT_SKILL_REFS = {("neva-gateguard", "gateguard"), ("neva-growth-log", "delivery-gate"),
+                           ("neva-delivery-gate", "growth-log")}
+
+
+def opencode_skill_refs(body, names, skill):
+    """Point the skill names a body uses (`tdd-workflow`, neva-core:tdd-workflow, "the
+    blueprint skill") at the names those skills have on OpenCode."""
+    alt = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    rename = lambda match: opencode_skill_name(match.group(1))  # noqa: E731
+    body = re.sub(r"neva-core:(" + alt + r")(?![\w-])", rename, body)
+
+    def backticked(match):
+        if (skill, match.group(1)) in OPENCODE_NOT_SKILL_REFS:
+            return match.group(0)
+        return "`" + opencode_skill_name(match.group(1)) + "`"
+    body = re.sub(r"`(" + alt + r")`(?!\s+(?:Stop\s+)?(?:hook|module)\b)", backticked, body)
+    return re.sub(r"(?<![\w/.`-])(" + alt + r")(?=\s+skill\b)", rename, body)
+
+
 @harness("opencode")
 def build_opencode(root, version, licence):
     """OpenCode's global layer: ~/.config/opencode holds agents, commands, skills, plugins,
     AGENTS.md and opencode.json, all documented global paths. The neva installer writes only
     inside HOME, so the adapter installs there rather than into one project's .opencode/."""
     base = Path("opencode")
-    copy_tree(root, CORE / "skills", base / "skills")
+    names = sorted(path.name for path in (CORE / "skills").iterdir() if path.is_dir())
+    for skill in sorted((CORE / "skills").iterdir()):
+        check_source(skill)
+        if not skill.is_dir():
+            continue
+        destination = base / "skills" / opencode_skill_name(skill.name)
+        copy_tree(root, skill, destination)
+        page = skill / "SKILL.md"
+        frontmatter, body = split_frontmatter(read(page))
+        name = field(frontmatter, "name")
+        if not name or name != skill.name:
+            raise SystemExit("adapters: " + str(page) + " name must match its folder. Fix the name before generating.")
+        lines = ["name: " + quote(opencode_skill_name(name)) if line.startswith("name:") else line
+                 for line in frontmatter.splitlines()]
+        write_markdown(root, destination / "SKILL.md", lines,
+                       opencode_skill_refs(body, names, opencode_skill_name(name)))
     for stem, description, model, body in agent_pages():
         write_markdown(root, base / "agents" / (stem + ".md"),
                        ["description: " + quote(description), "mode: subagent"], body)
@@ -438,7 +483,7 @@ def build_opencode(root, version, licence):
     })
     write_install(root, "opencode", [
         # A neva/ subfolder each, never the owner's own names: OpenCode scans agents/**,
-        # commands/** and skills/** recursively, naming agents and commands neva/<name>.
+        # commands/** and skills/** recursively. Skills also need unique frontmatter names.
         entry("agents", "~/.config/opencode/agents/neva"),
         entry("commands", "~/.config/opencode/commands/neva"),
         entry("skills", "~/.config/opencode/skills/neva"),
@@ -752,8 +797,8 @@ def build_codex(root, version, licence):
         "codex plugin list   # confirm neva-core is installed",
         "Codex will not run a hook until it is trusted. Review the hooks in Codex and "
         "accept them: an untrusted hooks.json is silently inert.",
-        "Codex does not expand ${CODEX_HOME} or ${NEVA_ROOT} in config.toml. Replace them "
-        "with real paths when you merge the tables by hand.",
+        "neva install writes real paths for ${CODEX_HOME} and ${NEVA_ROOT} into config.toml; "
+        "Codex does not expand them, so replace them with real paths if you merge the tables by hand.",
     ])
 
 
@@ -831,7 +876,7 @@ know, or any entry it would refuse, leaves nothing written.
 | `detect.binaries` | Executables that, on `PATH`, suggest the harness is installed. Reported by `neva list`, never proof. |
 | `detect.paths` | Config files or directories that suggest the same. `~` and `${VAR}` are allowed. |
 | `entries[].src` | Relative to the harness directory. A file, or a directory whose files are installed one by one, each its own manifest entry. A symlink in the source is refused. |
-| `entries[].dest` | Where it goes. `~` and `${VAR}` expand; an unset variable is refused by name (export `CODEX_HOME` for Codex). The result must be absolute and inside HOME. A relative dest is a project file the installer refuses: copy those into the project by hand. |
+| `entries[].dest` | Where it goes. `~` and `${VAR}` expand; `CODEX_HOME` defaults to `~/.codex` and `NEVA_ROOT` to the checkout running the installer; any other unset variable is refused by name. The result must be absolute and inside HOME. A relative dest is a project file the installer refuses: copy those into the project by hand. |
 | `entries[].mode` | How to apply it, below. |
 | `entries[].key` | The dotted JSON key, TOML table, or block name. A part may be quoted as TOML quotes it, `plugins."neva-core@neva"`. Required for `merge-json`, `merge-toml`, `append-block` and `append-json`; empty otherwise. |
 | `post` | Lines the installer prints after the entries. It never runs them. Some are commands, some are caveats about the harness. |
@@ -840,19 +885,21 @@ know, or any entry it would refuse, leaves nothing written.
 
 | Mode | Behaviour |
 |---|---|
-| `copy` | Copy the file to `dest`, or every file of a directory under `dest`. A single file that was there is backed up first and restored on uninstall; for a directory, a file already at a destination that Neva does not own is refused by name and nothing is written. |
+| `copy` | Copy the file to `dest`, or every file of a directory under `dest`. A single file that was there is backed up first and restored on uninstall; for a directory, a file already at a destination that Neva does not own is refused by name and nothing is written. On a reinstall, a file an earlier install copied under that directory that the source no longer has is removed if it still matches its recorded checksum, and named and kept if it was edited. |
 | `symlink` | Link `dest` at `src` so plugin edits appear without reinstalling. |
 | `merge-json` | Set `key` in the JSON object at `dest` to the value at `key` in `src`, leaving every other key alone. Uninstall puts back the value that was there, or removes the key. |
 | `merge-toml` | The same for one TOML table or value. A new table is appended at the end so every other byte and comment stays; uninstall takes exactly those bytes off. One entry per table. |
 | `append-json` | The value at `key` in `src` is an array, or an object whose values are arrays. Its entries are added beside the owner's in the matching arrays at `dest`, and every source entry must contain `neva-core`. Neva owns exactly the entries the manifest records it wrote, compared whole and only in the arrays the source covers: a reinstall replaces those, uninstall removes those and any container Neva created, and an entry the owner already had is never added twice. Any other entry that mentions `neva-core` is the owner's, named on install and left alone, and a Neva entry the owner has edited is refused by name rather than discarded. Used for Codex hooks and OpenCode instructions. |
-| `append-block` | Add `src` to `dest` between the lines `# neva begin neva-core` and `# neva end neva-core` (the key names the block), replacing an existing block of that name. Uninstall removes the block and restores the file to its prior bytes. |
+| `append-block` | Add `src` to `dest` between the lines `<!-- neva begin neva-core -->` and `<!-- neva end neva-core -->` in a Markdown `dest`, or `# neva begin neva-core` and `# neva end neva-core` elsewhere (the key names the block), replacing an existing block of that name. A block an older install wrote with the `#` markers is still found, repaired and removed. Uninstall removes the block and restores the file to its prior bytes. |
 
 `post` is printed, never executed. An adapter cannot make the installer run a command
 silently, which is the point: the contract carries data, not instructions to obey.
 
-The installer expands `~` and `${VAR}` in `dest` only, never inside merged values. Codex's
-`config.toml` tables carry `${CODEX_HOME}` and `${NEVA_ROOT}` literally, so its `post` lines
-say to replace them by hand.
+The installer expands `~` and `${VAR}` in `dest`. Inside merged values it fills in only
+`${CODEX_HOME}` and `${NEVA_ROOT}`, and only in `merge-toml` tables, because Codex reads
+`config.toml` literally. The manifest records the expanded value, so repair and uninstall
+compare against what was written; a table an older installer wrote with the literal text is
+swapped for real paths on the next install.
 """
 
 

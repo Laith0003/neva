@@ -17,8 +17,9 @@ Controls:
 Contract with Claude Code:
   exit 0, optional JSON on stdout (additionalContext, permissionDecision ask, systemMessage)
   exit 2, reason on stderr, only when a module deliberately blocks
-  On any harness outside ASK_HARNESSES a PreToolUse ask also exits 2: it fails closed.
-A module that raises is logged to <data dir>/hooks.log and skipped; it never breaks the session.
+  On any harness outside ASK_HARNESSES a PreToolUse ask or dispatcher failure exits 2.
+Module failures are logged. Foreign PreToolUse calls block when a guard module fails; a module
+marked "guard": false in hooks.meta.json (loggers and nudges) is skipped instead.
 """
 import fnmatch
 import importlib
@@ -76,10 +77,23 @@ def run_modules(ctx, mods):
             mod = importlib.import_module("neva_hooks." + m["module"])
             fn = getattr(mod, m.get("function", "run"))
             r = fn(ctx)
-            if isinstance(r, dict) and r:
+            valid = r is None or (isinstance(r, dict) and all(
+                key in ("block", "ask", "context", "system") and isinstance(value, str)
+                for key, value in r.items()))
+            if not valid:
+                raise ValueError("module returned an invalid decision object")
+            if r:
                 results.append((m["id"], r))
-        except Exception:
+        except Exception as exc:
             common.log_exception(f"module {m.get('id')} on {ctx.event}")
+            # Only a module that can block fails closed. A logger or nudge (guard: false) that
+            # crashes, for example on a read-only data directory, must not stop every call.
+            if ctx.event == "PreToolUse" and ctx.harness not in ASK_HARNESSES and m.get("guard", True) is not False:
+                mid = m.get("id", "unknown")
+                results.append((mid, {
+                    "block": f"Guard failed ({type(exc).__name__}: {str(exc)[:200]}) or returned a malformed "
+                             "decision, so Neva blocked this action. Fix: repair the named guard and retry, "
+                             f"or skip it with NEVA_DISABLED_HOOKS={mid}."}))
         dt = time.time() - t0
         if dt > 1.5:
             common.log(f"[slow] {m.get('id')} took {dt:.2f}s on {ctx.event}")
@@ -148,30 +162,43 @@ def merge(event, results, harness="claude"):
     return (json.dumps(out) if out else ""), "", 0
 
 
+def internal_failure(event, harness, reason):
+    if event == "PreToolUse" and harness not in ASK_HARNESSES:
+        common.emit_stderr("[dispatch] " + reason + "; Neva blocked this action because its guards could not run. Fix the hook input or installation and retry.")
+        return 2
+    return 0
+
+
 def main(argv):
     event = argv[1] if len(argv) > 1 else ""
+    read_error = False
     try:
-        raw = sys.stdin.read(MAX_STDIN)
+        raw = sys.stdin.read(MAX_STDIN + 1)
     except Exception:
         raw = ""
+        read_error = True
     if common.env_flag("NEVA_HEADLESS") or not event:
         return 0
-    parse_error = False
+    parse_error = read_error or len(raw) > MAX_STDIN or not raw.strip()
     try:
         data = json.loads(raw) if raw.strip() else {}
     except ValueError:
-        common.log(f"[dispatch] {event}: stdin was not JSON ({len(raw)} bytes); running with empty input")
+        common.log(f"[dispatch] {event}: stdin was not JSON ({len(raw)} bytes)")
         data, parse_error = {}, True
     if not isinstance(data, dict):
         data, parse_error = {}, True
     event, data, harness = common.normalize_payload(event, data)
+    if parse_error:
+        code = internal_failure(event, harness, "hook stdin is missing, unreadable, oversized or invalid JSON")
+        if code:
+            return code
     tool = str(data.get("tool_name") or "")
     profile = active_profile()
     try:
         mods = selected_modules(load_meta(), event, profile, disabled_ids(), tool)
     except Exception:
         common.log_exception("dispatch: hooks.meta.json unreadable")
-        return 0
+        return internal_failure(event, harness, "hooks.meta.json is unreadable or malformed")
     refused = unreadable(event, data, harness)
     if refused:
         common.emit_stderr(refused)
@@ -198,10 +225,16 @@ def main(argv):
     return code
 
 
-if __name__ == "__main__":
+def entrypoint(argv):
     try:
-        rc = main(sys.argv)
+        return main(argv)
     except Exception:
         common.log_exception("dispatch: unexpected")
-        rc = 0
-    sys.exit(rc)
+        event = argv[1] if len(argv) > 1 else ""
+        harness = common.detect_harness({})
+        event = common.HARNESS_EVENTS.get(harness, {}).get(event.lower(), event)
+        return internal_failure(event, harness, "unexpected dispatcher failure")
+
+
+if __name__ == "__main__":
+    sys.exit(entrypoint(sys.argv))

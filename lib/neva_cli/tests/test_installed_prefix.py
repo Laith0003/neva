@@ -17,7 +17,7 @@ from neva_cli import core
 from neva_cli.tests.harness import Sandbox, difference, snapshot
 
 REPO = core.REPO_ROOT
-SHIPPED = ("bin", "lib", "plugins", ".claude-plugin", "VERSION")
+SHIPPED = ("bin", "lib", "plugins", ".claude-plugin", "adapters", "VERSION")
 IGNORE = shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc")
 
 
@@ -66,6 +66,25 @@ class InstalledPrefix(Sandbox):
 
 
 class TestInstalledCli(InstalledPrefix):
+    def test_installed_opencode_skills_keep_owner_names_and_uninstall_cleanly(self):
+        self.env({"NEVA_ADAPTERS_DIR": str(self.prefix / "adapters")})
+        owner = self.home / ".config" / "opencode" / "skills" / "ck" / "SKILL.md"
+        owner.parent.mkdir(parents=True)
+        owner.write_text("---\nname: ck\ndescription: Owner skill\n---\nOwner skill\n", encoding="utf-8")
+        original = owner.read_bytes()
+        before = snapshot(self.home)
+        for run in (1, 2):
+            code, output = self.run_neva("install", "--harness", "opencode", "--yes")
+            self.assertEqual(code, 0, output)
+            self.assertIn("opencode: managed", output)
+            page = owner.parent.parent / "neva" / "neva-ck" / "SKILL.md"
+            self.assertIn('name: "neva-ck"', page.read_text(encoding="utf-8"))
+            self.assertEqual(owner.read_bytes(), original)
+        code, output = self.run_neva("uninstall", "--yes")
+        self.assertEqual(code, 0, output)
+        self.assertIn("removed", output)
+        self.assertEqual(before, snapshot(self.home))
+
     def test_the_installed_cli_copies_the_rules(self):
         code, output = self.run_neva("install", "--harness", "claude", "--yes")
         self.assertEqual(code, 0, output)

@@ -75,7 +75,7 @@ them a `detect.paths` and a `copy` entry and they work like any other.
 | `src` | Relative to the adapter directory, then to the repo root. May be absolute. |
 | `dest` | `~` and `${VAR}` expand. The result must be absolute and must not contain `..`, or the entry is refused before anything is written. |
 | `mode` | `copy`, `symlink`, `merge-json`, `merge-toml`, `append-block`. |
-| `key` | Dotted key for the merge modes, required: a merge entry without one is refused, because Neva never merges a whole file. For `append-block` it names the markers, `# neva begin <key>` and `# neva end <key>`. |
+| `key` | Dotted key for the merge modes, required: a merge entry without one is refused, because Neva never merges a whole file. For `append-block` it names the markers: `<!-- neva begin <key> -->` and `<!-- neva end <key> -->` in a Markdown file, `# neva begin <key>` and `# neva end <key>` elsewhere. |
 | `post` | Printed for you to run. Neva never runs them. |
 
 The TOML support is deliberately small: tables, strings, integers, floats, booleans and flat

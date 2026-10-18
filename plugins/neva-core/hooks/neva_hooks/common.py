@@ -117,7 +117,7 @@ def detect_harness(data, requested=""):
 
 
 SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
-PATCH_HEADER = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.M)
+PATCH_HEADER = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$")
 
 
 def _normalize_shell(tool_input):
@@ -142,15 +142,68 @@ def _normalize_shell(tool_input):
         tool_input.pop("command", None)
 
 
+PATCH_MARKERS = ("*** Begin Patch", "*** End Patch", "*** End of File")
+
+
+def _patch_events(patch):
+    """Walk an apply_patch envelope with the hunk state Codex keeps.
+
+    Returns a list of (kind, value, raw): ("header", raw_path, marker) for Add, Update,
+    Delete and Move to; ("hunk", anchor, line) for an @@ line; ("content", line, line) for
+    a line of file text. Inside an Update hunk a line starting with space, + or - is file
+    text even when it reads like a marker, as Codex treats it. Returns None when a line
+    looks like a marker Neva does not know: a partly understood envelope exposes nothing.
+    """
+    events, section, in_hunk = [], None, False
+    for line in (patch or "").splitlines():
+        if section == "update" and in_hunk and (not line or line[0] in " +-"):
+            events.append(("content", line or " ", line))
+            continue
+        if section == "add" and line.startswith("+"):
+            events.append(("content", line, line))
+            continue
+        if section == "update" and line.startswith("@@"):
+            events.append(("hunk", line[2:].strip(), line))
+            in_hunk = True
+            continue
+        marker = line.strip()
+        match = PATCH_HEADER.fullmatch(marker)
+        if match:
+            kind = marker[4:marker.index(":")]
+            if kind != "Move to":
+                section = {"Add File": "add", "Update File": "update", "Delete File": "delete"}[kind]
+            in_hunk = False
+            events.append(("header", match.group(1).strip(), marker))
+            continue
+        if marker.startswith("*** "):
+            if marker not in PATCH_MARKERS:
+                return None
+            # End of File closes the hunk; Codex rejects a stray text line after it.
+            section = section if marker == "*** End of File" else None
+            in_hunk = False
+            continue
+        if section == "update" and line and line[0] in " +-":
+            # The first hunk of an Update may start without an @@ line.
+            events.append(("content", line, line))
+            in_hunk = True
+    return events
+
+
+def _patch_path(raw, cwd):
+    path = os.path.expanduser(raw)
+    if not os.path.isabs(path) and cwd:
+        path = os.path.join(cwd, path)
+    return path
+
+
 def patch_targets(patch, cwd=""):
     """Every path an apply_patch envelope adds, updates, deletes or moves to, absolute."""
     targets = []
-    for raw in PATCH_HEADER.findall(patch or ""):
-        path = os.path.expanduser(raw.strip())
-        if not os.path.isabs(path) and cwd:
-            path = os.path.join(cwd, path)
-        if path not in targets:
-            targets.append(path)
+    for kind, value, _ in _patch_events(patch) or []:
+        if kind == "header":
+            path = _patch_path(value, cwd)
+            if path not in targets:
+                targets.append(path)
     return targets
 
 
@@ -159,7 +212,7 @@ def _normalize_patch(normalized, original, tool, cwd):
     freeform text with no object around it. The write guards need the target paths."""
     ti = normalized["tool_input"]
     patch = ""
-    for candidate in (ti.get("command"), ti.get("input"), ti.get("patch"), original.get("tool_input"),
+    for candidate in (ti.get("command"), ti.get("input"), ti.get("patch"), ti.get("patchText"), original.get("tool_input"),
                       original.get("input"), tool.get("input")):
         if isinstance(candidate, str) and candidate.strip():
             patch = candidate
@@ -171,6 +224,36 @@ def _normalize_patch(normalized, original, tool, cwd):
         new_input["edits"] = [{"file_path": t} for t in targets[1:]]
     normalized["tool_input"] = new_input
     normalized["neva_patch_targets"] = targets
+    # Keep context lines with each side so section-aware lint guards can judge hunks. Each
+    # @@ hunk is also kept on its own in neva_hunks (with its @@ context as the anchor):
+    # joined, two hunks match nowhere in the file and a mixed config loses its sections.
+    changes = {target: {"old_string": "", "new_string": "", "neva_hunks": []} for target in targets}
+    current = None
+    hunk = None
+    for kind, value, raw in _patch_events(patch) or []:
+        if kind == "header":
+            target = _patch_path(value, cwd)
+            if not raw.startswith("*** Move to:"):
+                current = changes.get(target)
+                hunk = None
+            else:
+                # Moving a config must not hide changes at its destination.
+                changes[target] = current if current is not None else changes.get(target, {})
+            continue
+        if current is None:
+            continue
+        if kind == "hunk":
+            hunk = {"anchor": value, "old_string": "", "new_string": ""}
+            current["neva_hunks"].append(hunk)
+            continue
+        if hunk is None:
+            hunk = {"anchor": "", "old_string": "", "new_string": ""}
+            current["neva_hunks"].append(hunk)
+        for side, signs in (("old_string", ("-", " ")), ("new_string", ("+", " "))):
+            if value[0] in signs:
+                current[side] += value[1:] + "\n"
+                hunk[side] += value[1:] + "\n"
+    normalized["neva_patch_edits"] = changes
 
 
 def normalize_payload(event, data, harness=""):
@@ -212,6 +295,17 @@ def normalize_payload(event, data, harness=""):
     file_path = normalized["tool_input"].get("filePath")
     if isinstance(file_path, str) and file_path and not normalized["tool_input"].get("file_path"):
         normalized["tool_input"]["file_path"] = file_path
+    # OpenCode's edit and multiedit use camelCase replacement fields.
+    if active == "opencode":
+        inputs = [normalized["tool_input"]]
+        edits = normalized["tool_input"].get("edits")
+        if isinstance(edits, list):
+            normalized["tool_input"]["edits"] = [dict(e) if isinstance(e, dict) else e for e in edits]
+            inputs += [e for e in normalized["tool_input"]["edits"] if isinstance(e, dict)]
+        for edit in inputs:
+            for source, dest in (("oldString", "old_string"), ("newString", "new_string")):
+                if source in edit and dest not in edit:
+                    edit[dest] = edit[source]
     # Cursor's beforeShellExecution sends a bare `command` string and names no tool at
     # all. Without this, tool_name stays empty, the Bash modules never match, and the
     # no-verify guard silently stops guarding on that harness.
@@ -1076,6 +1170,10 @@ class Ctx:
         self.tool_name = str(self.data.get("tool_name") or "")
         ti = self.data.get("tool_input")
         self.tool_input = ti if isinstance(ti, dict) else {}
+        patch_edits = self.data.get("neva_patch_edits") or {}
+        patch_edit = patch_edits.get(self.tool_input.get("file_path"))
+        if isinstance(patch_edit, dict):
+            self.tool_input = dict(self.tool_input, **patch_edit)
         self.transcript_path = str(self.data.get("transcript_path") or env("CLAUDE_TRANSCRIPT_PATH") or "")
 
     @functools.cached_property

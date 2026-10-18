@@ -92,8 +92,19 @@ def _sections(lines, start=""):
     return out
 
 
-def _section_at(text, needle):
-    i = text.find(needle) if needle else -1
+def _section_at(text, needle, anchor=""):
+    """Section in force where needle sits in text. A patch hunk's @@ anchor narrows the search
+    to the text after that line; a hunk that only adds lines sits right after its anchor."""
+    start = text.find(anchor) if anchor else -1
+    if needle:
+        i = text.find(needle, max(start, 0))
+        if i < 0 and start > 0:
+            i = text.find(needle)
+    elif start >= 0:
+        end = text.find("\n", start)
+        i = len(text) if end < 0 else end + 1
+    else:
+        i = -1
     return _sections(text[:i].splitlines())[-1] if i > 0 and text[:i].splitlines() else ""
 
 
@@ -102,7 +113,14 @@ def _changes(ctx, fp):
     ti = ctx.tool_input
     current = c.read_text(fp)
     pairs = []
-    if ctx.tool_name == "Write":
+    hunks = ti.get("neva_hunks")
+    if ctx.tool_name in ("Edit", "MultiEdit") and isinstance(hunks, list) and hunks:
+        # A native patch: each @@ hunk is judged on its own, like one MultiEdit entry.
+        for h in hunks:
+            if isinstance(h, dict):
+                old = str(h.get("old_string") or "")
+                pairs.append((old, str(h.get("new_string") or ""), _section_at(current, old, str(h.get("anchor") or ""))))
+    elif ctx.tool_name == "Write":
         pairs.append((current, str(ti.get("content") or ""), ""))
     elif ctx.tool_name == "Edit":
         old = str(ti.get("old_string") or "")
