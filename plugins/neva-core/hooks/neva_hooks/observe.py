@@ -22,8 +22,18 @@ edit_accumulator (PostToolUse): remembers which files this response edited so th
   format and typecheck them once instead of after every edit.
 """
 import datetime
+import errno
 import json
 import os
+import time
+from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
+from .learning_trigger import _learning_io
 
 from . import common as c
 
@@ -31,6 +41,13 @@ MAX_FIELD = 5000
 PATH_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit")
 ENTRYPOINTS = ("cli", "sdk-ts", "sdk-cli", "claude-desktop", "claude-vscode")
 EVENTS = {"PreToolUse": "tool_start", "PostToolUse": "tool_complete", "PostToolUseFailure": "tool_error"}
+# observe runs on every tool call, after the guards whose block decision dispatch prints only
+# once every module returns. A wait here delays (or, at the hook timeout, loses) that decision,
+# so the lock wait and the reopen loop are both bounded and the observation is skipped instead.
+LOCK_DEADLINE_S = 0.2
+LOCK_POLL_S = 0.01
+MAX_REOPENS = 3
+_BUSY = {errno.EAGAIN, errno.EACCES, getattr(errno, "EWOULDBLOCK", errno.EAGAIN)}
 
 
 def _truncate(value):
@@ -55,26 +72,69 @@ def skipped(ctx):
 
 
 def live_file(project_id):
-    d = c.ensure_dir(os.path.join(c.observations_dir(), project_id))
+    root = Path(c.observations_dir())
+    d = _learning_io().ensure_dir(root, root / project_id)
     return os.path.join(d, "observations.jsonl")
 
 
 def _rotate(path):
     limit = c.env_int("NEVA_OBSERVE_MAX_MB", 10, 1, 1000) * 1024 * 1024
+    root = Path(c.observations_dir())
+    io = _learning_io()
+    io.check(root, path)
     try:
         if os.path.getsize(path) >= limit:
             # pending, not archive: the nightly analyser reads these first and archives only what it analysed
-            arch = c.ensure_dir(os.path.join(os.path.dirname(path), "observations.pending"))
+            arch = io.ensure_dir(root, Path(path).parent / "observations.pending")
             stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            os.replace(path, os.path.join(arch, f"observations-{stamp}-{os.getpid()}.jsonl"))
+            target = arch / f"observations-{stamp}-{os.getpid()}.jsonl"
+            io.check(root, target)
+            io.check(root, path)
+            os.replace(path, target)
     except OSError:
         pass
 
 
+def _open_live(path):
+    return _learning_io().open_append(Path(c.observations_dir()), path)
+
+
+def _lock(fh, deadline):
+    """Non-blocking flock retried until `deadline`. Returns None on success, else the reason."""
+    if fcntl is None:
+        return None
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return None
+        except OSError as exc:
+            if exc.errno not in _BUSY:
+                return f"cannot lock it ({exc})"
+        if time.monotonic() >= deadline:
+            return f"locked by another process for over {LOCK_DEADLINE_S:g}s"
+        time.sleep(LOCK_POLL_S)
+
+
 def _append(path, rec):
     _rotate(path)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    deadline = time.monotonic() + LOCK_DEADLINE_S
+    for _ in range(MAX_REOPENS):
+        with _open_live(path) as fh:
+            reason = _lock(fh, deadline)
+            if reason:
+                c.log(f"[observe] {path} {reason}; observation skipped")
+                return
+            try:
+                current = os.stat(path)
+            except FileNotFoundError:
+                continue
+            if os.fstat(fh.fileno()).st_ino != current.st_ino:
+                continue
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            # Flush before close releases the inode lock.
+            fh.flush()
+            return
+    c.log(f"[observe] {path} was replaced on each of {MAX_REOPENS} attempts; observation skipped")
 
 
 def _now():

@@ -116,6 +116,9 @@ Properties: atomic, confidence-weighted, domain-tagged, evidence-backed, scope-a
 | model | haiku (`NEVA_INSTINCT_MODEL`) |
 | timeout per batch | 120 s |
 
+Malformed analyzer settings, including invalid environment overrides, stop the run before
+model calls or state writes. The error names the config field or environment variable to repair.
+
 ### Same-day trigger
 
 A SessionEnd hook module (`sameday_trigger`, `plugins/neva-core/hooks/neva_hooks/learning_trigger.py`)

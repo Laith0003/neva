@@ -111,8 +111,7 @@ def _resolve_observations_root() -> Path:
 
 
 def _resolve_state_dir() -> tuple:
-    """(allowed root, instinct state dir). The root is the configured location and is trusted;
-    managed writes refuse any symlink below it."""
+    """(allowed root, instinct state dir). Managed writes refuse every symlink component."""
     override = _abs_env_path("NEVA_INSTINCT_STATE_DIR")
     if override:
         return override, override
@@ -309,6 +308,9 @@ def _yaml_quote(value: str) -> str:
 
 
 def _write_text_atomic(file_path: Path, content: str) -> None:
+    if file_path == PROMOTIONS_LEDGER:
+        learning_io.write_text_atomic(STATE_ROOT, file_path, content)
+        return
     file_path.parent.mkdir(parents=True, exist_ok=True)
     temp_fd, temp_name = tempfile.mkstemp(prefix=f".{file_path.name}.", suffix=".tmp",
                                           dir=file_path.parent, text=True)
@@ -482,12 +484,12 @@ def detect_project() -> dict:
 
 @contextmanager
 def _registry_lock():
-    REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    learning_io.ensure_dir(OBS_ROOT, REGISTRY_FILE.parent)
     lock_path = REGISTRY_FILE.parent / f".{REGISTRY_FILE.name}.lock"
     lock_fd = None
     try:
         if _HAS_FCNTL:
-            lock_fd = open(lock_path, "w")
+            lock_fd = learning_io.open_lock(OBS_ROOT, lock_path)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
         yield
     finally:
@@ -497,24 +499,12 @@ def _registry_lock():
 
 
 def _write_registry_unlocked(registry: dict) -> None:
-    tmp_file = REGISTRY_FILE.parent / f".{REGISTRY_FILE.name}.tmp.{os.getpid()}"
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(registry, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_file, REGISTRY_FILE)
+    learning_io.write_text_atomic(OBS_ROOT, REGISTRY_FILE, json.dumps(registry, indent=2) + "\n")
 
 
 def _update_registry(pid: str, pname: str, proot: str, premote: str) -> None:
     with _registry_lock():
-        try:
-            with open(REGISTRY_FILE, encoding="utf-8") as f:
-                registry = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            registry = {}
-        if not isinstance(registry, dict):
-            registry = {}
+        registry = learning_io.read_json_object(REGISTRY_FILE)
         now = _now_iso()
         existing = registry.get(pid, {})
         if not isinstance(existing, dict):
@@ -527,12 +517,7 @@ def _update_registry(pid: str, pname: str, proot: str, premote: str) -> None:
 
 
 def load_registry() -> dict:
-    try:
-        with open(REGISTRY_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return learning_io.read_json_object(REGISTRY_FILE)
 
 
 def _write_registry(registry: dict) -> None:
@@ -1534,12 +1519,7 @@ def _proposal_path(day: Optional[str] = None) -> Path:
 
 
 def _load_ledger() -> dict:
-    try:
-        with open(PROMOTIONS_LEDGER, encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return learning_io.read_json_object(PROMOTIONS_LEDGER)
 
 
 def _save_ledger(ledger: dict) -> None:
@@ -2349,7 +2329,7 @@ def main(argv: Optional[list] = None) -> int:
     _require_vault()
     try:
         return handler(args)
-    except learning_io.ManagedPathError as exc:
+    except (learning_io.ManagedPathError, learning_io.LearningDataError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

@@ -96,9 +96,8 @@ LOG_FILE = _state_root() / "instinct-analyze.log"
 
 
 def log(msg: str) -> None:
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
+    with learning_io.open_append(_state_root(), LOG_FILE) as f:
         f.write(line + "\n")
     print(line)
 
@@ -106,11 +105,24 @@ def log(msg: str) -> None:
 def load_config() -> dict:
     defaults = {"min_observations_to_analyze": 20, "max_analysis_lines": 500, "model": "haiku",
                 "timeout_seconds": 120, "max_turns": 0, "max_batches_per_run": 4}
-    try:
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("analyze", {})
-        defaults.update({k: v for k, v in data.items() if k in defaults})
-    except (OSError, json.JSONDecodeError):
-        pass
+    data = learning_io.read_json_object(CONFIG_FILE).get("analyze", {})
+    if not isinstance(data, dict):
+        raise learning_io.LearningDataError(
+            f"{CONFIG_FILE}: analyze must be a JSON object. Fix: repair analyze before retrying.")
+    def validate(key, value, location):
+        minimum = 0 if key == "max_turns" else 1
+        valid = (isinstance(value, str) and bool(value.strip())) if key == "model" else (
+            type(value) is int and value >= minimum)
+        if not valid:
+            required = "a nonempty string" if key == "model" else f"an integer >= {minimum}"
+            raise learning_io.LearningDataError(
+                f"{location} must be {required}. Fix: repair {location} before retrying; "
+                "nothing was written.")
+
+    for key in defaults:
+        if key in data:
+            validate(key, data[key], f"{CONFIG_FILE}: analyze.{key}")
+    defaults.update({k: v for k, v in data.items() if k in defaults})
     env_map = {"NEVA_INSTINCT_MIN_OBSERVATIONS": ("min_observations_to_analyze", int),
                "NEVA_INSTINCT_MAX_ANALYSIS_LINES": ("max_analysis_lines", int),
                "NEVA_INSTINCT_MODEL": ("model", str),
@@ -118,11 +130,15 @@ def load_config() -> dict:
                "NEVA_INSTINCT_MAX_TURNS": ("max_turns", int),
                "NEVA_INSTINCT_MAX_BATCHES": ("max_batches_per_run", int)}
     for env, (key, cast) in env_map.items():
-        if os.environ.get(env):
+        if env in os.environ:
             try:
-                defaults[key] = cast(os.environ[env])
+                value = cast(os.environ[env])
             except ValueError:
-                log(f"{env}={os.environ[env]!r} is not a valid {cast.__name__}; using {defaults[key]!r}")
+                raise learning_io.LearningDataError(
+                    f"{env} must be an integer. Fix: repair or unset {env} before retrying; "
+                    "nothing was written.") from None
+            validate(key, value, env)
+            defaults[key] = value
     return defaults
 
 
@@ -398,16 +414,18 @@ def archive_analyzed(obs_file: Path, chunk: bytes, archive: Path, root: Path) ->
         _discard(archived)
         raise
     try:
-        data = moving.read_bytes()
-        if not data.startswith(chunk):  # changed between the check and the rename
-            _discard(archived)
-            _restore(moving, root)
-            return False
-        tail = data[len(chunk):]
-        if tail:
-            with learning_io.open_append(root, obs_file, binary=True) as f:
-                f.write(tail)
-        moving.unlink()
+        with open(moving, "rb") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            data = f.read()
+            if not data.startswith(chunk):  # changed between the check and the rename
+                _discard(archived)
+                _restore(moving, root)
+                return False
+            tail = data[len(chunk):]
+            if tail:
+                with learning_io.open_append(root, obs_file, binary=True) as live:
+                    live.write(tail)
+            moving.unlink()
     except BaseException:
         _discard(archived)
         if moving.exists():
@@ -436,6 +454,13 @@ def main() -> int:
     parser.add_argument("--skip-analysis", action="store_true", help="Run apply, decay, prune, propose only")
     args = parser.parse_args()
 
+    try:
+        cfg = load_config()
+        registry = learning_io.read_json_object(_obs_root() / "projects.json")
+    except learning_io.LearningDataError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
     vault = vault_root()
     if vault is None or not vault.is_dir():
         log("NEVA_VAULT is not set to an existing absolute path and the identity file has no usable VAULT_PATH. "
@@ -457,7 +482,6 @@ def main() -> int:
             return 0
     _touch_lock(lock_fd)
 
-    cfg = load_config()
     log(f"start (model={cfg['model']}, min={cfg['min_observations_to_analyze']}, "
         f"max_lines={cfg['max_analysis_lines']}, dry_run={args.dry_run})")
 
@@ -471,10 +495,6 @@ def main() -> int:
                 "timer's PATH, or set NEVA_CLAUDE_BIN.")
         else:
             obs_root = _obs_root()
-            try:
-                registry = json.loads((obs_root / "projects.json").read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                registry = {}
             if obs_root.is_dir():
                 for obs_dir in sorted(p for p in obs_root.iterdir() if p.is_dir()):
                     if args.project and obs_dir.name != args.project:

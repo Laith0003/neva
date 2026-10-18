@@ -26,8 +26,10 @@ Env vars:
   NEVA_HEADLESS                any truthy value: no-op. dispatch.py already skips every hook
                                module when this is set; checked again here for direct callers.
 """
+import functools
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -54,17 +56,27 @@ _CHUNK = 1 << 16
 
 
 def _analyzer_min() -> int:
-    """The per-bucket minimum instinct-analyze.py applies, resolved the way its load_config
-    does: a valid NEVA_INSTINCT_MIN_OBSERVATIONS, else config.json, else 20."""
-    try:
-        return int(c.env("NEVA_INSTINCT_MIN_OBSERVATIONS").strip())
-    except ValueError:
-        pass
-    try:
-        with open(CL2_CONFIG, encoding="utf-8") as fh:
-            return int(json.load(fh)["analyze"]["min_observations_to_analyze"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return DEFAULT_ANALYZER_MIN
+    """The per-bucket minimum instinct-analyze.py applies, with its load_config rule: a set
+    NEVA_INSTINCT_MIN_OBSERVATIONS wins and must be an integer >= 1, else config.json's
+    analyze.min_observations_to_analyze must be a JSON integer >= 1, else 20. A value the
+    analyzer would reject (it exits 2) raises, so the trigger skips instead of launching it."""
+    name = "NEVA_INSTINCT_MIN_OBSERVATIONS"
+    data = _learning_io().read_json_object(CL2_CONFIG).get("analyze", {})
+    if not isinstance(data, dict):
+        raise ValueError(f"{CL2_CONFIG}: analyze must be a JSON object. Fix: repair analyze.")
+    value = data.get("min_observations_to_analyze", DEFAULT_ANALYZER_MIN)
+    if not (type(value) is int and value >= 1):
+        raise ValueError(f"{CL2_CONFIG}: analyze.min_observations_to_analyze must be an integer "
+                         ">= 1. Fix: repair this field before retrying.")
+    if name in os.environ:
+        try:
+            value = int(os.environ[name])
+        except ValueError:
+            value = 0
+        if value < 1:
+            raise ValueError(f"{name} must be an integer >= 1, got {os.environ[name]!r}. "
+                             f"Fix: set or unset {name}.")
+    return value
 
 
 def _count_lines(path: Path, stop_at: int) -> int:
@@ -101,12 +113,13 @@ def _enough_eligible_observations(minimum: int) -> bool:
     analyzer's own source discovery (learning_io.observation_sources), so rotated files in
     observations.pending count exactly as the analyzer reads them."""
     root = Path(c.observations_dir())
-    analyzer_min = max(1, _analyzer_min())
     total = 0
     try:
+        analyzer_min = max(1, _analyzer_min())
         sources_of = _learning_io().observation_sources
         pid_dirs = sorted(p for p in root.iterdir() if p.is_dir())
-    except Exception:  # learning_io missing or the root unreadable: never launch blind
+    except Exception as exc:  # unreadable config or store: never launch blind
+        c.log(f"[learning_trigger] same-day trigger skipped: {exc}")
         return False
     for pid_dir in pid_dirs:
         need = max(analyzer_min, minimum - total)
@@ -118,9 +131,11 @@ def _enough_eligible_observations(minimum: int) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=None)
 def _learning_io():
     """The analyzer's own learning_io module, loaded by path: it ships with the skill, not
-    with the hooks package, and its name must not collide with anything on sys.path."""
+    with the hooks package, and its name must not collide with anything on sys.path. Loaded
+    once per process: observe calls this on every tool call, several times per observation."""
     spec = importlib.util.spec_from_file_location("neva_learning_io", LEARNING_IO)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

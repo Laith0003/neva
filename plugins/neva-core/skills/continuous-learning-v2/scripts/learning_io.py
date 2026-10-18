@@ -3,14 +3,17 @@
 Every file the learning engine writes lives under one allowed root: the state root (event log,
 analyzer lock) or the observations root (temp batches, archives). A symlink inside that root
 would redirect those writes to a file the owner never meant to hand over, so every managed
-write goes through here. The root itself is trusted as configured; every component below it,
-the leaf included, must be a real directory or file, and leaves are opened with O_NOFOLLOW.
+write goes through here. The configured root is trusted input and used as its realpath, so a
+root under a symlinked parent (a dotfile-managed ~/.local, /home linked to /var/home, macOS
+/tmp and /var) works. Every component below it, the leaf included, must be a real directory or
+file, and leaves are opened with O_NOFOLLOW.
 
 Stdlib only. Imported by instinct-cli.py, instinct-analyze.py and neva_hooks/learning_trigger.py.
 """
 import errno
 import os
 import stat
+import tempfile
 from pathlib import Path
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -32,27 +35,38 @@ def _symlink_error(link: Path, root: Path) -> ManagedPathError:
 
 
 def check(root, path) -> Path:
-    """Raise ManagedPathError unless `path` is inside `root` with no symlink at or below root."""
-    root, path = Path(root), Path(path)
-    try:
-        rel = path.relative_to(root)
-    except ValueError:
-        raise ManagedPathError(f"refusing to write {path}: it is outside {root}. "
-                               f"Fix: keep learning data under {root}.") from None
-    if ".." in rel.parts:
+    """Return the real path of `path`, which must sit under `root`. The root is trusted after
+    realpath; a symlink in any component below it is refused."""
+    # expanduser only: callers read and write the literal path, so expanding $NAME here would
+    # move a write to where no reader looks.
+    root, path = (Path(os.path.expanduser(os.fspath(p))) for p in (root, path))
+    root = root if root.is_absolute() else Path.cwd() / root
+    path = path if path.is_absolute() else Path.cwd() / path
+    if ".." in root.parts or ".." in path.parts:
         raise ManagedPathError(f"refusing to write {path}: '..' leaves {root}. Fix: use a plain path.")
-    cur = root
+    real_root = Path(os.path.realpath(root))
+    # `path` may be spelled from the configured root or from its realpath (ensure_dir and
+    # check return real paths that callers then extend).
+    for base in (root, real_root):
+        try:
+            rel = path.relative_to(base)
+            break
+        except ValueError:
+            continue
+    else:
+        raise ManagedPathError(f"refusing to write {path}: it is outside {root}. "
+                               f"Fix: keep learning data under {root}.")
+    cur = real_root
     for part in rel.parts:
         cur = cur / part
         if cur.is_symlink():
             raise _symlink_error(cur, root)
-    return path
+    return cur
 
 
 def ensure_dir(root, path) -> Path:
-    """Create `path` (and the root) as real directories, refusing any symlink below the root."""
-    root, path = Path(root), Path(path)
-    check(root, path)
+    """Create `path` and its root, refusing symlinks in every path component."""
+    root, path = check(root, root), check(root, path)
     root.mkdir(parents=True, exist_ok=True)
     cur = root
     for part in path.relative_to(root).parts:
@@ -87,7 +101,7 @@ def observation_sources(obs_dir) -> list:
 
 
 def _open_leaf(root, path, flags: int, mode: int = 0o600) -> int:
-    root, path = Path(root), Path(path)
+    root, path = check(root, root), check(root, path)
     ensure_dir(root, path.parent)
     check(root, path)
     try:
@@ -114,3 +128,45 @@ def write_new(root, path, data: bytes) -> None:
     fd = _open_leaf(root, path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
+
+
+def write_text_atomic(root, path, content: str) -> None:
+    """Replace a managed text file, checking destination and temporary file paths."""
+    path = check(root, path)
+    ensure_dir(root, path.parent)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        check(root, temporary)
+        check(root, path)
+        os.replace(temporary, path)
+    finally:
+        check(root, temporary)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+class LearningDataError(Exception):
+    """A learning JSON file needs repair before processing can continue."""
+
+def read_json_object(path):
+    """Only an absent file is empty. Invalid JSON or a non-object is an error."""
+    import json
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LearningDataError(f"{path}: cannot read a JSON object: {exc}. "
+                                "Fix: repair this file before retrying; nothing was replaced.") from None
+    if not isinstance(data, dict):
+        raise LearningDataError(f"{path}: expected a JSON object. "
+                                "Fix: repair this file before retrying; nothing was replaced.")
+    return data

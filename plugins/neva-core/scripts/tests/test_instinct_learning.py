@@ -389,7 +389,7 @@ class LearningTriggerCase(unittest.TestCase):
                 "NEVA_INSTINCT_MIN_OBSERVATIONS")
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="neva-sameday-trigger-")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="neva-sameday-trigger-"))
         self.state_root = os.path.join(self.tmp, "state")
         self.obs_root = os.path.join(self.tmp, "observations")
         os.makedirs(self.state_root)
@@ -517,6 +517,49 @@ class LearningTriggerCase(unittest.TestCase):
         os.environ["NEVA_INSTINCT_MIN_OBSERVATIONS"] = "10"
         self.module.run(None)
         self.assertTrue(self._fired(), "with an analyzer minimum of 10 every bucket qualifies")
+
+    def _hooks_log(self):
+        path = Path(self.data_dir) / "hooks.log"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def test_invalid_analyzer_minimum_skips_like_the_analyzer(self):
+        """A value the analyzer rejects (it exits 2) must not launch it: the trigger skips and
+        logs the same rule instead of falling back to config.json."""
+        self._write_observations("p1", 250)
+        os.environ["NEVA_INSTINCT_SAMEDAY_MIN"] = "200"
+        os.environ["NEVA_INSTINCT_SAMEDAY_HOURS"] = "0"
+        analyzer = _load_module(ANALYZE, "analyzer_min_rule")
+        for value in ("", "abc", "0", "-3", "2.5"):
+            with self.subTest(value=value):
+                Path(self.marker).unlink(missing_ok=True)
+                os.environ["NEVA_INSTINCT_MIN_OBSERVATIONS"] = value
+                with self.assertRaises(analyzer.learning_io.LearningDataError):
+                    analyzer.load_config()
+                self.module.run(None)
+                self.assertFalse(self._fired(timeout=0.3), f"launched an analyzer that exits 2 on {value!r}")
+                self.assertIn("same-day trigger skipped: NEVA_INSTINCT_MIN_OBSERVATIONS", self._hooks_log())
+        os.environ["NEVA_INSTINCT_MIN_OBSERVATIONS"] = " 20 "
+        analyzer.load_config()
+        self.module.run(None)
+        self.assertTrue(self._fired(), "a value the analyzer accepts still launches it")
+
+    def test_invalid_config_minimum_skips_like_the_analyzer(self):
+        self._write_observations("p1", 250)
+        os.environ["NEVA_INSTINCT_SAMEDAY_MIN"] = "200"
+        os.environ["NEVA_INSTINCT_SAMEDAY_HOURS"] = "0"
+        config = Path(self.tmp) / "config.json"
+        analyzer = _load_module(ANALYZE, "analyzer_config_min_rule")
+        for value in ("5", 2.5, 0, True):
+            with self.subTest(value=value):
+                Path(self.marker).unlink(missing_ok=True)
+                config.write_text(json.dumps({"analyze": {"min_observations_to_analyze": value}}))
+                with mock.patch.object(analyzer, "CONFIG_FILE", config), \
+                     self.assertRaises(analyzer.learning_io.LearningDataError):
+                    analyzer.load_config()
+                with mock.patch.object(self.module, "CL2_CONFIG", config):
+                    self.module.run(None)
+                self.assertFalse(self._fired(timeout=0.3), f"launched an analyzer that exits 2 on {value!r}")
+                self.assertIn("min_observations_to_analyze", self._hooks_log())
 
     def _write_pending(self, pid, n, name="observations-20261001-000000-1.jsonl"):
         d = os.path.join(self.obs_root, pid, "observations.pending")
@@ -1083,6 +1126,64 @@ class AnalyzeBatchCase(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://example.com/v1")
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-token-no-real-secret")
         self.assertEqual(env["ANTHROPIC_API_KEY"], "")
+
+
+
+class InstalledLearningCase(unittest.TestCase):
+    """Run learning from the installer's real prefix, outside the checkout."""
+
+    def setUp(self):
+        AnalyzeBatchCase.setUp(self)
+        self.prefix = os.path.join(self.sb.home, ".local", "neva")
+        result = subprocess.run(
+            ["bash", "-c", '. "$1/lib/install-tools.sh" && neva_install_tools "$1" "$2" "$3"',
+             "install-tools", REPO, self.prefix, os.path.join(self.sb.home, ".local", "bin")],
+            env=self.sb.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.scripts = os.path.join(self.prefix, "plugins", "neva-core", "skills",
+                                    "continuous-learning-v2", "scripts")
+        self.assertTrue(os.path.isfile(os.path.join(self.scripts, "learning_io.py")))
+
+    PID = "p1"
+    tearDown = AnalyzeBatchCase.tearDown
+    write_obs = AnalyzeBatchCase.write_obs
+    calls = AnalyzeBatchCase.calls
+    archived = AnalyzeBatchCase.archived
+    pending = AnalyzeBatchCase.pending
+
+    def test_installed_stats_and_analyzer_with_default_off_trigger(self):
+        result = subprocess.run([PY, os.path.join(self.scripts, "instinct-cli.py"), "stats"],
+                                cwd=self.sb.home, env=self.sb.env, capture_output=True,
+                                text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PROPOSALS_MADE: 0", result.stdout)
+        self.assertIn("PROPOSALS_APPROVE_RATE: n/a", result.stdout)
+        self.write_obs(250)
+        env = dict(self.sb.env, NEVA_CLAUDE_BIN=self.fake, FAKE_LOG_DIR=self.log_dir)
+        dispatch = os.path.join(self.prefix, "plugins", "neva-core", "hooks", "dispatch.py")
+        result = subprocess.run([PY, dispatch, "SessionEnd"], cwd=self.sb.home, env=env,
+                                input=json.dumps({"cwd": self.sb.home, "session_id": "installed-test"}),
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("fired instinct-analyze", result.stdout + result.stderr)
+        self.assertEqual(self.calls(), [], "default-off installed hook spent model credit")
+        self.assertEqual(self.pending(), list(range(250)))
+        env.update(NEVA_INSTINCT_BASE_URL="https://example.com/v1",
+                   NEVA_INSTINCT_AUTH_TOKEN="test-token-no-real-secret",
+                   ANTHROPIC_API_KEY="sentinel-key-not-real")
+        result = subprocess.run([PY, os.path.join(self.scripts, "instinct-analyze.py"),
+                                 "--project", self.PID], cwd=self.sb.home, env=env,
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("start (model=", result.stdout)
+        calls = self.calls()
+        self.assertTrue(calls, result.stdout + result.stderr)
+        self.assertEqual(sorted(n for call in calls for n in call["lines"]), list(range(250)))
+        self.assertEqual(calls[0]["env"]["ANTHROPIC_BASE_URL"], "https://example.com/v1")
+        self.assertEqual(calls[0]["env"]["ANTHROPIC_AUTH_TOKEN"], "test-token-no-real-secret")
+        self.assertEqual(calls[0]["env"]["ANTHROPIC_API_KEY"], "")
+        self.assertEqual(self.archived(), list(range(250)))
+        self.assertEqual(self.pending(), [])
 
 
 if __name__ == "__main__":

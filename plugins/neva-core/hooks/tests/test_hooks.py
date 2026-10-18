@@ -101,11 +101,11 @@ class Sandbox:
                 keep[k] = str(v)
         return keep
 
-    def dispatch(self, event, payload, group=None, stdin=None, **env):
+    def dispatch(self, event, payload, group=None, stdin=None, timeout=60, **env):
         argv = [PY, os.path.join(self.hooks, "dispatch.py"), event] + ([group] if group else [])
         data = stdin if stdin is not None else json.dumps(payload)
         p = subprocess.run(argv, input=data, capture_output=True, text=True, env=self.env(**env), cwd=self.work,
-                           timeout=60)
+                           timeout=timeout)
         out = json.loads(p.stdout) if p.stdout.strip() else {}
         return Result(p.returncode, p.stdout, p.stderr, out)
 
@@ -497,6 +497,57 @@ class TestObserveAndMcp(HookTest):
         arch = os.path.join(os.path.dirname(live), "observations.archive")
         self.assertFalse(os.path.isdir(arch) and os.listdir(arch), "nothing is archived unread at rotation")
         self.assertEqual(len(self.s.obs_lines()), 1)
+
+    def test_held_observation_lock_skips_observe_and_keeps_the_guard_block(self):
+        """A stopped analyzer holding the observations lock must not hang PreToolUse: observe
+        gives up within its short deadline, logs one line, and no_verify still blocks."""
+        live = self.s.obs_file()
+        os.makedirs(os.path.dirname(live), exist_ok=True)
+        open(live, "a").close()
+        holder = subprocess.Popen(
+            [PY, "-c", "import fcntl, sys, time\n"
+                       "fh = open(sys.argv[1], 'a')\n"
+                       "fcntl.flock(fh.fileno(), fcntl.LOCK_EX)\n"
+                       "print('locked', flush=True)\n"
+                       "time.sleep(60)\n", live],
+            stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline().strip(), "locked")
+        cmd = 'git commit --no-verify -m "fix: x"'
+        start = time.monotonic()
+        try:
+            r = self.s.dispatch("PreToolUse", self.base(tool_name="Bash", tool_input={"command": cmd}), timeout=8)
+        except subprocess.TimeoutExpired:
+            self.fail("PreToolUse hung on the held observations lock; the no_verify block was lost")
+        elapsed = time.monotonic() - start
+        self.assertBlocked(r, "skips the repository's git hooks")
+        self.assertLess(elapsed, 3.0, f"PreToolUse took {elapsed:.2f}s with the lock held")
+        self.assertEqual(self.s.obs_lines(), [], "nothing is written while another process holds the lock")
+        log = self.s.read(os.path.join(self.s.data, "hooks.log"))
+        self.assertEqual(log.count("[observe]"), 1, log)
+        self.assertIn("observation skipped", log)
+        self.assertNotIn("Traceback", log)
+
+    def test_observe_records_when_the_data_dir_has_a_symlinked_parent(self):
+        """Dotfile managers symlink ~/.local and atomic desktops link /home to /var/home: the
+        configured data dir is trusted after realpath, so observation keeps working."""
+        real = os.path.join(self.s.tmp, "real-share")
+        os.makedirs(real)
+        linked = os.path.join(self.s.tmp, "linked-share")
+        os.symlink(real, linked)
+        data = os.path.join(linked, "neva")
+        for _ in range(3):
+            self.s.dispatch("PreToolUse", self.base(tool_name="Read", tool_input={}), NEVA_DATA_DIR=data)
+        live = os.path.join(real, "neva", "observations", self.s.pid, "observations.jsonl")
+        self.assertTrue(os.path.exists(live), "no observation was recorded")
+        with open(live, encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 3)
+        log = os.path.join(real, "neva", "hooks.log")
+        text = self.s.read(log) if os.path.exists(log) else ""
+        self.assertNotIn("Traceback", text)
+        self.assertNotIn("ManagedPathError", text)
 
     def test_observe_honors_observations_dir(self):
         alt = os.path.join(self.s.tmp, "obs-alt")

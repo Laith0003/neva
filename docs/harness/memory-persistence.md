@@ -13,7 +13,9 @@ What survives a session, where it lives, who writes it, and when it is deleted. 
 
 Raw tool traces never go into the vault, and only instincts can be exported.
 
-The learning engine's own writes (the promotion event log, the analyzer lock, temp batches, archives) refuse to pass through a symlink anywhere below their configured root and name the path to fix. If archiving fails part way, the batch goes back to `observations.pending/`: a line may be analysed twice, never lost.
+The learning engine's own writes (the promotion event log, the analyzer lock, temp batches, archives) refuse to pass through a symlink anywhere below their configured root and name the path to fix. The configured root itself is trusted and used as its real path, so a root under a symlinked parent works. If archiving fails part way, the batch goes back to `observations.pending/`: a line may be analysed twice, never lost.
+
+Malformed learning configuration, project registries and promotion ledgers stop processing with the filename and a repair instruction. Existing files are never treated as empty or replaced when parsing fails.
 
 ## Everything that persists
 
