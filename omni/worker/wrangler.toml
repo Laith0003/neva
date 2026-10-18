@@ -1,0 +1,37 @@
+name = "neva-omni"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+
+# Free Workers AI. router.js treats env.AI as the availability check for this provider.
+[ai]
+binding = "AI"
+
+# The brain pack, pushed by `neva omni push`. index.js reads env.BRAIN, so the binding name
+# is load-bearing. Create the namespace once and paste the id wrangler prints:
+#   wrangler kv namespace create BRAIN
+[[kv_namespaces]]
+binding = "BRAIN"
+id = "replace-with-the-id-from-wrangler-kv-namespace-create"
+
+# Threads and their turns. Create the database once, paste the id, then apply the migrations:
+#   wrangler d1 create neva-omni
+#   wrangler d1 migrations apply neva-omni --remote
+# With no DB bound the worker still answers, it just forgets when the isolate recycles.
+[[d1_databases]]
+binding = "DB"
+database_name = "neva-omni"
+database_id = "replace-with-the-id-from-wrangler-d1-create"
+migrations_dir = "migrations"
+
+# Secrets, never vars:
+#   wrangler secret put DEVICE_TOKEN    # the phone's token; auth.js refuses everything without it
+#   wrangler secret put GROQ_API_KEY
+#   wrangler secret put GEMINI_API_KEY
+# A provider with no key is skipped by the router, so the worker still serves on the rest.
+
+[vars]
+# Spend caps in whole units, per provider id, uppercased with - as _.
+# Every paid provider needs one: fallback.js refuses a paid model whose cap is 0.
+# The free providers above need none.

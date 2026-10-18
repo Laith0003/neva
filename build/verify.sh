@@ -1266,6 +1266,53 @@ else
   bad "cockpit web loopback bind" "127.0.0.1 did not bind (a sandbox that denies sockets cannot certify the web view): $(printf '%s' "$LOOP_OUT" | tr '\n' ' ' | head -c 300)"
 fi
 
+head_ "29. omni worker and sync tool suites pass"
+GATE_FULL="$(PYTHONDONTWRITEBYTECODE=1 python3 "$REPO/build/test_suite_gate.py" 2>&1)"
+GATE_RC=$?
+if printf '%s' "$GATE_FULL" | python3 "$REPO/build/suite_gate.py" python "$GATE_RC"; then
+  ok "suite gate negative controls reject empty, failing and nonzero-exit summaries"
+else
+  bad "suite gate controls" "$GATE_FULL"
+fi
+# The real installer above populated this prefix with scheduling disabled.
+# Stock macOS Python is the documented minimum; use it explicitly when available.
+CLI_PYTHON="$(command -v python3)"
+[ ! -x /usr/bin/python3 ] || CLI_PYTHON=/usr/bin/python3
+for CLI_ARGS in "--help" "brainpack --help" "omni --help" "version --help" "version"; do
+  CLI_FULL="$(PYTHONDONTWRITEBYTECODE=1 "$CLI_PYTHON" "$HOME/.local/neva/bin/neva" $CLI_ARGS 2>&1)"
+  CLI_RC=$?
+  if [ "$CLI_RC" -eq 0 ] && [ -n "$CLI_FULL" ]; then
+    ok "installed CLI $CLI_ARGS runs on $CLI_PYTHON"
+  else
+    bad "installed CLI $CLI_ARGS" "exit $CLI_RC: $CLI_FULL"
+  fi
+done
+
+# node --test test/ resolves the directory as a module and dies with MODULE_NOT_FOUND on this
+# Node version (see 394eda6); test/*.test.js is the form package.json's own "test" script uses.
+if command -v node >/dev/null 2>&1; then
+  OMNI_NODE_FULL="$(cd "$REPO/omni/worker" && node --test test/*.test.js 2>&1)"
+  OMNI_NODE_RC=$?
+  OMNI_NODE_OUT="$(printf '%s\n' "$OMNI_NODE_FULL" | tail -15)"
+  if printf '%s' "$OMNI_NODE_FULL" | python3 "$REPO/build/suite_gate.py" node "$OMNI_NODE_RC"; then
+    ok "omni worker test suite: $(printf '%s' "$OMNI_NODE_FULL" | grep -o 'ℹ pass [0-9]*')"
+  else
+    bad "omni worker test suite" "$(printf '%s' "$OMNI_NODE_OUT" | tr '\n' ' ')"
+  fi
+else
+  skip_ "omni worker test suite" "node not on PATH"
+fi
+
+OMNI_PY_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s lib/neva_omni/tests 2>&1)"
+OMNI_PY_RC=$?
+OMNI_PY_OUT="$(printf '%s\n' "$OMNI_PY_FULL" | tail -3)"
+if printf '%s' "$OMNI_PY_FULL" | python3 "$REPO/build/suite_gate.py" python "$OMNI_PY_RC"; then
+  ok "omni sync suite: $(printf '%s' "$OMNI_PY_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "omni sync suite" "$(printf '%s' "$OMNI_PY_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$OMNI_PY_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
+fi
+
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then
