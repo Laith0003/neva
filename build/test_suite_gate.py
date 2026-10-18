@@ -24,7 +24,7 @@ class SuiteGateTests(unittest.TestCase):
             self.assertIn("refused", result.stderr)
 
     def test_real_empty_and_failing_suites(self):
-        parent = Path("/private/tmp").resolve()
+        parent = Path(tempfile.gettempdir()).resolve()  # /private/tmp on macOS, /tmp on Linux
         with tempfile.TemporaryDirectory(prefix="neva-gate-", dir=str(parent)) as name:
             directory = Path(name)
             self.assertTrue(directory.resolve().is_relative_to(parent))
