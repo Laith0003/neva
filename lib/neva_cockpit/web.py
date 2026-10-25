@@ -14,6 +14,8 @@ import json
 import secrets
 import urllib.parse
 
+from .formatting import context_label, format_cost, format_time, risk_summary
+
 ALLOWED_HOST = "127.0.0.1"
 
 PAGE_HEAD = """<!doctype html>
@@ -22,12 +24,23 @@ PAGE_HEAD = """<!doctype html>
 <meta charset="utf-8">
 <title>Neva cockpit</title>
 <style>
-body { font-family: ui-monospace, monospace; margin: 2rem; background: #0b0d12; color: #e6e8ee; }
-table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
-th, td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid #2a2e3a; }
-th { color: #9aa4b2; font-weight: 600; }
-h2 { font-size: 1rem; color: #9aa4b2; }
-.fail { color: #e2795e; }
+:root { color-scheme: light dark; --bg: #ffffff; --fg: #1b1f27; --muted: #5b6573;
+  --line: #d9dde4; --head: #f3f5f8; --fail: #b4361b; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0b0d12; --fg: #e6e8ee; --muted: #9aa4b2; --line: #2a2e3a; --head: #141821;
+    --fail: #e2795e; }
+}
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 2rem;
+  background: var(--bg); color: var(--fg); line-height: 1.45; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 2.5rem; }
+th, td { text-align: left; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); }
+thead th { position: sticky; top: 0; background: var(--head); color: var(--muted);
+  font-weight: 600; z-index: 1; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+h2 { font-size: 1rem; color: var(--muted); }
+.fail { color: var(--fail); }
+td.risk { white-space: normal; overflow-wrap: normal; word-break: normal; max-width: 22rem; }
 </style>
 </head>
 <body>
@@ -36,36 +49,19 @@ h2 { font-size: 1rem; color: #9aa4b2; }
 """
 
 PAGE_SCRIPT = """<script>
-function fill(id, rows) {
-  const body = document.querySelector("#" + id + " tbody");
-  body.innerHTML = "";
-  for (const r of rows) {
-    const row = document.createElement("tr");
-    for (const value of r.cells) {
-      const cell = document.createElement("td");
-      cell.textContent = value == null ? "" : value;
-      if (r.fail) cell.className = "fail";
-      row.appendChild(cell);
-    }
-    body.appendChild(row);
-  }
-}
-function render(data) {
-  fill("sessions", (data.sessions || []).map(s => ({cells: [s.harness, s.project, s.branch,
-    s.started_at, s.last_activity, (s.cost_usd || 0).toFixed(2), (s.context_pct || 0) + "%",
-    (s.risk_flags || []).join(", ")]})));
-  fill("hook-errors", (data.hook_errors || []).map(n => ({cells: [n.seen_at, n.detail]})));
-  fill("health", (data.health_rows || []).map(h => ({fail: !h.ok,
-    cells: [h.name, h.ok ? "OK" : "FAIL", h.detail]})));
-}
+// The server renders and escapes every table; a refresh swaps in the tables of a fresh page
+// instead of formatting values a second time here.
 const REFRESH_MS = 5000;
 async function refresh() {
   const status = document.querySelector("#status");
   try {
-    const base = window.location.pathname.replace(/\\/$/, "");
-    const res = await fetch(base + "/api/snapshot");
-    if (!res.ok) throw new Error("snapshot returned HTTP " + res.status);
-    render(await res.json());
+    const res = await fetch(window.location.pathname, {cache: "no-store"});
+    if (!res.ok) throw new Error("page returned HTTP " + res.status);
+    const fresh = new DOMParser().parseFromString(await res.text(), "text/html");
+    for (const id of ["sessions", "hook-errors", "health"]) {
+      const next = fresh.getElementById(id);
+      if (next) document.getElementById(id).replaceWith(next);
+    }
     status.textContent = "updated " + new Date().toLocaleTimeString();
   } catch (error) {
     status.textContent = "refresh failed: " + error.message +
@@ -82,28 +78,49 @@ SESSION_HEADERS = ("harness", "project", "branch", "started", "last activity", "
                    "context %", "risk flags")
 
 
+NUMERIC_HEADERS = ("cost",)
+
+
+def _cell(cell):
+    """A cell is a plain value, or (text, title, class) for a tooltip or a CSS class."""
+    text, title, cls = (cell if isinstance(cell, tuple) else (cell, "", ""))
+    attrs = (f' title="{html.escape(str(title), quote=True).replace(chr(10), "&#10;")}"' if title else "") \
+        + (f' class="{html.escape(cls, quote=True)}"' if cls else "")
+    return f"<td{attrs}>{html.escape(str(text))}</td>"
+
+
 def _table(table_id, headers, rows):
     """rows: [(cells, failed)]. Every value is escaped; the page carries no markup from data."""
-    head = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    head = "".join(f'<th class="num">{html.escape(h)}</th>' if h in NUMERIC_HEADERS
+                   else f"<th>{html.escape(h)}</th>" for h in headers)
     body = []
     for cells, failed in rows:
         cls = ' class="fail"' if failed else ""
-        body.append("<tr>" + "".join(f"<td{cls}>{html.escape(str(c))}</td>" for c in cells)
-                    + "</tr>")
+        body.append(f"<tr{cls}>" + "".join(_cell(c) for c in cells) + "</tr>")
     return (f'<table id="{table_id}"><thead><tr>{head}</tr></thead>'
             f'<tbody>{"".join(body)}</tbody></table>\n')
 
 
-def render_page(snap):
+def _time_cell(value, now, tz):
+    return (format_time(value, now=now, tz=tz), value or "", "")
+
+
+def _risk_cell(flags):
+    text, full = risk_summary(flags)
+    return (text, full, "risk")
+
+
+def render_page(snap, now=None, tz=None):
     """The whole page with the current snapshot already in it, so it reads correctly before
-    (or without) any script running; the script only refreshes the same three tables."""
+    (or without) any script running; the script only swaps in a freshly rendered copy."""
     snap = snap if isinstance(snap, dict) else {}
-    sessions = [([s.get("harness", ""), s.get("project", ""), s.get("branch", ""),
-                  s.get("started_at", ""), s.get("last_activity", ""),
-                  f"{float(s.get('cost_usd') or 0):.2f}", f"{s.get('context_pct') or 0}%",
-                  ", ".join(s.get("risk_flags") or [])], False)
+    sessions = [([s.get("harness", ""), s.get("project", ""), (s.get("branch", ""), "", "mono"),
+                  _time_cell(s.get("started_at"), now, tz),
+                  _time_cell(s.get("last_activity"), now, tz),
+                  (format_cost(s.get("cost_usd")), "", "num"), context_label(s.get("context_pct")),
+                  _risk_cell(s.get("risk_flags"))], False)
                 for s in snap.get("sessions") or []]
-    errors = [([n.get("seen_at", ""), n.get("detail", "")], False)
+    errors = [([_time_cell(n.get("seen_at"), now, tz), (n.get("detail", ""), "", "mono")], False)
               for n in snap.get("hook_errors") or []]
     health_rows = [([h.get("name", ""), "OK" if h.get("ok") else "FAIL", h.get("detail", "")],
                     not h.get("ok")) for h in snap.get("health_rows") or []]

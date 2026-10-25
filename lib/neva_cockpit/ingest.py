@@ -32,7 +32,20 @@ import re
 from . import hooks_common
 from .store import Store
 
-CONTEXT_WINDOW_TOKENS = 200_000  # Claude's context window; used only to render a percentage
+CONTEXT_WINDOW_TOKENS = 200_000  # Claude's default context window; used only to render a percentage
+LONG_CONTEXT_WINDOW_TOKENS = 1_000_000  # models whose id carries the [1m] marker
+
+
+def context_pct(tokens, model):
+    """Percent of the model's window the latest turn filled, or None when unknown: no tokens,
+    an unrecognised model, or more tokens than the assumed window (the window is wrong, so
+    the number would be too). Never clamped."""
+    if not tokens or not model.startswith("claude"):
+        return None
+    window = LONG_CONTEXT_WINDOW_TOKENS if "[1m]" in model else CONTEXT_WINDOW_TOKENS
+    if tokens > window:
+        return None
+    return round(tokens / window * 100, 1)
 HEAD_BYTES = 4096  # enough for a session summary's header block
 # Codex writes the whole system prompt (base_instructions) into the session_meta line: 18 KB to
 # 42 KB on a real machine in 2026-10. The cap only stops a runaway line from being read whole.
@@ -203,13 +216,14 @@ def _apply_cost_row(store, row):
         update["project"] = project
     if timestamp:
         update["last_activity"] = timestamp
+        update["event_at"] = timestamp
     if cost is not None:
         update["cost_usd"] = cost
     transcript_path = _string_field(row, "transcript_path")
     if transcript_path and os.path.isfile(transcript_path):
-        tokens, _model = hooks_common.context_tokens(transcript_path, tail_bytes=TAIL_BYTES)
-        if tokens:
-            update["context_pct"] = round(min(100.0, tokens / CONTEXT_WINDOW_TOKENS * 100), 1)
+        tokens, model = hooks_common.context_tokens(transcript_path, tail_bytes=TAIL_BYTES)
+        if tokens:  # a row with no usage must not blank what an earlier row measured
+            update["context_pct"] = context_pct(tokens, model)
     store.upsert_session(update)
     return True
 
@@ -256,7 +270,8 @@ def _apply_observation(store, row):
             flags.append("bash-input-truncated")  # never silently clean: the tail was unseen
     project = _string_field(row, "project_name")
     if project:
-        store.upsert_session({"id": session_id, "harness": "claude", "project": project})
+        store.upsert_session({"id": session_id, "harness": "claude", "project": project,
+                              "event_at": _string_field(row, "timestamp")})
     if flags:
         store.add_risk_flags(session_id, flags)
     elif not project:

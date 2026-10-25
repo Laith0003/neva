@@ -755,3 +755,91 @@ class IngestAllTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def usage_line(total, model="claude-sonnet-5-5"):
+    return json.dumps({"type": "assistant", "message": {
+        "model": model, "usage": {"input_tokens": 10, "cache_read_input_tokens": total - 20,
+                                  "cache_creation_input_tokens": 10, "output_tokens": 500}}})
+
+
+class ContextPctTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(":memory:")
+        self.costs = os.path.join(self.tmp.name, "costs.jsonl")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def ingest(self, lines):
+        transcript = os.path.join(self.tmp.name, "t.jsonl")
+        write(transcript, "\n".join(lines) + "\n")
+        write(self.costs, json.dumps({"session_id": "s1", "estimated_cost_usd": 1.0,
+                                      "transcript_path": transcript}) + "\n")
+        ingest.ingest_costs(self.store, self.costs)
+        return self.store.conn.execute("SELECT context_pct FROM sessions WHERE id='s1'").fetchone()[0]
+
+    def test_only_the_latest_turn_counts(self):
+        pct = self.ingest([usage_line(150_000), usage_line(90_000), usage_line(60_000),
+                           json.dumps({"type": "user", "message": {"content": "hi"}}),
+                           usage_line(30_000)])
+        self.assertAlmostEqual(pct, 15.0, delta=0.5)
+
+    def test_usage_above_the_window_is_unknown_not_clamped(self):
+        self.assertIsNone(self.ingest([usage_line(350_000)]))
+
+    def test_unknown_model_is_unknown(self):
+        self.assertIsNone(self.ingest([usage_line(30_000, model="")]))
+
+    def test_no_usage_is_unknown(self):
+        self.assertIsNone(self.ingest([json.dumps({"type": "user"})]))
+
+    def test_one_million_window_model(self):
+        pct = self.ingest([usage_line(300_000, model="claude-opus-5-5[1m]")])
+        self.assertAlmostEqual(pct, 30.0, delta=0.5)
+
+
+class StoreNullableContextTests(unittest.TestCase):
+    def test_migration_makes_existing_column_nullable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.db")
+            store = Store(path)
+            store.upsert_session({"id": "a", "context_pct": 40.0})
+            store.close()
+            store = Store(path)
+            store.upsert_session({"id": "b"})
+            rows = {r["id"]: r["context_pct"] for r in store.conn.execute("SELECT * FROM sessions")}
+            store.close()
+        self.assertEqual(rows["a"], 40.0)
+        self.assertIsNone(rows["b"])
+
+
+class StartedFromEarliestEventTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(":memory:")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_blank_started_is_filled_from_the_earliest_event(self):
+        path = os.path.join(self.tmp.name, "observations.jsonl")
+        rows = [{"timestamp": "2026-10-05T10:30:00Z", "event": "tool_start", "tool": "Read",
+                 "session": "s1", "project_name": "neva"},
+                {"timestamp": "2026-10-05T09:15:00Z", "event": "tool_start", "tool": "Read",
+                 "session": "s1", "project_name": "neva"}]
+        write(path, "\n".join(json.dumps(r) for r in rows) + "\n")
+        ingest.ingest_observations(self.store, path)
+        self.assertEqual(self.store.sessions()[0]["started_at"], "2026-10-05T09:15:00Z")
+
+    def test_a_recorded_started_wins_over_events(self):
+        self.store.upsert_session({"id": "s1", "started_at": "2026-10-05T08:00:00Z"})
+        self.store.upsert_session({"id": "s1", "event_at": "2026-10-05T09:15:00Z"})
+        self.assertEqual(self.store.sessions()[0]["started_at"], "2026-10-05T08:00:00Z")
+
+    def test_no_events_and_no_started_stays_blank(self):
+        self.store.upsert_session({"id": "s1"})
+        self.assertEqual(self.store.sessions()[0]["started_at"], "")

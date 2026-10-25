@@ -8,6 +8,7 @@ import curses
 import sys
 
 from . import snapshot
+from .formatting import context_label, format_time
 from .store import Store
 
 MIN_COLS = 80
@@ -31,7 +32,7 @@ def _draw(stdscr, snap, width, height):
     _safe_addstr(stdscr, row, 0, "Neva cockpit"[:width - 1], curses.A_BOLD)
     row += 2
     header = (f"{'HARNESS':<8} {'PROJECT':<14} {'BRANCH':<14} {'STARTED':<16} "
-              f"{'LAST ACTIVITY':<16} {'COST':>8} {'CTX%':>6}  RISK")
+              f"{'LAST ACTIVITY':<16} {'COST':>8} {'CTX%':>7}  RISK")
     _safe_addstr(stdscr, row, 0, header[:width - 1], curses.A_UNDERLINE)
     row += 1
     # bottom panels: hook errors (title + lines), health (title + rows), the quit hint
@@ -41,9 +42,9 @@ def _draw(stdscr, snap, width, height):
             break
         risk = ",".join(s.get("risk_flags") or [])
         line = (f"{str(s.get('harness', ''))[:8]:<8} {str(s.get('project', ''))[:14]:<14} "
-                f"{str(s.get('branch', ''))[:14]:<14} {str(s.get('started_at', ''))[:16]:<16} "
-                f"{str(s.get('last_activity', ''))[:16]:<16} {float(s.get('cost_usd') or 0):>8.2f} "
-                f"{float(s.get('context_pct') or 0):>5.1f}%  {risk}")
+                f"{str(s.get('branch', ''))[:14]:<14} {format_time(s.get('started_at'))[:16]:<16} "
+                f"{format_time(s.get('last_activity'))[:16]:<16} {float(s.get('cost_usd') or 0):>8.2f} "
+                f"{context_label(s.get('context_pct')):>7}  {risk}")
         _safe_addstr(stdscr, row, 0, line[:width - 1], curses.A_BOLD if risk else curses.A_NORMAL)
         row += 1
     if not sessions:

@@ -49,10 +49,37 @@ MIGRATIONS = [
     (4, """
         ALTER TABLE sessions ADD COLUMN last_activity_at REAL;
     """),
+    # context_pct becomes nullable: NULL means unknown. Old rows hold 0 (the coercion of an
+    # unknown) or 100 (the clamp of an overflow); neither was ever a measurement.
+    (5, """
+        CREATE TABLE sessions_new (
+            id TEXT PRIMARY KEY,
+            harness TEXT NOT NULL DEFAULT '',
+            project TEXT NOT NULL DEFAULT '',
+            branch TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            last_activity TEXT NOT NULL DEFAULT '',
+            cost_usd REAL NOT NULL DEFAULT 0,
+            context_pct REAL,
+            risk_flags TEXT NOT NULL DEFAULT '[]',
+            last_activity_at REAL
+        );
+        INSERT INTO sessions_new (id, harness, project, branch, started_at, last_activity,
+                                  cost_usd, context_pct, risk_flags, last_activity_at)
+            SELECT id, harness, project, branch, started_at, last_activity, cost_usd,
+                   CASE WHEN context_pct <= 0 OR context_pct >= 100 THEN NULL
+                        ELSE context_pct END,
+                   risk_flags, last_activity_at FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+    """),
+    (6, """
+        ALTER TABLE sessions ADD COLUMN first_event_at TEXT NOT NULL DEFAULT '';
+    """),
 ]
 
 _SESSION_COLUMNS = ("id", "harness", "project", "branch", "started_at", "last_activity",
-                    "cost_usd", "context_pct", "risk_flags", "last_activity_at")
+                    "cost_usd", "context_pct", "risk_flags", "last_activity_at", "first_event_at")
 
 
 def normalize_timestamp(value):
@@ -165,7 +192,8 @@ class Store:
         except (TypeError, ValueError):
             base["risk_flags"] = []
         for key in _SESSION_COLUMNS:
-            if key in ("id", "last_activity", "last_activity_at") or key not in session:
+            if key in ("id", "last_activity", "last_activity_at", "first_event_at") \
+                    or key not in session:
                 continue
             base[key] = session[key]
         if "last_activity" in session:
@@ -184,6 +212,13 @@ class Store:
                              or (new_at is None and cur_at is None and incoming > current)):
                 base["last_activity"] = incoming
         base["last_activity_at"] = parse_instant(base.get("last_activity"))
+        if session.get("event_at"):
+            # The earliest event any source reported; it stands in for a blank started_at.
+            event = normalize_timestamp(session["event_at"])
+            current = normalize_timestamp(base.get("first_event_at"))
+            new_at, cur_at = parse_instant(event), parse_instant(current) if current else None
+            if new_at is not None and (cur_at is None or new_at < cur_at):
+                base["first_event_at"] = event
         values = {
             "id": sid,
             "harness": base.get("harness") or "",
@@ -192,9 +227,11 @@ class Store:
             "started_at": base.get("started_at") or "",
             "last_activity": base.get("last_activity") or "",
             "cost_usd": float(base.get("cost_usd") or 0),
-            "context_pct": float(base.get("context_pct") or 0),
+            "context_pct": (None if base.get("context_pct") is None
+                            else float(base["context_pct"])),
             "risk_flags": json.dumps(list(base.get("risk_flags") or [])),
             "last_activity_at": base.get("last_activity_at"),
+            "first_event_at": base.get("first_event_at") or "",
         }
         columns = ", ".join(_SESSION_COLUMNS)
         placeholders = ", ".join(f":{c}" for c in _SESSION_COLUMNS)
@@ -231,6 +268,8 @@ class Store:
         out = []
         for row in rows:
             d = dict(row)
+            d["started_at"] = d["started_at"] or d.pop("first_event_at")
+            d.pop("first_event_at", None)
             try:
                 d["risk_flags"] = json.loads(d["risk_flags"])
             except (TypeError, ValueError):
