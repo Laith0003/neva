@@ -93,19 +93,30 @@ def _sections(lines, start=""):
 
 
 def _section_at(text, needle, anchor=""):
-    """Section in force where needle sits in text. A patch hunk's @@ anchor narrows the search
-    to the text after that line; a hunk that only adds lines sits right after its anchor."""
-    start = text.find(anchor) if anchor else -1
-    if needle:
-        i = text.find(needle, max(start, 0))
-        if i < 0 and start > 0:
-            i = text.find(needle)
-    elif start >= 0:
-        end = text.find("\n", start)
-        i = len(text) if end < 0 else end + 1
-    else:
-        i = -1
-    return _sections(text[:i].splitlines())[-1] if i > 0 and text[:i].splitlines() else ""
+    """Locate a hunk using the patch tool's exact, rstrip, then strip matching order.
+    Unlocatable hunks are conservatively judged as lint settings in mixed configs."""
+    lines = text.splitlines()
+    sections = _sections(lines)
+    if not needle:
+        last = sections[-1] if sections else ""
+        anchored = _section_at(text, anchor) if anchor else last
+        return anchored if LINT_SECTION.match(anchored) else last
+    wanted = needle.splitlines()
+    start = 0
+    if anchor:
+        for index, line in enumerate(lines):
+            if line == anchor:
+                start = index
+                break
+    for transform in (lambda line: line, str.rstrip, str.strip):
+        target = [transform(line) for line in wanted]
+        positions = list(range(start, len(lines) - len(wanted) + 1))
+        if start:
+            positions += list(range(0, min(start, len(lines) - len(wanted) + 1)))
+        for index in positions:
+            if [transform(line) for line in lines[index:index + len(wanted)]] == target:
+                return sections[index] if sections else ""
+    return "tool.ruff"  # Unknown placement must not exempt a lint loosening.
 
 
 def _changes(ctx, fp):
@@ -113,7 +124,9 @@ def _changes(ctx, fp):
     ti = ctx.tool_input
     current = c.read_text(fp)
     pairs = []
-    hunks = ti.get("neva_hunks")
+    edits = ctx.data.get("neva_patch_edits", {}) if ctx.data.get("neva_source_tool") == "apply_patch" else {}
+    edit = edits.get(fp, {}) if isinstance(edits, dict) else {}
+    hunks = edit.get("neva_hunks") if isinstance(edit, dict) else None
     if ctx.tool_name in ("Edit", "MultiEdit") and isinstance(hunks, list) and hunks:
         # A native patch: each @@ hunk is judged on its own, like one MultiEdit entry.
         for h in hunks:

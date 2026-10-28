@@ -259,10 +259,18 @@ def _normalize_patch(normalized, original, tool, cwd):
 def normalize_payload(event, data, harness=""):
     """Return (canonical_event, claude_shaped_data, harness_name).
 
-    Unknown keys are carried through untouched so a harness-specific module could still
-    read them, and so a future field does not need a change here to survive the trip.
+    Unknown keys survive except reserved neva_* metadata, which only normalization may set.
     """
-    original = data if isinstance(data, dict) else {}
+    def clean_input(value):
+        if isinstance(value, dict):
+            return {k: clean_input(v) for k, v in value.items() if not k.startswith("neva_")}
+        if isinstance(value, list):
+            return [clean_input(v) for v in value]
+        return value
+
+    original = {k: v for k, v in data.items() if not k.startswith("neva_")} if isinstance(data, dict) else {}
+    if isinstance(original.get("tool_input"), dict):
+        original["tool_input"] = clean_input(original["tool_input"])
     active = detect_harness(original, harness)
     if active == "claude":
         if original.get("neva_harness") != "claude":
@@ -289,7 +297,7 @@ def normalize_payload(event, data, harness=""):
         if isinstance(candidate, dict):
             tool_input = candidate
             break
-    normalized["tool_input"] = dict(tool_input) if isinstance(tool_input, dict) else {}
+    normalized["tool_input"] = clean_input(tool_input) if isinstance(tool_input, dict) else {}
     # OpenCode's read, write and edit tools name the path filePath. The write guards read
     # file_path, so without this every protected-path check passes on that harness.
     file_path = normalized["tool_input"].get("filePath")
@@ -681,8 +689,18 @@ def update_registry(info):
     fd = None
     try:
         if fcntl:
-            fd = open(lock_p, "w")
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            from .learning_trigger import _learning_io
+            fd = _learning_io().open_lock(obs, lock_p)
+            deadline = time.monotonic() + 0.2
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        log("[registry] project registry locked for over 0.2s; refresh skipped")
+                        return
+                    time.sleep(0.01)
         reg = read_json(reg_p, {}) or {}
         if not isinstance(reg, dict):
             reg = {}
@@ -696,7 +714,10 @@ def update_registry(info):
         log_exception("update_registry")
     finally:
         if fd is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
             fd.close()
 
 
@@ -1170,7 +1191,8 @@ class Ctx:
         self.tool_name = str(self.data.get("tool_name") or "")
         ti = self.data.get("tool_input")
         self.tool_input = ti if isinstance(ti, dict) else {}
-        patch_edits = self.data.get("neva_patch_edits") or {}
+        patch_edits = (self.data.get("neva_patch_edits") or {}) if self.data.get(
+            "neva_source_tool") == "apply_patch" else {}
         patch_edit = patch_edits.get(self.tool_input.get("file_path"))
         if isinstance(patch_edit, dict):
             self.tool_input = dict(self.tool_input, **patch_edit)

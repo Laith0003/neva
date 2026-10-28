@@ -11,6 +11,7 @@
  * (see sessions.js).
  */
 
+const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const http = require('http');
@@ -127,6 +128,7 @@ function createPlanCanvasServer({
 } = {}) {
   if (!store) throw new Error('createPlanCanvasServer requires a session store');
 
+  const token = crypto.randomBytes(32).toString('hex');
   const allowedHostnames = buildAllowedHostnames(host);
   const wake = new EventEmitter();
   wake.setMaxListeners(0);
@@ -304,7 +306,7 @@ function createPlanCanvasServer({
         status: 'open',
         key: session.key,
         file: session.file,
-        url: `/canvas/${session.key}`
+        url: `/canvas/${session.key}?token=${token}`
       });
     }
 
@@ -514,8 +516,13 @@ function createPlanCanvasServer({
 
     // Sibling assets resolve relative to the artifact's directory and must
     // stay confined to it.
-    const baseDir = path.dirname(session.file);
-    const resolved = path.resolve(baseDir, assetPath);
+    let baseDir, resolved;
+    try {
+      baseDir = fs.realpathSync(path.dirname(session.file));
+      resolved = fs.realpathSync(path.resolve(baseDir, assetPath));
+    } catch {
+      return sendJson(res, 404, { error: 'asset not found' });
+    }
     if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) {
       return sendJson(res, 403, { error: 'asset path escapes artifact directory' });
     }
@@ -539,6 +546,16 @@ function createPlanCanvasServer({
     }
     const url = new URL(req.url, `http://${req.headers.host}`);
     const { pathname } = url;
+    const supplied = req.headers['x-neva-token'] ||
+      String(req.headers.cookie || '').split(';').map(v => v.trim()).find(v => v.startsWith('neva_canvas='))?.slice(12);
+    const authenticated = supplied === token;
+    if (pathname.startsWith('/canvas/') && url.searchParams.get('token') === token) {
+      res.writeHead(302, { location: pathname, 'set-cookie': `neva_canvas=${token}; HttpOnly; SameSite=Strict; Path=/`, 'cache-control': 'no-store' });
+      return res.end();
+    }
+    if ((pathname === '/' || pathname === '/shutdown' || /^\/(api|artifact|events|canvas)(\/|$)/.test(pathname)) && !authenticated) {
+      return sendJson(res, 403, { error: 'canvas token required' });
+    }
 
     Promise.resolve()
       .then(() => {
@@ -622,7 +639,7 @@ function createPlanCanvasServer({
     });
   }
 
-  return { server, listen, close, presenceFor, sweepPresence, watchSession };
+  return { token, server, listen, close, presenceFor, sweepPresence, watchSession };
 }
 
 module.exports = {

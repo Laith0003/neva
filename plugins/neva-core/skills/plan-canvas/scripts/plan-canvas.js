@@ -79,7 +79,20 @@ function valueAfter(args, name) {
   return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
 }
 
+function checkedStatePath(stateDir) {
+  const absolute = path.resolve(stateDir);
+  let cursor = path.parse(absolute).root;
+  for (const component of absolute.slice(cursor.length).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, component);
+    if (fs.existsSync(cursor) && fs.lstatSync(cursor).isSymbolicLink()) {
+      throw new Error(`plan-canvas state path contains symlink: ${cursor}; use a real directory`);
+    }
+  }
+  return absolute;
+}
+
 function serverInfoPath(stateDir) {
+  checkedStatePath(stateDir);
   return path.join(stateDir, 'server.json');
 }
 
@@ -113,18 +126,18 @@ function validateRequestPath(requestPath) {
   return `${url.pathname}${url.search}`;
 }
 
-function requestOptions(port, method, requestPath, headers) {
+function requestOptions(port, method, requestPath, headers, stateDir = resolveStateDir()) {
   return {
     host: DEFAULT_HOST,
     port: validatePort(port),
     method,
     path: validateRequestPath(requestPath),
     agent: false,
-    headers
+    headers: { ...headers, 'x-neva-token': readServerInfo(stateDir)?.token || '' }
   };
 }
 
-function request(port, method, requestPath, body = null) {
+function request(port, method, requestPath, body = null, stateDir = resolveStateDir()) {
   return new Promise((resolve, reject) => {
     const payload = body === null ? null : JSON.stringify(body);
     const req = http.request(
@@ -134,7 +147,8 @@ function request(port, method, requestPath, body = null) {
         requestPath,
         payload
           ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }
-          : {}
+          : {},
+        stateDir
       ),
       res => {
         let data = '';
@@ -173,10 +187,11 @@ function sleep(ms) {
 // mismatch after a Neva update restarts the server so browser and CLI never
 // disagree about the protocol.
 async function ensureServer({ stateDir, port }) {
+  checkedStatePath(stateDir);
   const health = await healthCheck(port);
   if (health && health.version === VERSION) return port;
   if (health) {
-    await request(port, 'POST', '/shutdown').catch(() => {});
+    await request(port, 'POST', '/shutdown', null, stateDir).catch(() => {});
     for (let i = 0; i < 20 && (await healthCheck(port)); i++) await sleep(100);
   }
   fs.mkdirSync(stateDir, { recursive: true });
@@ -225,7 +240,7 @@ async function cmdOpen(file, args, { stateDir, port }) {
   const launched = launchResult.opened;
   return {
     status: 'open',
-    url,
+    url: url.split('?')[0],
     browser: launched ? 'opened' : 'not opened',
     browserReason: launchResult.reason,
     next_step:
@@ -331,6 +346,7 @@ async function cmdStop({ stateDir, port }) {
 }
 
 async function cmdServer(args, { stateDir, port }) {
+  checkedStatePath(stateDir);
   const portArg = valueAfter(args, '--port');
   const hostArg = valueAfter(args, '--host');
   const listenPort = portArg !== null ? Number.parseInt(portArg, 10) : port;
@@ -353,10 +369,14 @@ async function cmdServer(args, { stateDir, port }) {
   });
   const bound = await canvas.listen(listenPort);
   fs.mkdirSync(stateDir, { recursive: true });
+  const infoFile = serverInfoPath(stateDir);
+  if (fs.existsSync(infoFile) && fs.lstatSync(infoFile).isSymbolicLink()) throw new Error('server.json is a symlink; remove it before starting canvas');
   fs.writeFileSync(
-    serverInfoPath(stateDir),
-    JSON.stringify({ pid: process.pid, port: bound.port, version: VERSION, startedAt: new Date().toISOString() }, null, 2)
+    infoFile,
+    JSON.stringify({ pid: process.pid, port: bound.port, token: canvas.token, version: VERSION, startedAt: new Date().toISOString() }, null, 2),
+    { mode: 0o600, flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW }
   );
+  fs.chmodSync(infoFile, 0o600);
   // Sessions restored from disk resume their file watchers.
   for (const session of store.list()) {
     if (session.status !== 'ended') canvas.watchSession(store.get(session.key));

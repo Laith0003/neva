@@ -41,7 +41,9 @@ SKIP_PLANNER="${GAN_SKIP_PLANNER:-false}"
 EVAL_MODE="${GAN_EVAL_MODE:-playwright}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENTS_DIR="${GAN_AGENTS_DIR:-$(cd "${SCRIPT_DIR}/../../.." && pwd)/agents}"
-EVALUATOR_TOOLS="Read,Write,Bash,Grep,Glob"
+TEST_CMD="${GAN_TEST_CMD:-npm test}"
+# Shell grants are restricted to the configured test and local preview reads.
+EVALUATOR_TOOLS="Read,Write,Grep,Glob,Bash(${TEST_CMD}),Bash(curl http://localhost:${DEV_PORT}/*),Bash(curl http://127.0.0.1:${DEV_PORT}/*)"
 if [ "$EVAL_MODE" = "playwright" ]; then
   EVALUATOR_TOOLS="${EVALUATOR_TOOLS},mcp__playwright__*"
 fi

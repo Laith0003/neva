@@ -171,3 +171,44 @@ def read_json_object(path):
         raise LearningDataError(f"{path}: expected a JSON object. "
                                 "Fix: repair this file before retrying; nothing was replaced.")
     return data
+
+
+def load_analyzer_config(config_file) -> dict:
+    """Validate file and environment settings identically for analysis and its trigger."""
+    defaults = {"min_observations_to_analyze": 20, "max_analysis_lines": 500, "model": "haiku",
+                "timeout_seconds": 120, "max_turns": 0, "max_batches_per_run": 4}
+    data = read_json_object(config_file).get("analyze", {})
+    if not isinstance(data, dict):
+        raise LearningDataError(
+            f"{config_file}: analyze must be a JSON object. Fix: repair analyze before retrying.")
+    def validate(key, value, location):
+        minimum = 0 if key == "max_turns" else 1
+        valid = (isinstance(value, str) and bool(value.strip())) if key == "model" else (
+            type(value) is int and value >= minimum)
+        if not valid:
+            required = "a nonempty string" if key == "model" else f"an integer >= {minimum}"
+            raise LearningDataError(
+                f"{location} must be {required}. Fix: repair {location} before retrying; "
+                "nothing was written.")
+
+    for key in defaults:
+        if key in data:
+            validate(key, data[key], f"{config_file}: analyze.{key}")
+    defaults.update({k: v for k, v in data.items() if k in defaults})
+    env_map = {"NEVA_INSTINCT_MIN_OBSERVATIONS": ("min_observations_to_analyze", int),
+               "NEVA_INSTINCT_MAX_ANALYSIS_LINES": ("max_analysis_lines", int),
+               "NEVA_INSTINCT_MODEL": ("model", str),
+               "NEVA_INSTINCT_TIMEOUT_SECONDS": ("timeout_seconds", int),
+               "NEVA_INSTINCT_MAX_TURNS": ("max_turns", int),
+               "NEVA_INSTINCT_MAX_BATCHES": ("max_batches_per_run", int)}
+    for env, (key, cast) in env_map.items():
+        if env in os.environ:
+            try:
+                value = cast(os.environ[env])
+            except ValueError:
+                raise LearningDataError(
+                    f"{env} must be an integer. Fix: repair or unset {env} before retrying; "
+                    "nothing was written.") from None
+            validate(key, value, env)
+            defaults[key] = value
+    return defaults

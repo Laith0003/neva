@@ -48,6 +48,17 @@ class BuildRequestTest(unittest.TestCase):
 
 
 class PushPackTest(unittest.TestCase):
+    def test_push_omits_local_source_paths_without_mutating_the_pack(self):
+        opener = FakeOpener()
+        original = json.loads(json.dumps(PACK))
+        reply = push_pack("https://omni.example.com", "tok", PACK, opener=opener)
+        self.assertEqual(reply, {"stored": True, "tiers": {"small": 1}})
+        self.assertEqual(len(opener.seen), 1)
+        sent = json.loads(opener.seen[0].data)
+        self.assertNotIn("sources", sent)
+        self.assertEqual(sent, {key: value for key, value in original.items() if key != "sources"})
+        self.assertEqual(PACK, original)
+
     def test_returns_what_the_worker_answered(self):
         opener = FakeOpener()
         self.assertEqual(push_pack("https://omni.example.com", "tok", PACK, opener=opener),

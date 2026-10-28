@@ -54,6 +54,13 @@ class TestStaleCopies(Sandbox):
         self.assertIn("kept " + str(edited), output)
         self.assertIn("edited", output)
         self.assertFalse((self.home / SKILLS / "plan").exists())
+        self.assertNotIn(str(edited), [entry["dest"] for entry in self.entries("fixture")])
+        code, output = self.repair(harness="fixture")
+        self.assertEqual(code, 0, output)
+        self.assertEqual("old ck\nmy own note\n", edited.read_text(encoding="utf-8"))
+        code, output = self.uninstall()
+        self.assertEqual(code, 0, output)
+        self.assertEqual("old ck\nmy own note\n", edited.read_text(encoding="utf-8"))
 
     def test_dry_run_reports_and_removes_nothing(self):
         self.fixture({"ck/SKILL.md": "old ck\n"})

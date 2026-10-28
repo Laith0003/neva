@@ -265,6 +265,47 @@ def created_dirs_problem(directories):
     return None
 
 
+def previous_home(state):
+    """Infer a moved HOME only when every managed path agrees on the old prefix.
+
+    Harness paths start below dot directories or dotfiles. Relative sources and backup
+    storage are not HOME destinations. Mixed current and foreign paths remain field errors.
+    """
+    entries = state.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return None
+    paths = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("kind") not in REGISTRATIONS:
+            paths.append(entry.get("dest"))
+        values = entry.get("created_dirs", [])
+        if not isinstance(values, list):
+            return None
+        paths.extend(values)
+    paths.extend(state.get("created_dirs", []) if isinstance(state.get("created_dirs", []), list) else [])
+    old = None
+    for raw in paths:
+        if not isinstance(raw, str) or not Path(raw).is_absolute() or ".." in Path(raw).parts:
+            return None
+        path = Path(raw)
+        if any(base in path.parents for base in home_bases()):
+            return None
+        parts = path.parts
+        shared = Path(os.path.commonpath((str(path), str(home()))))
+        dot = next((index for index, part in enumerate(parts)
+                    if index >= len(shared.parts) and part.startswith(".") and part != "."), None)
+        if dot is None or dot < 2:
+            return None
+        candidate = Path(*parts[:dot])
+        if old is None:
+            old = candidate
+        elif candidate.resolve() != old.resolve():
+            return None
+    return old
+
+
 def state_problem(state):
     """What is wrong with a parsed manifest, naming the field, or None when it is well formed."""
     if not isinstance(state, dict):
@@ -281,6 +322,10 @@ def state_problem(state):
         return "entries is a " + type(state.get("entries")).__name__ + ", not a list"
     problem = created_dirs_problem(state.get("created_dirs", []))
     if problem:
+        old_home = previous_home(state)
+        if old_home is not None:
+            return ("the manifest was written for HOME " + str(old_home) +
+                    "; neva cannot act on it from " + str(home()))
         return "created_dirs" + problem
     for index, entry in enumerate(state["entries"]):
         where = "entries[" + str(index) + "]"
@@ -294,6 +339,10 @@ def state_problem(state):
                 return where + "." + field + " is a " + type(entry[field]).__name__
         problem = created_dirs_problem(entry.get("created_dirs", []))
         if problem:
+            old_home = previous_home(state)
+            if old_home is not None:
+                return ("the manifest was written for HOME " + str(old_home) +
+                        "; neva cannot act on it from " + str(home()))
             return where + ".created_dirs" + problem
         if entry["kind"] not in KINDS + REGISTRATIONS:
             return where + ".kind is " + repr(entry["kind"]) + ", not one of " + ", ".join(KINDS + REGISTRATIONS)

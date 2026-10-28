@@ -49,9 +49,10 @@ def candidates(ctx, sessions):
     return out
 
 
-def drain(port, key, timeout=1.0):
+def drain(port, key, timeout=1.0, token=""):
     url = f"http://127.0.0.1:{int(port)}/api/await?key={key}&timeoutMs=0"
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    request = urllib.request.Request(url, headers={"X-Neva-Token": token})
+    with urllib.request.urlopen(request, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -77,7 +78,7 @@ def run(ctx):
         if total >= MAX_ITEMS:
             break
         try:
-            res = drain(server["port"], s["key"])
+            res = drain(server["port"], s["key"], token=server.get("token", ""))
         except Exception:
             continue
         items = [i for i in (res.get("items") or []) if isinstance(i, dict)] if res.get("status") == "feedback" else []

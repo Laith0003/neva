@@ -498,6 +498,35 @@ class TestObserveAndMcp(HookTest):
         self.assertFalse(os.path.isdir(arch) and os.listdir(arch), "nothing is archived unread at rotation")
         self.assertEqual(len(self.s.obs_lines()), 1)
 
+    def test_held_registry_lock_keeps_the_guard_block_within_one_second(self):
+        lock = self.s.write("home/.local/share/neva/observations/.projects.json.lock", "")
+        holder = subprocess.Popen(
+            [PY, "-c", "import fcntl, sys\n"
+             "fh = open(sys.argv[1], 'a')\n"
+             "fcntl.flock(fh, fcntl.LOCK_EX)\n"
+             "print('locked', flush=True)\n"
+             "sys.stdin.read()\n", lock],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "locked")
+            start = time.monotonic()
+            try:
+                r = self.s.dispatch("PreToolUse", self.base(tool_name="Bash", tool_input={
+                    "command": "git commit --no-verify -m x"}), timeout=1)
+            except subprocess.TimeoutExpired:
+                self.fail("PreToolUse hung on the project registry lock")
+            self.assertLess(time.monotonic() - start, 1)
+            self.assertBlocked(r, "skips the repository's git hooks")
+            self.assertEqual(r.stdout, "")
+            self.assertFalse(os.path.exists(os.path.join(os.path.dirname(lock), "projects.json")))
+            log = self.s.read(os.path.join(self.s.data, "hooks.log"))
+            self.assertEqual(log.count("[registry]"), 1, log)
+            self.assertIn("refresh skipped", log)
+        finally:
+            holder.stdin.close()
+            holder.wait(timeout=5)
+            holder.stdout.close()
+
     def test_held_observation_lock_skips_observe_and_keeps_the_guard_block(self):
         """A stopped analyzer holding the observations lock must not hang PreToolUse: observe
         gives up within its short deadline, logs one line, and no_verify still blocks."""
@@ -744,6 +773,19 @@ class TestSameDayTrigger(HookTest):
         self.observations(250)
         self.end(NEVA_INSTINCT_SAMEDAY=1)
         self.assertTrue(self.fired(5), "dispatch SessionEnd did not reach learning_trigger.run")
+
+    def test_invalid_analyzer_config_is_logged_without_launching(self):
+        self.observations(250)
+        config = os.path.join(self.s.plugin, "skills", "continuous-learning-v2", "config.json")
+        for key, value in (("max_turns", -1), ("timeout_seconds", 0), ("model", "")):
+            with self.subTest(key=key):
+                with open(config, "w") as fh:
+                    json.dump({"analyze": {key: value}}, fh)
+                self.end(NEVA_INSTINCT_SAMEDAY=1)
+                self.assertFalse(self.fired(0.1), key)
+                log = self.s.read(os.path.join(self.s.data, "hooks.log"))
+                self.assertIn("analyze." + key, log)
+                self.assertIn("same-day trigger skipped", log)
 
     def test_below_threshold_is_a_no_op(self):
         self.observations(10)

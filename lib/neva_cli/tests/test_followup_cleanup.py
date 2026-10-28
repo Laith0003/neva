@@ -126,3 +126,38 @@ class TestMainEraManifest(Sandbox):
         code, output = self.uninstall(harness="codex")
         self.assertEqual(code, 0, output)
         self.assertHomeUnchanged(before, "a main-era manifest did not uninstall cleanly:")
+
+
+class TestRenamedHome(Sandbox):
+    def test_manifest_from_old_home_names_old_and_current_home_without_changes(self):
+        self.write_adapter("codex", adapter(post=[]), SOURCES)
+        code, output = self.install(harness="codex")
+        self.assertEqual(code, 0, output)
+        old = self.home
+        new = self.root / "renamed-home"
+        os.rename(old, new)
+        self.home = new
+        self.env({"HOME": str(new)})
+        manifest = core.state_path().read_bytes()
+        before = self.snapshot_home()
+        for command in (self.repair, self.uninstall):
+            code, output = command(harness="codex")
+            self.assertEqual(code, 1, output)
+            self.assertIn("the manifest was written for HOME " + str(old) +
+                          "; neva cannot act on it from " + str(new), output)
+            self.assertEqual(core.state_path().read_bytes(), manifest)
+            self.assertHomeUnchanged(before)
+
+    def test_one_foreign_path_is_not_misreported_as_a_renamed_home(self):
+        self.write_adapter("codex", adapter(post=[]), SOURCES)
+        code, output = self.install(harness="codex")
+        self.assertEqual(code, 0, output)
+        state = self.state()
+        state["entries"][0]["created_dirs"] = [str(self.root / "other-home" / ".codex")]
+        core.save_state(state)
+        before = self.snapshot_home()
+        code, output = self.uninstall(harness="codex")
+        self.assertEqual(code, 1, output)
+        self.assertIn("created_dirs", output)
+        self.assertNotIn("manifest was written for HOME", output)
+        self.assertHomeUnchanged(before)

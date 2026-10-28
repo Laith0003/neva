@@ -275,6 +275,8 @@ class Installer:
                 print("kept " + str(path) + ": it was edited after Neva installed it and this version of "
                       "Neva no longer ships it. fix: move your edits elsewhere and delete it, or keep it "
                       "as yours")
+                if not self.dry_run:
+                    self.state["entries"].remove(entry)
                 continue
             print(uninstall.remove_file(entry, path, self.dry_run))
             if self.dry_run:

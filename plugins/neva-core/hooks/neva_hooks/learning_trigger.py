@@ -56,27 +56,8 @@ _CHUNK = 1 << 16
 
 
 def _analyzer_min() -> int:
-    """The per-bucket minimum instinct-analyze.py applies, with its load_config rule: a set
-    NEVA_INSTINCT_MIN_OBSERVATIONS wins and must be an integer >= 1, else config.json's
-    analyze.min_observations_to_analyze must be a JSON integer >= 1, else 20. A value the
-    analyzer would reject (it exits 2) raises, so the trigger skips instead of launching it."""
-    name = "NEVA_INSTINCT_MIN_OBSERVATIONS"
-    data = _learning_io().read_json_object(CL2_CONFIG).get("analyze", {})
-    if not isinstance(data, dict):
-        raise ValueError(f"{CL2_CONFIG}: analyze must be a JSON object. Fix: repair analyze.")
-    value = data.get("min_observations_to_analyze", DEFAULT_ANALYZER_MIN)
-    if not (type(value) is int and value >= 1):
-        raise ValueError(f"{CL2_CONFIG}: analyze.min_observations_to_analyze must be an integer "
-                         ">= 1. Fix: repair this field before retrying.")
-    if name in os.environ:
-        try:
-            value = int(os.environ[name])
-        except ValueError:
-            value = 0
-        if value < 1:
-            raise ValueError(f"{name} must be an integer >= 1, got {os.environ[name]!r}. "
-                             f"Fix: set or unset {name}.")
-    return value
+    """Use the analyzer's full validation before considering a paid launch."""
+    return _learning_io().load_analyzer_config(CL2_CONFIG)["min_observations_to_analyze"]
 
 
 def _count_lines(path: Path, stop_at: int) -> int:

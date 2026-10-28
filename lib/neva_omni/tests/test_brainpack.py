@@ -149,6 +149,7 @@ def _samples():
         "groq key": "gsk_" + tail,
         "google api key": "AIza" + "Sy" + tail[:33],
         "telegram bot token": "123456789" + ":AA" + tail[:33],
+        "telegram bot URL": "https://api.telegram.org/bot" + "123456789" + ":AA" + tail[:33] + "/sendMessage",
         "anthropic key": "sk-ant-" + "api03-" + tail,
         "openai key": "sk-" + "proj-" + tail,
         "jwt": "eyJ" + "hbGciOiJIUzI1NiJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + "." + "sig_" + tail[:20],
@@ -190,7 +191,7 @@ class SecretPatternTest(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     compile_pack({"include": [path]}, TIERS)
                 message = str(caught.exception)
-                named = {"unsigned jwt": "jwt", "openai key": "openai-style key", "aws session key": "aws access key",
+                named = {"telegram bot URL": "telegram bot token", "unsigned jwt": "jwt", "openai key": "openai-style key", "aws session key": "aws access key",
                          "github fine-grained token": "github token"}.get(label, label)
                 self.assertIn("secret-shaped text ({})".format(named), message)
                 self.assertIn(path, message)

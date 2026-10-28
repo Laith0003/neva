@@ -1,6 +1,6 @@
 {
   "_attribution": "Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.",
-  "_about": "Module registry for dispatch.py. events: hook events the module listens on (every event is one * matcher in hooks.json). tools: optional fnmatch list of tool names; the module runs only for those tools. profiles: which NEVA_HOOK_PROFILE values run it. guard (PreToolUse modules): true when the module can block or ask; on a harness without a confirmation prompt a guard that crashes blocks the call, a module with guard false is logged and skipped. Order inside an event is run order. Disable any id with NEVA_DISABLED_HOOKS. The human-readable table is docs/harness/hooks.md.",
+  "_about": "Module registry for dispatch.py. events: hook events the module listens on (every event is one * matcher in hooks.json). tools: optional fnmatch list of tool names; the module runs only for those tools. profiles: which NEVA_HOOK_PROFILE values run it. guard (PreToolUse modules): true means a crash must not let the call through on a foreign harness; a module with guard false is logged and skipped. Order inside an event is run order. Disable any id with NEVA_DISABLED_HOOKS. The human-readable table is docs/harness/hooks.md.",
   "version": 2,
   "profiles": [
     "minimal",

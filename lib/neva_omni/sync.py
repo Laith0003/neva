@@ -81,8 +81,10 @@ def push_pack(url, token, pack, opener=None, timeout=TIMEOUT):
     host = urllib.parse.urlsplit(url).netloc or url
     opener = opener or urllib.request.build_opener(SafeRedirectHandler())
 
+    # Source paths are local provenance for the owner, not worker context.
+    remote_pack = {key: value for key, value in pack.items() if key != "sources"}
     try:
-        with opener.open(build_request(url, token, pack), timeout=timeout) as response:
+        with opener.open(build_request(url, token, remote_pack), timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300] if hasattr(e, "read") else ""
