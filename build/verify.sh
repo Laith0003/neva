@@ -1154,6 +1154,16 @@ else
   printf '%s\n' "$CK_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
 fi
 
+head_ "28b. the moves engine reads files only and every rule can fail (2026-10-30)"
+EN_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO/lib" python3 -m unittest discover -s lib/neva_engine/tests -t lib 2>&1)"
+EN_OUT="$(printf '%s\n' "$EN_FULL" | tail -3)"
+if printf '%s' "$EN_OUT" | grep -q '^OK'; then
+  ok "engine suite: $(printf '%s' "$EN_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "engine suite" "$(printf '%s' "$EN_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$EN_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
+fi
+
 # End to end against the real bin/neva cockpit, with fixture data planted directly where the
 # hooks runtime would have written it, including one deliberately malformed line in each JSONL
 # source: the promise under test is that a bad line never takes the good ones around it down.

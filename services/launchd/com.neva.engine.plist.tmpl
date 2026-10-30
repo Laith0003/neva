@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.neva.engine</string>
+  <key>ProgramArguments</key><array><string>@PREFIX@/services/heartbeat-wrap.sh</string><string>engine</string><string>/usr/bin/env</string><string>python3</string><string>-m</string><string>neva_engine</string><string>tick</string><string>--config</string><string>@HOME@/.config/neva/engine/engine.json</string></array>
+  <key>EnvironmentVariables</key><dict><key>PYTHONPATH</key><string>@PREFIX@/lib</string><key>PYTHONDONTWRITEBYTECODE</key><string>1</string></dict>
+  <!-- Calendar form, not StartInterval: launchd runs a calendar job on wake, and a StartInterval firing during sleep is lost. -->
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Minute</key><integer>45</integer></dict>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/neva/engine.err.log</string>
+</dict></plist>

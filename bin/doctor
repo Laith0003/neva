@@ -351,7 +351,7 @@ else
   HB_DIR="$HOME/.local/state/neva/heartbeat"
   NOW_EPOCH=$(date -u +%s)
   # job:max-silence-minutes, matched against LOADED so we only judge jobs this box actually enabled
-  for PAIR in "cadence:1560" "canon-lint:1560" "diag:11520" "lane-guard:10" "session-guard:10" "vault-sync:10" "vault-mirror:100"; do
+  for PAIR in "cadence:1560" "canon-lint:1560" "engine:1560" "diag:11520" "lane-guard:10" "session-guard:10" "vault-sync:10" "vault-mirror:100"; do
     JOB="${PAIR%%:*}"; MAXMIN="${PAIR#*:}"
     echo "$LOADED" | grep -qx "$JOB" || continue
     ST="$HB_DIR/${JOB}.status"
