@@ -322,5 +322,5 @@ const STRIPE_SECRET = 'sk_live_...'
 
 - `frontend-patterns`: React/Next.js (web) patterns; useful for shared React concepts, but DOM-specific.
 - `coding-standards`: TypeScript/JavaScript idioms that apply to RN code.
-- `tdd-workflow`, `e2e-testing`: testing process (use Jest + React Native Testing Library, Maestro/Detox for RN).
-- `security-review`: general security checklist that complements the RN bundle/secret guidance above.
+- `tdd-workflow`, `neva-library:e2e-testing` (opt-in library; otherwise the core browser-qa skill): testing process (use Jest + React Native Testing Library, Maestro/Detox for RN).
+- `neva-library:security-review` (opt-in library; otherwise dispatch neva-core:security-reviewer): general security checklist that complements the RN bundle/secret guidance above.

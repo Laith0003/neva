@@ -410,5 +410,5 @@ When this skill is used for review, return:
 - Skill: `postgres-patterns` - PostgreSQL-specific schema and query patterns
 - Skill: `database-migrations` - migration planning and rollout safety
 - Skill: `backend-patterns` - API and service-layer patterns
-- Skill: `neva-core:security-review` - secret handling, auth, and least privilege
+- Skill: `neva-library:security-review` - secret handling, auth, and least privilege
 - Agent: `database-reviewer` - broader database review workflow

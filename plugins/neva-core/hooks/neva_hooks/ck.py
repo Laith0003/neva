@@ -1,21 +1,21 @@
 # Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.
-"""SessionStart hook for the ck (context keeper) skill.
+"""SessionStart hook for the ck (context keeper) skill, which ships in the opt-in neva-library.
 
 Data: NEVA_CK_HOME, else $XDG_DATA_HOME/neva/ck, else ~/.local/share/neva/ck. When that folder
 does not exist ck is not in use and this module does nothing (it never creates it).
 
 1. Reads the previous current-session.json, then overwrites it with
-   {sessionId, projectPath, projectName, startedAt} so /ck:save updates this session's entry.
+   {sessionId, projectPath, projectName, startedAt} so /neva-library:ck save updates this session's entry.
 2. Registered project (projects.json has the working directory): a compact block
      ck: <name> | <N days ago> | <N> sessions
      Goal: ...  /  Left off: <first line>  /  Next: <first two steps>
    plus, when they apply:
-     WARNING Last session wasn't saved. Run /ck:save to capture it
+     WARNING Last session wasn't saved. Run /neva-library:ck save to capture it
      Git: N commits since last session
-     WARNING Goal mismatch: CLAUDE.md `## Current Goal` differs from the saved goal. Run /ck:save
+     WARNING Goal mismatch: CLAUDE.md `## Current Goal` differs from the saved goal. Run /neva-library:ck save
      with updated goal to sync
 3. Unregistered directory with other ck projects: the 3 most recent (name, staleness, last
-   seen, last summary) and `Run /ck:list, /ck:resume <name>, or /ck:init to register this folder`.
+   seen, last summary) and `Run /neva-library:ck list, /neva-library:ck resume <name>, or /neva-library:ck init to register this folder`.
 Output is additionalContext only (about 100 tokens); the skill body is not injected.
 """
 import datetime
@@ -85,7 +85,7 @@ def registered_block(ctx, home, path, entry, prev):
     prev_id = str((prev or {}).get("sessionId") or "")
     same_project = (prev or {}).get("projectPath") == path
     if prev_id and same_project and prev_id != ctx.session_id and prev_id not in {s.get("id") for s in sessions}:
-        lines.append("WARNING Last session wasn't saved. Run /ck:save to capture it")
+        lines.append("WARNING Last session wasn't saved. Run /neva-library:ck save to capture it")
     if latest.get("date"):
         log = c.git(["log", "--oneline", f"--since={latest['date']}"], path, timeout=3)
         n = len([x for x in (log or "").splitlines() if x.strip()])
@@ -94,7 +94,7 @@ def registered_block(ctx, home, path, entry, prev):
     goal_md = claude_md_goal(path)
     if goal_md and data.get("goal") and goal_md.lower() != str(data["goal"]).strip().lower():
         lines.append("WARNING Goal mismatch: CLAUDE.md `## Current Goal` differs from the saved goal. "
-                     "Run /ck:save with updated goal to sync")
+                     "Run /neva-library:ck save with updated goal to sync")
     return lines
 
 
@@ -115,7 +115,7 @@ def recent_block(home, projects):
            "| --- | --- | --- | --- |"]
     for date, name, summary in rows[:3]:
         out.append(f"| {name} | {staleness(date)} | {days_label(date)} | {c.one_line(summary, 60)} |")
-    out.append("Run /ck:list, /ck:resume <name>, or /ck:init to register this folder")
+    out.append("Run /neva-library:ck list, /neva-library:ck resume <name>, or /neva-library:ck init to register this folder")
     return out
 
 
@@ -128,7 +128,7 @@ def run(ctx):
     projects = c.read_json(os.path.join(home, "projects.json"), {}) or {}
     if not isinstance(projects, dict):
         return {"context": f"ck: {os.path.join(home, 'projects.json')} is malformed. Fix: offer the user to "
-                           "reset it to {} (the ck skill's rule)."}
+                           "reset it to {} (the rule of the opt-in neva-library:ck skill)."}
     path = ctx.cwd
     if path not in projects and os.path.realpath(path) in projects:
         path = os.path.realpath(path)

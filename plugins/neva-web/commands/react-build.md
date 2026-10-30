@@ -28,7 +28,7 @@ Use `/react-build` when:
 
 ## Scope
 
-This command owns **React build/bundler/runtime hydration** failures. For pure TypeScript type errors with no React involvement, use `/build-fix` (generic) instead.
+This command owns **React build/bundler/runtime hydration** failures. For pure TypeScript type errors with no React involvement, use `/neva-library:build-fix` (opt-in library; otherwise fix the build inline with minimal diffs) (generic) instead.
 
 ## Diagnostic Commands Run
 
@@ -178,7 +178,7 @@ The agent will stop and report if:
 
 - `/react-test`: run tests after the build is green
 - `/react-review`: review code quality after the build succeeds
-- `/build-fix`: generic build fixer (non-React)
+- `/neva-library:build-fix` (opt-in library; otherwise fix the build inline with minimal diffs): generic build fixer (non-React)
 - `neva-core:verification-loop` skill: full verification loop
 
 ## Related

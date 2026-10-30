@@ -72,6 +72,8 @@ For a feature, phases run in order and hand off through files:
 | 4. Review | code-reviewer | review-comments.md |
 | 5. Verify | build-error-resolver if needed | done, or back to the failing phase |
 
+`code-reviewer` ships in the always-on `neva-core`. `planner`, `tdd-guide` and `build-error-resolver` ship in the opt-in `neva-library`; without it, the core `plan` command and `tdd-workflow` skill cover phases 2 and 3 inline.
+
 1. Each agent gets one clear input and produces one clear output.
 2. Outputs become the next phase's inputs.
 3. Never skip a phase.

@@ -37,4 +37,4 @@ Fix: Concrete change to make.
 - Agent: `fastapi-reviewer`
 - Skill: `fastapi-patterns`
 - Command: `/python-review`
-- Skill: `security-scan`
+- Skill: `neva-library:security-scan` (opt-in library; otherwise dispatch neva-core:security-reviewer)

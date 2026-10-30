@@ -1078,7 +1078,7 @@ class TestCk(HookTest):
         self.assertIn("Left off: parser edge cases", ctx)
         self.assertIn("Next: write tests | wire the CLI", ctx)
         self.assertNotIn("third step", ctx)
-        self.assertIn("WARNING Last session wasn't saved. Run /ck:save to capture it", ctx)
+        self.assertIn("WARNING Last session wasn't saved. Run /neva-library:ck save to capture it", ctx)
         self.assertIn("WARNING Goal mismatch", ctx)
         cur = json.loads(self.s.read(os.path.join(home, "current-session.json")))
         self.assertEqual(cur["sessionId"], "11111111-2222-3333-4444-555566667777")
@@ -1103,7 +1103,7 @@ class TestCk(HookTest):
         ctx = self.start().context
         self.assertIn("| alpha | active | today | alpha work |", ctx)
         self.assertIn("| beta | stale |", ctx)
-        self.assertIn("/ck:init to register this folder", ctx)
+        self.assertIn("/neva-library:ck init to register this folder", ctx)
         self.assertLess(ctx.index("alpha"), ctx.index("beta"))
 
 
@@ -1892,12 +1892,18 @@ class TestCodexNativeTools(HookTest):
 
 # ---------------------------------------------------------------- ck command safety
 
+# ck ships in the opt-in neva-library. The adapters project neva-core only, so they carry a ck
+# copy only if a future generator puts one back; every copy that exists is tested.
 CK_COPIES = {
-    "canonical": os.path.join(PLUGIN_SRC, "skills", "ck", "commands"),
-    "gemini": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "gemini", "skills", "ck", "commands"),
-    "opencode": os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "opencode", "skills", "neva-ck",
-                             "commands"),
+    "canonical": os.path.join(os.path.dirname(PLUGIN_SRC), "neva-library", "skills", "ck", "commands"),
 }
+for _name, _path in (
+        ("gemini", os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "gemini", "skills", "ck",
+                                "commands")),
+        ("opencode", os.path.join(os.path.dirname(os.path.dirname(PLUGIN_SRC)), "adapters", "opencode", "skills",
+                                  "neva-ck", "commands"))):
+    if os.path.isdir(_path):
+        CK_COPIES[_name] = _path
 
 
 @unittest.skipIf(shutil.which("node") is None, "node runs the ck commands")

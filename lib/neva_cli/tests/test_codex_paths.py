@@ -32,7 +32,7 @@ class TestCodexHomeDefault(CodexSandbox):
         self.assertEqual(0, code, output)
         self.assertNotIn("unset variable", output)
         self.assertTrue((self.home / ".codex" / "AGENTS.md").is_file())
-        self.assertTrue((self.home / ".codex" / "neva" / "agents" / "architect.toml").is_file())
+        self.assertTrue((self.home / ".codex" / "neva" / "agents" / "code-reviewer.toml").is_file())
         code, output = self.uninstall()
         self.assertEqual(0, code, output)
         self.assertHomeUnchanged(before)
@@ -65,8 +65,8 @@ class TestCodexConfigPaths(CodexSandbox):
         self.assertTrue(text.startswith(OWNER_CONFIG))
         parsed = core.read_toml(config)
         self.assertEqual(str(core.REPO_ROOT), parsed["marketplaces"]["neva"]["source"])
-        self.assertEqual(str(self.home / ".codex" / "neva" / "agents" / "architect.toml"),
-                         parsed["agents"]["architect"]["config_file"])
+        self.assertEqual(str(self.home / ".codex" / "neva" / "agents" / "code-reviewer.toml"),
+                         parsed["agents"]["code_reviewer"]["config_file"])
         for entry in self.toml_entries():
             self.assertNotIn("${", str(entry["value"]), entry["key"])
         code, output = self.repair()

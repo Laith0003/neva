@@ -72,7 +72,7 @@ For complex tasks:
 ## Build Troubleshooting
 
 If the build fails:
-1. Use **neva-core:build-error-resolver**
+1. Fix it inline with minimal diffs (**neva-library:build-error-resolver** where the opt-in library is enabled)
 2. Read the actual error messages
 3. Fix incrementally
 4. Verify after each fix

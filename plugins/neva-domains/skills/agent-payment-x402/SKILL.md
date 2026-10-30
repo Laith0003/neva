@@ -12,7 +12,7 @@ Enable AI agents to make policy-gated payments with built-in spending controls. 
 
 ## When to Use
 
-Use when: your agent needs to pay for an API call, purchase a service, settle with another agent, enforce per-task spending limits, or manage a non-custodial wallet. Pairs naturally with cost-aware-llm-pipeline and security-review skills.
+Use when: your agent needs to pay for an API call, purchase a service, settle with another agent, enforce per-task spending limits, or manage a non-custodial wallet. Pairs naturally with the neva-library:cost-aware-llm-pipeline and neva-library:security-review skills (opt-in library; otherwise dispatch neva-core:security-reviewer).
 
 ## Decision Tree
 
@@ -213,7 +213,7 @@ main().catch((err) => {
 - **Pin your dependencies**: Always specify an exact version in your MCP config (e.g., `agentwallet-sdk@6.0.0`). Verify package integrity before deploying to production.
 - **Audit trails**: Use `list_transactions` in post-task hooks to log what was spent and why.
 - **Fail closed**: If the payment tool is unreachable, block the paid action: don't fall back to unmetered access.
-- **Pair with security-review**: Payment tools are high-privilege. Apply the same scrutiny as shell access.
+- **Pair with neva-library:security-review** (opt-in library; otherwise dispatch neva-core:security-reviewer): Payment tools are high-privilege. Apply the same scrutiny as shell access.
 - **Test with testnets first**: Use Base Sepolia for development; switch to Base mainnet for production.
 
 ## Production Reference

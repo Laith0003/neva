@@ -1,7 +1,7 @@
 # Instinct analyzer prompt
 
 The nightly `instinct-analyze` job sends the text between the PROMPT markers to
-`claude --print --allowedTools Read,Write`, once per project bucket, after
+`claude --print --allowedTools Read,Edit(//<instincts dir>/**)`, once per project bucket, after
 substituting the `{{...}}` placeholders. Edit the rules here, not in the script.
 The job accepts a run only when the last non-empty line of the output is exactly
 `{"status":"analysis_complete"}` and that line appears once.

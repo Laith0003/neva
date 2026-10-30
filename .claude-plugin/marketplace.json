@@ -5,13 +5,18 @@
   },
   "metadata": {
     "description": "Neva plugin marketplace: an honest second brain plus a disciplined coding harness.",
-    "version": "0.10.0"
+    "version": "0.11.0"
   },
   "plugins": [
     {
       "name": "neva-core",
       "source": "./plugins/neva-core",
-      "description": "Process, memory and learning core: plan, test, implement, review, verify, remember, improve. Agent orchestration, eval and security harnesses. Always on."
+      "description": "Process, memory and learning core: search first, test first, verify, review, safety guards and the instinct loop, with every hook. Always on. Everything else is in the opt-in neva-library."
+    },
+    {
+      "name": "neva-library",
+      "source": "./plugins/neva-library",
+      "description": "Opt-in library moved out of neva-core: orchestration, planning variants, eval and agent engineering, harness admin, session tools, GitHub epics. Install disabled, enable per project. Needs neva-core."
     },
     {
       "name": "neva-web",

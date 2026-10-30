@@ -175,7 +175,7 @@ Run: `black app/routes/user.py app/services/auth.py`
 - Use the `tdd-workflow` skill first to ensure tests pass
 - Use `/code-review` for non-Python specific concerns
 - Use `/python-review` before committing
-- Use `/build-fix` if static analysis tools fail
+- Use `/neva-library:build-fix (opt-in library; otherwise fix the build inline with minimal diffs)` if static analysis tools fail
 
 ## Framework-Specific Reviews
 

@@ -78,9 +78,17 @@ def remove_merge(entry, destination, dry_run):
         if text.count(appended) == 1:
             remaining = text.replace(appended, "", 1)
             try:
-                same = core.parse_toml(remaining) == data
+                parsed = core.parse_toml(remaining)
             except ValueError:
-                same = False
+                parsed = None
+            # A dotted header such as [plugins."x@y"] creates its parent implicitly, so taking out
+            # the last such table also takes out the parent. Another entry may have created that
+            # parent (two plugins.* tables, removed in either order), so an empty ancestor of this
+            # key counts as gone too.
+            implicit = copy.deepcopy(data)
+            parts = core.key_parts(key)
+            core.prune_keys(implicit, [core.join_key(parts[:n]) for n in range(1, len(parts))])
+            same = parsed is not None and parsed in (data, implicit)
             if same:
                 if dry_run:
                     return "would remove " + key + " from " + str(destination)

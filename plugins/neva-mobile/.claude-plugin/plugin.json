@@ -1,6 +1,6 @@
 {
   "name": "neva-mobile",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Mobile: Flutter/Dart, Swift/SwiftUI, Kotlin/Android and Compose Multiplatform, React Native/Expo, HarmonyOS/ArkTS.",
   "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
   "author": {

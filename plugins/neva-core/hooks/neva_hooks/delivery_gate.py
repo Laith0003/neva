@@ -1,6 +1,6 @@
 # Adapted from affaan-m/ECC (MIT), commit d3b8a3e. Merged for Neva.
 # Optional pattern set derived from obra/superpowers verification-before-completion (MIT, Jesse Vincent).
-"""Delivery gate (Stop, strict profile): the delivery-gate skill's mechanical checks.
+"""Delivery gate (Stop, strict profile): the mechanical checks of the opt-in neva-library:delivery-gate skill.
 
 Deterministic only: disk usage, file modification dates, regex on the transcript. No model.
 Order: disk first (can block even on short sessions); transcripts under 40 chars skip the rest;
@@ -116,7 +116,7 @@ def run(ctx):
             mem = memory_dir(ctx.cwd)
             if not mem:
                 notes.append("No project memory directory found, so learning capture cannot be verified. "
-                             "Fix: create it per the delivery-gate skill, or set NEVA_MEMORY_DIR.")
+                             "Fix: create it per the neva-library:delivery-gate skill (opt-in library), or set NEVA_MEMORY_DIR.")
             else:
                 stale = stale_libs(mem)
                 if len(stale) >= 3:

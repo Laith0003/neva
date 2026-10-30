@@ -210,4 +210,4 @@ When retrieving context for this task:
 
 - `search-first`: combine for progressive discovery of existing tools before building.
 - `continuous-learning-v2`: patterns that improve over time become instincts.
-- `context-budget`: when the problem is total context load rather than retrieval.
+- `neva-library:context-budget` (opt-in library): when the problem is total context load rather than retrieval.

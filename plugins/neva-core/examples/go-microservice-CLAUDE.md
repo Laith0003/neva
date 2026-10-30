@@ -253,7 +253,7 @@ go test ./... -race -count=1
 
 # Review
 /go-review                # Go idioms, error handling, concurrency
-/security-scan            # Secrets and vulnerabilities
+/neva-library:security-scan            # Secrets and vulnerabilities
 
 # Before merge
 go vet ./...

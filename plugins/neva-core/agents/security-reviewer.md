@@ -192,7 +192,7 @@ If you find a CRITICAL vulnerability:
 
 ## Reference
 
-For detailed vulnerability patterns, code examples, report templates, and PR review templates, see skill: `security-review`.
+For detailed vulnerability patterns, code examples, report templates, and PR review templates, see `neva-library:security-review` (opt-in library) where it is enabled; this agent's own checklist above is complete without it.
 
 ---
 

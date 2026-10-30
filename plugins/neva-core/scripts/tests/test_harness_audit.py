@@ -66,13 +66,10 @@ def build_core(sb, root):
     for i in range(10):
         w(f"agents/agent-{i}.md", agent("opus" if i % 2 else "sonnet"))
     w("agents/security-reviewer.md", agent("opus"))
-    for name in ("strategic-compact", "continuous-learning-v2", "eval-harness", "verification-loop",
-                 "security-review", "cost-aware-llm-pipeline", "security-scan"):
+    for name in ("strategic-compact", "continuous-learning-v2", "verification-loop"):
         w(f"skills/{name}/SKILL.md", skill("Use when testing the audit."))
     for i in range(16):
         w(f"skills/extra-{i}/SKILL.md", skill('"Use when a quoted description: with a colon."'))
-    for name in ("checkpoint", "model-route"):
-        w(f"commands/{name}.md", "---\ndescription: x\n---\n")
     w("commands/runner.md", '---\ndescription: x\n---\n\n```bash\npython3 "${CLAUDE_PLUGIN_ROOT}/scripts/ok.py" --flag\n```\n')
     for r in ("coding-style.md", "security.md", "testing.md"):
         w(f"rules/{r}", "# rule\n")
@@ -80,12 +77,25 @@ def build_core(sb, root):
     w(".mcp.json", {"mcpServers": {"chrome-devtools": {"command": "npx"}}})
 
 
+def build_library(sb, root):
+    """The opt-in neva-library: the eval, security-review, cost and checkpoint surfaces."""
+    w = lambda rel, c: sb.write(os.path.join(root, rel), c)  # noqa: E731
+    w(".claude-plugin/plugin.json", {"name": "neva-library", "version": "0.0.1"})
+    for name in ("eval-harness", "security-review", "cost-aware-llm-pipeline", "security-scan"):
+        w(f"skills/{name}/SKILL.md", skill("Use when testing the audit."))
+    for name in ("checkpoint", "model-route"):
+        w(f"commands/{name}.md", "---\ndescription: x\n---\n")
+
+
 def build_repo(sb):
     root = sb.path("neva")
     build_core(sb, os.path.join(root, "plugins", "neva-core"))
+    build_library(sb, os.path.join(root, "plugins", "neva-library"))
     sb.write(os.path.join(root, "plugins", "neva-web", ".claude-plugin", "plugin.json"), {"name": "neva-web"})
     sb.write(os.path.join(root, ".claude-plugin", "marketplace.json"), {"name": "neva", "plugins": [
-        {"name": "neva-core", "source": "./plugins/neva-core"}, {"name": "neva-web", "source": "./plugins/neva-web"}]})
+        {"name": "neva-core", "source": "./plugins/neva-core"},
+        {"name": "neva-library", "source": "./plugins/neva-library"},
+        {"name": "neva-web", "source": "./plugins/neva-web"}]})
     for rel in ("build/verify.sh", "build/leak-scan.py", "bin/doctor", "vault/.keep", "docs/harness/02-token-economy.md",
                 ".github/workflows/ci.yml", ".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/bug.md",
                 ".github/CODEOWNERS", ".github/dependabot.yml"):
@@ -153,6 +163,17 @@ class TestRepoMode(unittest.TestCase):
         self.assertIn("renamed() not defined", c["hooks-modules-resolve"]["detail"])
         self.assertFalse(c["marketplace-plugins"]["pass"])
         self.assertIn("neva-web (no manifest", c["marketplace-plugins"]["detail"])
+
+    def test_library_surfaces_fail_their_own_checks(self):
+        lib = os.path.join(self.root, "plugins", "neva-library")
+        for rel in ("skills/eval-harness/SKILL.md", "skills/security-review/SKILL.md", "commands/model-route.md",
+                    "commands/checkpoint.md", "skills/security-scan/SKILL.md", "skills/cost-aware-llm-pipeline/SKILL.md"):
+            os.remove(os.path.join(lib, rel))
+        c = by_id(self.run_audit())
+        for cid in ("eval-skill", "eval-commands", "security-review-skill", "security-scan-skill",
+                    "cost-model-route-command", "cost-skill"):
+            self.assertFalse(c[cid]["pass"], cid)
+            self.assertIn("plugins/neva-library/", c[cid]["path"], cid)
 
     def test_300_characters_is_inside_budget(self):
         self.sb.write(os.path.join(self.core, "skills/extra-0/SKILL.md"), skill("y" * 300))
@@ -366,22 +387,31 @@ class TestCli(unittest.TestCase):
 class TestShippedCommands(unittest.TestCase):
     """The commands and agent this port serves must point at scripts that exist."""
 
-    OWNED = ["commands/harness-audit.md", "commands/loop-status.md", "commands/loop-start.md",
-             "commands/multi-workflow.md", "commands/multi-plan.md", "commands/multi-execute.md",
-             "commands/multi-backend.md", "agents/harness-optimizer.md", "commands/epic-claim.md",
-             "commands/epic-sync.md", "commands/epic-validate.md", "commands/epic-publish.md",
-             "commands/epic-review.md", "commands/epic-unblock.md", "commands/epic-decompose.md"]
+    # Kept in neva-core: the three epic commands github_coordination.py names in its own errors.
+    # The rest moved to the opt-in neva-library and reach core scripts through scripts/neva_core.py.
+    OWNED = {"neva-core": ["commands/epic-sync.md", "commands/epic-validate.md", "commands/epic-review.md"],
+             "neva-library": ["commands/harness-audit.md", "commands/loop-status.md", "commands/loop-start.md",
+                              "commands/multi-workflow.md", "commands/multi-plan.md", "commands/multi-execute.md",
+                              "commands/multi-backend.md", "agents/harness-optimizer.md", "commands/epic-claim.md",
+                              "commands/epic-publish.md", "commands/epic-unblock.md", "commands/epic-decompose.md"]}
+    LIBRARY = os.path.join(os.path.dirname(support.PLUGIN), "neva-library")
 
     def test_owned_files_reference_only_shipped_scripts(self):
+        import re
         refs = 0
-        for rel in self.OWNED:
-            with open(os.path.join(support.PLUGIN, rel), encoding="utf-8") as fh:
-                text = fh.read()
-            self.assertNotIn("node ", text.replace("node_modules", ""), f"{rel} still calls node")
-            self.assertNotIn("not found under the neva-core plugin root", text, f"{rel} still has the stop text")
-            for ref in __import__("re").findall(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)", text):
-                refs += 1
-                self.assertTrue(os.path.exists(os.path.join(support.PLUGIN, ref.rstrip(".,:;)"))), f"{rel} -> {ref}")
+        for plugin, rels in self.OWNED.items():
+            proot = support.PLUGIN if plugin == "neva-core" else self.LIBRARY
+            for rel in rels:
+                with open(os.path.join(proot, rel), encoding="utf-8") as fh:
+                    text = fh.read()
+                self.assertNotIn("node ", text.replace("node_modules", ""), f"{rel} still calls node")
+                self.assertNotIn("not found under the neva-core plugin root", text, f"{rel} still has the stop text")
+                for ref in re.findall(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)", text):
+                    refs += 1
+                    self.assertTrue(os.path.exists(os.path.join(proot, ref.rstrip(".,:;)"))), f"{plugin}/{rel} -> {ref}")
+                for ref in re.findall(r"neva_core\.py\"?\s+(?:path|run)\s+([A-Za-z0-9_./-]+)", text):
+                    refs += 1
+                    self.assertTrue(os.path.exists(os.path.join(support.PLUGIN, ref)), f"{plugin}/{rel} -> core {ref}")
         self.assertGreater(refs, 10)
 
     def test_real_repo_audit_runs(self):
@@ -393,9 +423,10 @@ class TestShippedCommands(unittest.TestCase):
         finally:
             sb.close()
         self.assertEqual(r["target_mode"], "repo")
-        _, missing = ha.plugin_root_refs({"neva-core": support.PLUGIN})
-        for rel in self.OWNED:
-            self.assertEqual([m for m in missing if m.startswith(f"neva-core/{rel} ->")], [])
+        _, missing = ha.plugin_root_refs({"neva-core": support.PLUGIN, "neva-library": self.LIBRARY})
+        for plugin, rels in self.OWNED.items():
+            for rel in rels:
+                self.assertEqual([m for m in missing if m.startswith(f"{plugin}/{rel} ->")], [])
 
 
 if __name__ == "__main__":

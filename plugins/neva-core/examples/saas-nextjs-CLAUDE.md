@@ -131,7 +131,7 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```bash
 /tdd                    # Unit + integration tests for new features
 /e2e                    # Playwright tests for auth flow, billing, dashboard
-/test-coverage          # Verify 80%+ coverage
+/neva-library:test-coverage          # Verify 80%+ coverage
 ```
 
 ### Critical E2E Flows
@@ -152,11 +152,11 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 # Before committing
 /code-review
-/security-scan
+/neva-library:security-scan
 
 # Before release
 /e2e
-/test-coverage
+/neva-library:test-coverage
 ```
 
 ## Git Workflow

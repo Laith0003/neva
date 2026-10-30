@@ -184,7 +184,7 @@ Component test with RTL + JSDOM cannot:
 - Test browser-native animation, CSS transitions
 - Test cross-frame interactions (iframes, popups)
 
-For those, use Playwright Component Testing or end-to-end Playwright/Cypress runs. See the `neva-core:e2e-testing` skill.
+For those, use Playwright Component Testing or end-to-end Playwright/Cypress runs. See the `neva-library:e2e-testing` skill.
 
 ## Coverage Targets
 

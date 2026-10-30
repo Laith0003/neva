@@ -142,4 +142,4 @@ Implemented in `hooks/neva_hooks/safety_guard.py`, modules `safety_careful` and 
 - Freeze prevents accidental edits. It is not a security boundary: Bash commands like `sed -i` can still modify files outside it. Pair with Careful (Guard mode) when that matters.
 - Careful is a speed bump, not a sandbox. The user can always override the warning.
 - Enable by default for fully autonomous sessions (for example `codex -a never`).
-- Complementary to `neva-core:gateguard`, which forces fact-gathering before the first edit rather than warning on destructive patterns.
+- Complementary to `neva-library:gateguard` (opt-in library; its hook ships in core and runs on the strict profile), which forces fact-gathering before the first edit rather than warning on destructive patterns.

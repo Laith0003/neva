@@ -10,6 +10,8 @@ from unittest import mock
 import unittest
 
 SKILLS = Path(__file__).resolve().parents[2] / "skills"
+# gan-style-harness and plan-canvas ship in the opt-in neva-library; their hooks stay in core.
+LIBRARY_SKILLS = Path(__file__).resolve().parents[3] / "neva-library" / "skills"
 
 class SkillSecurity(unittest.TestCase):
     def test_stop_hook_sends_canvas_token(self):
@@ -52,7 +54,7 @@ print(os.environ.get('FAKE_COMPLETION', 'fake child completed'))
                    "CAPTURE_ARGS": str(capture), "GAN_PROJECT_DIR": str(directory),
                    "GAN_SKIP_PLANNER": "true", "GAN_MAX_ITERATIONS": "1",
                    "GAN_EVAL_MODE": "cli", "GAN_TEST_CMD": "python3 -m unittest", "GAN_DEV_SERVER_PORT": "4321"}
-            proc = subprocess.run(["bash", str(SKILLS / "gan-style-harness/scripts/gan-harness.sh"), "fixture"],
+            proc = subprocess.run(["bash", str(LIBRARY_SKILLS / "gan-style-harness/scripts/gan-harness.sh"), "fixture"],
                                   cwd=directory, env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("Evaluator completed", proc.stdout)
@@ -88,11 +90,39 @@ print(os.environ.get('FAKE_COMPLETION', 'fake child completed'))
             calls = [json.loads(line) for line in capture.read_text().splitlines()]
             self.assertEqual(len(calls), 1)
             tools = calls[0][calls[0].index("--allowedTools") + 1]
-            self.assertEqual(tools, f"Read,Write({instincts}/**)")
+            self.assert_instincts_only(tools, instincts)
+            self.assertEqual(tools, f"Read,Edit(/{instincts}/**)")
             self.assertEqual(list(temporary.iterdir()), [])
 
+    def assert_instincts_only(self, tools, instincts):
+        """Claude Code accepts a Write(...) rule but never matches it, and a single-slash rule is project-relative:
+        the child may edit only under the absolute instincts folder, written //abs/path/**."""
+        rules = tools.split(",")
+        self.assertEqual([r for r in rules if r.startswith("Write(")], [], tools)
+        edits = [r for r in rules if r.startswith("Edit(")]
+        self.assertTrue(edits, tools)
+        root = "//" + str(Path(instincts).resolve()).lstrip("/")
+        for rule in edits:
+            self.assertTrue(rule.startswith("Edit(//"), rule)
+            path = rule[len("Edit("):-1]
+            self.assertTrue(path == root + "/**", f"{rule} is not scoped to {root}/**")
+            self.assertNotIn("..", path)
+        self.assertEqual(sorted(set(rules) - set(edits)), ["Read"], tools)
+
+    def test_analysis_rules_resolve_a_relative_or_dotted_instincts_dir(self):
+        scripts = SKILLS / "continuous-learning-v2/scripts"
+        sys.path.insert(0, str(scripts))
+        spec = importlib.util.spec_from_file_location("security_analysis_rules", scripts / "instinct-analyze.py")
+        analyzer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(analyzer)
+        with tempfile.TemporaryDirectory() as raw:
+            instincts = Path(raw).resolve() / "instincts"
+            instincts.mkdir()
+            dotted = Path(raw) / "instincts" / ".." / "instincts"
+            self.assert_instincts_only(analyzer.allowed_tools(dotted), instincts)
+
     def test_canvas_explicit_state_directory_authenticates_shutdown(self):
-        cli = SKILLS / "plan-canvas/scripts/plan-canvas.js"
+        cli = LIBRARY_SKILLS / "plan-canvas/scripts/plan-canvas.js"
         script = r"""
 const fs=require('fs'),path=require('path'),http=require('http'),assert=require('assert');
 const {EventEmitter}=require('events');
@@ -122,7 +152,7 @@ require(process.argv[1]).ensureServer({stateDir:custom,port:4517}).then(()=>{
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_canvas_persists_private_rotating_token(self):
-        cli = SKILLS / "plan-canvas/scripts/plan-canvas.js"
+        cli = LIBRARY_SKILLS / "plan-canvas/scripts/plan-canvas.js"
         script = r"""
 const fs=require('fs'), path=require('path'), http=require('http'), assert=require('assert');
 const dir=fs.mkdtempSync(path.join(process.cwd(),'.canvas-state-test-'));
@@ -143,7 +173,7 @@ setTimeout(()=>{
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_canvas_denies_missing_token_and_symlink_escape(self):
-        server = SKILLS / "plan-canvas/scripts/lib/plan-canvas/server.js"
+        server = LIBRARY_SKILLS / "plan-canvas/scripts/lib/plan-canvas/server.js"
         script = r"""
 const assert = require('assert');
 const {createPlanCanvasServer} = require(process.argv[1]);

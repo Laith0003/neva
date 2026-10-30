@@ -51,4 +51,4 @@ test('calls onSelect with the user id when pressed', () => {
 
 ## What to test first
 
-Use the `tdd-guide` agent proactively for new features: write a failing test that captures the behavior, then implement.
+Use the `neva-library:tdd-guide` (opt-in library; otherwise the core tdd-workflow skill) agent proactively for new features: write a failing test that captures the behavior, then implement.

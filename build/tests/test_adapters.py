@@ -222,6 +222,62 @@ class AdapterTest(unittest.TestCase):
         return sorted(p for p in self.out.rglob(pattern) if p.is_file())
 
 
+class TestAdapterContentParity(AdapterTest):
+    """Decided 2026-10-29: harnesses without per-project plugin opt-in keep what 0.10.x gave them,
+    neva-core plus neva-library. Only Claude Code gets the slim core with the opt-in library."""
+
+    PLUGINS = ROOT / "plugins"
+
+    def source_counts(self):
+        skills = commands = agents = 0
+        for name in ("neva-core", "neva-library"):
+            base = self.PLUGINS / name
+            skills += len(list(base.glob("skills/*/SKILL.md")))
+            commands += len(list(base.glob("commands/*.md")))
+            agents += len(list(base.glob("agents/*.md")))
+        return skills, commands, agents
+
+    def test_source_counts_are_what_0_10_shipped(self):
+        self.assertEqual((94, 54, 30), self.source_counts())
+
+    def test_adapter_counts_equal_core_plus_library(self):
+        skills, commands, agents = self.source_counts()
+        expected = {
+            "opencode": {"skills/*/SKILL.md": skills, "commands/*.md": commands, "agents/*.md": agents},
+            "gemini": {"skills/*/SKILL.md": skills, "commands/*.toml": commands, "agents/*.md": agents},
+            "codex": {"agents/*.toml": agents},
+            "cursor": {".cursor/agents/*.md": agents},
+        }
+        for harness, patterns in expected.items():
+            for pattern, count in patterns.items():
+                with self.subTest(harness=harness, pattern=pattern):
+                    self.assertEqual(count, len(list((self.out / harness).glob(pattern))))
+
+    def test_codex_enables_the_library_plugin_too(self):
+        text = (self.out / "codex" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn('[plugins."neva-library@neva"]', text)
+        keys = [e["key"] for e in json.loads((self.out / "codex" / "install.json").read_text())["entries"]]
+        self.assertIn('plugins."neva-library@neva"', keys)
+
+    def test_every_plugin_root_path_resolves_from_the_core_root_adapters_set(self):
+        """Adapters set CLAUDE_PLUGIN_ROOT to plugins/neva-core, so even a library file may only
+        name paths that exist there; it reaches its own files through scripts/neva_core.py."""
+        core = self.PLUGINS / "neva-core"
+        rx = re.compile(r"\$\{?CLAUDE_PLUGIN_ROOT\}?/([A-Za-z0-9_./-]+)")
+        checked = 0
+        for path in self.files():
+            if path.suffix.lower() not in adapters.TEXT_SUFFIXES:
+                continue
+            for match in rx.finditer(path.read_text(encoding="utf-8", errors="replace")):
+                ref = match.group(1).rstrip(".,:;)")
+                if not ref or ref.endswith("/"):
+                    ref = ref.rstrip("/")
+                checked += 1
+                with self.subTest(file=str(path.relative_to(self.out)), ref=ref):
+                    self.assertTrue((core / ref).exists(), ref)
+        self.assertGreater(checked, 50)
+
+
 class TestDeterminism(AdapterTest):
     def test_two_builds_produce_identical_bytes(self):
         with tempfile.TemporaryDirectory(prefix="neva-adapter-again-") as other:
@@ -408,12 +464,11 @@ class TestGeneratedMarkers(AdapterTest):
             if path.name in self.AUTHORED_JSON or "skills" not in path.parts:
                 continue
             rel = Path(*path.parts[path.parts.index("skills") + 1:])
-            if path.relative_to(self.out).parts[0] == "opencode":
-                name = rel.parts[0]
-                if not (adapters.CORE / "skills" / name).is_dir():
-                    name = name.removeprefix("neva-")
-                rel = Path(name, *rel.parts[1:])
-            source = adapters.CORE / "skills" / rel
+            dirs = {d.name: d for d in adapters.skill_dirs()}
+            name = rel.parts[0]
+            if path.relative_to(self.out).parts[0] == "opencode" and name not in dirs:
+                name = name.removeprefix("neva-")
+            source = dirs[name].joinpath(*rel.parts[1:]) if name in dirs else Path("/nonexistent")
             with self.subTest(path=str(path.relative_to(self.out))):
                 self.assertTrue(source.exists(), "a copied asset has no source")
                 self.assertEqual(source.read_bytes(), path.read_bytes())
@@ -658,12 +713,15 @@ class TestOpenCodeNamespaces(AdapterTest):
                     adapters.build_opencode(output, "test", "MIT")
 
     def source_skill_names(self):
-        return sorted(path.parent.name for path in (adapters.CORE / "skills").glob("*/SKILL.md"))
+        return sorted(path.name for path in adapters.skill_dirs() if (path / "SKILL.md").is_file())
 
     def test_already_prefixed_skill_names_are_not_prefixed_twice(self):
         folders = sorted(path.name for path in (self.out / "opencode" / "skills").iterdir())
         self.assertIn("neva-guide", folders)
-        self.assertIn("neva-recipes", folders)
+        prefixed = [name for name in self.source_skill_names() if name.startswith("neva-")]
+        self.assertTrue(prefixed, "no already-prefixed source skill left to check")
+        for name in prefixed:
+            self.assertIn(name, folders)
         self.assertEqual([], [name for name in folders if name.startswith("neva-neva-")])
 
     def test_skill_bodies_name_skills_that_exist_on_opencode(self):
@@ -688,7 +746,7 @@ class TestOpenCodeNamespaces(AdapterTest):
         self.assertEqual(set(), {name for name in seen if name.removeprefix("neva-") in unprefixed} - generated)
 
     def test_skill_names_and_folders_cannot_shadow_owner_names(self):
-        sources = sorted((adapters.CORE / "skills").glob("*/SKILL.md"))
+        sources = sorted(d / "SKILL.md" for d in adapters.skill_dirs() if (d / "SKILL.md").is_file())
         self.assertTrue(sources)
         # A source name already in the neva- namespace is Neva's own and keeps its name (no
         # neva-neva-); every other source name is one an owner may also use.
@@ -924,10 +982,10 @@ class TestOpenCodeBridgeBehaviour(AdapterTest):
         self.assertEqual({}, self.shell_env(neva_root=False))
 
     def test_skill_command_runs_with_claude_variables_unset(self):
-        """The orch-pipeline command from SKILL.md, in the shell environment OpenCode builds."""
+        """The instinct CLI command from continuous-learning-v2, in the shell environment OpenCode builds."""
         results, _ = self.run_bridge([["shell.env", {"cwd": "/w"}, {"env": {}}]], real=True)
         injected = results[0]["output"]["env"]
-        command = '"${CLAUDE_PLUGIN_ROOT}/skills/orch-pipeline/scripts/orch-workspace" plan.md'
+        command = '"${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cli.py" --help'
         base = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init", "-q", tmp], check=True)
@@ -959,9 +1017,10 @@ class TestExecutableBits(AdapterTest):
     """A copied script the skill tells the agent to run must still be runnable."""
 
     def copies_of_executables(self):
-        for source in sorted((adapters.CORE / "skills").rglob("*")):
+        pairs = [(skill.parent, s) for skill in adapters.skill_dirs() for s in sorted(skill.rglob("*"))]
+        for skills_root, source in pairs:
             if source.is_file() and executable(source) and "__pycache__" not in source.parts:
-                rel = source.relative_to(adapters.CORE / "skills")
+                rel = source.relative_to(skills_root)
                 for harness in ("opencode", "gemini"):
                     native_rel = (Path(adapters.opencode_skill_name(rel.parts[0]), *rel.parts[1:])
                                   if harness == "opencode" else rel)
@@ -976,17 +1035,17 @@ class TestExecutableBits(AdapterTest):
                 self.assertTrue(executable(copy), "the executable bit was lost in generation")
 
     def test_plain_files_do_not_become_executable(self):
-        skill = self.out / "opencode" / "skills" / "neva-orch-pipeline" / "SKILL.md"
+        skill = self.out / "opencode" / "skills" / "neva-continuous-learning-v2" / "SKILL.md"
         self.assertFalse(executable(skill))
 
-    def test_generated_orch_workspace_runs_directly(self):
-        script = self.out / "opencode" / "skills" / "neva-orch-pipeline" / "scripts" / "orch-workspace"
+    def test_generated_instinct_cli_runs_directly(self):
+        script = self.out / "opencode" / "skills" / "neva-continuous-learning-v2" / "scripts" / "instinct-cli.py"
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(["git", "init", "-q", tmp], check=True)
-            (Path(tmp) / "plan.md").write_text("# plan\n", encoding="utf-8")
-            p = subprocess.run([str(script), "plan.md"], cwd=tmp, capture_output=True, text=True, timeout=60)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_", "NEVA_"))}
+            env["HOME"] = tmp
+            p = subprocess.run([str(script), "--help"], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(0, p.returncode, p.stderr)
-            self.assertTrue(p.stdout.strip().endswith(os.path.join(".neva", "orch", "plan")))
+            self.assertIn("usage: instinct-cli.py", p.stdout)
 
 
 class TestDriftCheckSeesModes(unittest.TestCase):
@@ -1002,7 +1061,7 @@ class TestDriftCheckSeesModes(unittest.TestCase):
 
     def test_a_removed_executable_bit_is_drift(self):
         """Negative control: byte-only comparison could not see this."""
-        script = adapters.OUT / "opencode" / "skills" / "neva-orch-pipeline" / "scripts" / "orch-workspace"
+        script = adapters.OUT / "opencode" / "skills" / "neva-continuous-learning-v2" / "scripts" / "instinct-cli.py"
         self.assertEqual(0, adapters.check(verbose=False))
         script.chmod(0o644)
         self.assertEqual(1, adapters.check(verbose=False))

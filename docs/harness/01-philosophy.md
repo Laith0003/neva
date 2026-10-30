@@ -28,16 +28,16 @@ Why: a specialist with a narrow prompt and a narrow tool set makes fewer wrong m
 
 Mechanics, the proactive triggers:
 
-| Situation | Specialist |
-|-----------|------------|
-| Complex feature or refactor | planner |
-| Code just written or modified | code-reviewer |
-| Bug fix or new feature | tdd-guide |
-| Architectural decision | architect |
-| Security-sensitive code (auth, input, secrets, queries, crypto) | security-reviewer |
-| Build or type errors | build-error-resolver |
+| Situation | Specialist | Plugin |
+|-----------|------------|--------|
+| Complex feature or refactor | planner | neva-library (opt-in); the core `plan` command otherwise |
+| Code just written or modified | code-reviewer | neva-core |
+| Bug fix or new feature | tdd-guide | neva-library (opt-in); the core `tdd-workflow` skill otherwise |
+| Architectural decision | architect | neva-library (opt-in) |
+| Security-sensitive code (auth, input, secrets, queries, crypto) | security-reviewer | neva-core |
+| Build or type errors | build-error-resolver | neva-library (opt-in) |
 
-Agents are addressed through the plugin namespace, for example `neva-core:planner`. Scope each one: give it only the tools, MCP servers and permissions its job needs. Limited tools produce focused execution.
+Agents are addressed through the plugin namespace, for example `neva-core:code-reviewer`. Scope each one: give it only the tools, MCP servers and permissions its job needs. Limited tools produce focused execution.
 
 ## 2. Research before code
 

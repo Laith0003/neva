@@ -45,6 +45,6 @@ Import from `@nuxt/test-utils/e2e`.
 
 ## Reference
 
-- Neva skills: `nuxt4-patterns`, `neva-core:e2e-testing`, `vite-patterns`.
+- Neva skills: `nuxt4-patterns`, `neva-library:e2e-testing`, `vite-patterns`.
 - [Nuxt testing docs](https://nuxt.com/docs/getting-started/testing)
 - [@nuxt/test-utils npm](https://www.npmjs.com/package/@nuxt/test-utils)

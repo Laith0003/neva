@@ -247,7 +247,7 @@ def suggest_compact(ctx):
                 pct = round(tokens * 100 / window)
                 msg = (f"[StrategicCompact] Context is about {round(tokens / 1000)}k tokens ({pct}% of a "
                        f"{window // 1000}k window). Consider /compact at the next logical boundary, with a focus "
-                       "line for what comes next. Write the plan or state to a file first (/ck:save).")
+                       "line for what comes next. Write the plan or state to a file first.")
     else:
         thr = c.env_int("COMPACT_THRESHOLD", 50, 1, 10000)
         n = st["count"]

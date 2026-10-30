@@ -13,7 +13,7 @@ Use this as the HIPAA-specific entrypoint when a task is clearly about US health
 
 - `healthcare-phi-compliance` remains the primary implementation skill for PHI/PII handling, data classification, audit logging, encryption, and leak prevention.
 - `healthcare-reviewer` remains the specialized reviewer when code, architecture, or product behavior needs a healthcare-aware second pass.
-- `security-review` still applies for general auth, input-handling, secrets, API, and deployment hardening.
+- `neva-library:security-review` (opt-in library; otherwise dispatch neva-core:security-reviewer) still applies for general auth, input-handling, secrets, API, and deployment hardening.
 
 ## When to Use
 
@@ -77,4 +77,4 @@ Response pattern:
 - `healthcare-reviewer`
 - `healthcare-emr-patterns`
 - `healthcare-eval-harness`
-- `security-review`
+- `neva-library:security-review` (opt-in library; otherwise dispatch neva-core:security-reviewer)

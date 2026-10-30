@@ -1,0 +1,11 @@
+{
+  "name": "neva-library",
+  "version": "0.11.0",
+  "description": "Opt-in library of Neva skills, commands and agents moved out of the always-on core: orchestration, planning variants, eval and agent engineering, harness admin, session tools, GitHub epics. Install it disabled and enable it per project. Needs neva-core.",
+  "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
+  "author": {
+    "name": "Neva",
+    "url": "https://github.com/Laith0003/neva"
+  },
+  "homepage": "https://github.com/Laith0003/neva"
+}

@@ -57,4 +57,4 @@ await connection.QueryAsync<Order>(sql, new { customerId });
 
 ## References
 
-See skill: `security-review` for broader application security review checklists.
+See skill: `neva-library:security-review` (opt-in library; otherwise dispatch neva-core:security-reviewer) for broader application security review checklists.

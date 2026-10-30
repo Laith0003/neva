@@ -79,7 +79,7 @@ src/
 
 - `/plan` - Create implementation plan
 - `/code-review` - Code quality review
-- `/build-fix` - Fix build errors
+- `/neva-library:build-fix` - Fix build errors (opt-in neva-library)
 
 ## Git Workflow
 

@@ -13,7 +13,7 @@ machine-checkable contract. Consumers state what they need, providers implement
 that shape, and both sides verify against the same artifact before integration.
 
 This skill governs how teams change a boundary. It complements `api-design`,
-which governs what a good API looks like, and `ai-regression-testing`, which
+which governs what a good API looks like, and `neva-library:ai-regression-testing` (opt-in library; otherwise the core tdd-workflow skill), which
 guards fixed bugs from returning.
 
 ## When to Activate
@@ -282,7 +282,7 @@ does not coordinate parallel work or prevent drift.
 ## Related Skills
 
 - `api-design` - resource, response, error, pagination, and versioning design
-- `ai-regression-testing` - regression tests for response-shape and path drift
+- `neva-library:ai-regression-testing` (opt-in library; otherwise the core tdd-workflow skill) - regression tests for response-shape and path drift
 - `backend-patterns` - provider-side API and service architecture
 - `frontend-patterns` - consumer-side data access and UI integration
 - `neva-core:tdd-workflow` - test-first implementation discipline

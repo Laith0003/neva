@@ -34,7 +34,7 @@
         "-y",
         "@upstash/context7-mcp@latest"
       ],
-      "description": "Live library documentation lookup (resolve-library-id, query-docs). A docs-lookup skill over the public REST API does the same with no resident tools; prefer it.",
+      "description": "Live library documentation lookup (resolve-library-id, query-docs). The opt-in neva-library:docs-lookup agent does the same over the public REST API with no resident tools; prefer it.",
       "cost": "free"
     },
     "github": {

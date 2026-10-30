@@ -33,7 +33,7 @@
         "standard",
         "strict"
       ],
-      "description": "ck skill: record current-session.json and inject the project's saved goal, where it left off and next steps (or the 3 most recent ck projects). No-op when ck data does not exist."
+      "description": "neva-library:ck skill (opt-in): record current-session.json and inject the project's saved goal, where it left off and next steps (or the 3 most recent ck projects). No-op when ck data does not exist."
     },
     {
       "id": "prompt_context",

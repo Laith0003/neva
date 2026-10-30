@@ -16,7 +16,7 @@ Pull these Neva-native skills into the workflow when relevant:
 
 - `verification-loop` for exact proving steps after changes
 - `tdd-workflow` when the right fix needs regression coverage
-- `security-review` when secrets, auth, or external inputs are involved
+- `neva-library:security-review` (opt-in library; otherwise dispatch neva-core:security-reviewer) when secrets, auth, or external inputs are involved
 - `github-ops` when the task depends on CI runs, PR state, or release status
 - `knowledge-ops` when the verified outcome needs to be captured into durable project context
 

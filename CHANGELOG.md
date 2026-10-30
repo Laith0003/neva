@@ -1,5 +1,41 @@
 # Changelog
 
+## neva-core 0.11.0, neva-library 0.11.0 (2026-10-29) - the core split
+
+`neva-core` loaded 94 skills, 54 commands and 30 agents into every session, about 12,600
+tokens of names and descriptions, and almost none were used. It now keeps what the loop needs
+and the rest moves to a new opt-in plugin. The set of items is unchanged; only their paths and
+`neva-library:` references were updated.
+
+Claude Code gets a slim always-on core with an opt-in library. The adapters for every other
+harness (Codex, OpenCode, Gemini, Cursor, Copilot, Kiro and the rest) keep the same items:
+they project core plus library, the same 94 skills, 54 commands and 30 agents as 0.10.x,
+because those harnesses cannot enable a plugin per project.
+
+### Changed
+- `neva-core` keeps 9 skills (search-first, iterative-retrieval, tdd-workflow,
+  verification-loop, browser-qa, safety-guard, strategic-compact, continuous-learning-v2,
+  neva-guide), 13 commands (plan, code-review, learn, evolve, promote, projects, prune,
+  instinct-status, instinct-export, instinct-import, epic-sync, epic-validate, epic-review),
+  2 agents (code-reviewer, security-reviewer), and every hook, rule, context, script and
+  workflow. Always-on cost: about 1,450 tokens (`claude plugin details`).
+- Core and the six domain plugins (now 0.11.0) name library items as `neva-library:<name>`, say the
+  library is opt-in, and give the core fallback.
+- The adapters project core plus library (`ADAPTER_PLUGINS` in `build/adapters.py`). Codex also
+  enables `neva-library@neva`.
+- Library files reach their own files through `scripts/neva_core.py library <path>`, so the same
+  text works whether `CLAUDE_PLUGIN_ROOT` names the library (Claude Code) or `plugins/neva-core`
+  (Codex and the adapters).
+
+### Added
+- `neva-library`: 85 skills, 41 commands and 28 agents, moved with `git mv`. Install it
+  disabled and enable it per project in `.claude/settings.json` `enabledPlugins`.
+- `scripts/neva_core.py`, byte-identical in both plugins: finds the other plugin (override
+  variable, sibling checkout, or plugin cache), prints a path in it, or runs a core script.
+- `build/check-plugin-refs.py` and `build/verify.sh` section 30: fail on a dangling
+  `plugin:name`, a non-library plugin that uses a library-only item by a bare name, or a
+  `${CLAUDE_PLUGIN_ROOT}` path missing from its plugin, with planted negative controls.
+
 ## 0.10.0 (2026-10-04) - the coding harness
 
 Neva becomes two things in one repo: the honest second brain, and a disciplined coding harness

@@ -100,4 +100,4 @@ try {
 
 See skill: `springboot-security` for Spring Security authentication and authorization patterns.
 See skill: `quarkus-security` for Quarkus security with JWT/OIDC, RBAC, and CDI.
-See skill: `security-review` for general security checklists.
+See skill: `neva-library:security-review` (opt-in library; otherwise dispatch neva-core:security-reviewer) for general security checklists.

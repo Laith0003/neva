@@ -97,7 +97,7 @@ class TestShippedCodex(ShippedInstall):
             for role in shipped:
                 self.assertIn(role, parsed["agents"])
             self.assertEqual("/home/user/roles/reviewer.toml", parsed["agents"]["owner_reviewer"]["config_file"])
-            self.assertTrue((self.home / ".codex" / "neva" / "agents" / "architect.toml").is_file())
+            self.assertTrue((self.home / ".codex" / "neva" / "agents" / "code-reviewer.toml").is_file())
             rules = agents.read_text(encoding="utf-8")
             self.assertTrue(rules.startswith(OWNER_RULES))
             self.assertEqual(1, rules.count("<!-- neva begin neva-core -->"))
@@ -107,7 +107,7 @@ class TestShippedCodex(ShippedInstall):
 class TestShippedOpenCode(ShippedInstall):
     def test_opencode_install_twice_and_uninstall_keeps_the_owner(self):
         config = self.put(".config/opencode/opencode.json", OWNER_OPENCODE)
-        owned = [self.put(".config/opencode/agents/architect.md", "the owner's architect\n"),
+        owned = [self.put(".config/opencode/agents/code-reviewer.md", "the owner's code-reviewer\n"),
                  self.put(".config/opencode/commands/plan.md", "the owner's plan\n"),
                  self.put(".config/opencode/skills/plan/SKILL.md", "the owner's skill\n")]
         agents = self.put(".config/opencode/AGENTS.md", OWNER_RULES)
@@ -119,9 +119,9 @@ class TestShippedOpenCode(ShippedInstall):
             self.assertTrue(agents.read_text(encoding="utf-8").startswith(OWNER_RULES))
             base = self.home / ".config" / "opencode"
             self.assertTrue((base / "plugins" / "neva-hooks.js").is_file())
-            self.assertTrue((base / "skills" / "neva" / "neva-ck" / "SKILL.md").is_file())
+            self.assertTrue((base / "skills" / "neva" / "neva-tdd-workflow" / "SKILL.md").is_file())
             self.assertTrue((base / "rules" / "neva-core" / "process.md").is_file())
-            self.assertTrue((base / "agents" / "neva" / "architect.md").is_file())
+            self.assertTrue((base / "agents" / "neva" / "code-reviewer.md").is_file())
             self.assertTrue((base / "commands" / "neva" / "plan.md").is_file())
             for path in owned:
                 self.assertTrue(path.read_text(encoding="utf-8").startswith("the owner's"), str(path))

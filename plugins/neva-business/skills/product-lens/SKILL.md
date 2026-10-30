@@ -12,7 +12,7 @@ This lane owns product diagnosis, not implementation-ready specification writing
 
 If the user needs a durable PRD-to-SRS or capability-contract artifact, hand off to
 `product-capability`. If the product question is settled and the open question is the
-engineering design, hand off to `intent-driven-development`.
+engineering design, hand off to `neva-library:intent-driven-development` (opt-in library; otherwise the core plan command).
 
 **HARD GATE:** no implementation skill, no code, no scaffolding. The output is a document or
 a decision.
@@ -133,7 +133,7 @@ risks, open questions, a **go / no-go / not yet** recommendation with the eviden
 would flip it, and **the assignment**: one concrete action for this week (not a strategy).
 
 If the result is "yes, build this," the next lane is `product-capability` (capability
-contract) or `intent-driven-development` (design and acceptance criteria), not more
+contract) or `neva-library:intent-driven-development` (opt-in library; otherwise the core plan command) (design and acceptance criteria), not more
 founder-theater.
 
 ### Mode 2: Founder Review
@@ -218,7 +218,7 @@ to decide in hour 1 (foundations), hours 2-3 (core logic), hours 4-5 (integratio
 (polish and tests)? Surface those decisions now as questions, not "figure it out later".
 
 **Output:** chosen mode, accepted and deferred scope, a "NOT in scope" list with one-line
-reasons, the dream-state delta, and the open decisions. Hand the revised plan to `blueprint`
+reasons, the dream-state delta, and the open decisions. Hand the revised plan to `neva-library:blueprint` (opt-in library; otherwise the core plan command)
 for the engineering review gate.
 
 **Thinking instincts** to apply throughout (not a checklist): classify decisions by
@@ -238,5 +238,5 @@ Pair with:
 - `/design-system audit` for visual polish assessment
 - `/canary-watch` for post-launch monitoring
 - `product-capability` when the product brief needs to become an implementation-ready capability plan
-- `intent-driven-development` when the product is settled and the design is not
-- `blueprint` after a Mode 5 scope review, for the engineering review gate
+- `neva-library:intent-driven-development` (opt-in library; otherwise the core plan command) when the product is settled and the design is not
+- `neva-library:blueprint` (opt-in library; otherwise the core plan command) after a Mode 5 scope review, for the engineering review gate

@@ -1,6 +1,6 @@
 {
   "name": "neva-backend-langs",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Server languages: Python (Django, FastAPI, Celery), Go, Rust, Java (Spring Boot, Quarkus, JPA), Kotlin server (Ktor, Exposed), C++, C#/.NET, F#, Perl, Rails.",
   "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
   "author": {

@@ -49,4 +49,4 @@ bundle exec brakeman --no-progress
 
 ## Reference
 
-See skill: `neva-core:security-review` for secure-by-default review patterns.
+See skill: `neva-library:security-review` for secure-by-default review patterns.

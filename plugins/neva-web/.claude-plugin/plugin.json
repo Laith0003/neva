@@ -1,6 +1,6 @@
 {
   "name": "neva-web",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Web stack: PHP/Laravel, TypeScript, React, Next, Vue, Nuxt, Angular, NestJS, Bun, Vite; Postgres, MySQL, Redis, ClickHouse, Prisma; API design, accessibility, design systems, motion, slides.",
   "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
   "author": {

@@ -35,18 +35,20 @@ Do not rewrite the system unless asked. Report concrete findings with file and l
 
 MLE review should compose existing SWE review surfaces instead of replacing them:
 
+> Names written `neva-library:<name>` ship in the opt-in `neva-library` plugin. Enable it for the project (`"neva-library@neva": true` under `enabledPlugins` in `.claude/settings.json`), or do that step inline with the core or domain surface listed beside it.
+
 - Use `python-reviewer` for Python style, typing, error handling, dependency hygiene, and unsafe deserialization.
 - Use `pytorch-build-resolver` when tensor shape, device placement, gradient, CUDA, DataLoader, or AMP failures block training/inference.
 - Use `database-reviewer` for feature tables, label stores, prediction logs, experiment metrics, and point-in-time query performance.
 - Use `security-reviewer` for secrets, PII, prompt/data leakage, artifact integrity, unsafe pickle/joblib loading, and supply-chain risk.
-- Use `performance-optimizer` for latency, memory, batching, GPU utilization, cold start, and cost per prediction.
-- Use `build-error-resolver` for CI, dependency, native extension, CUDA, and environment-specific failures outside PyTorch itself.
-- Use `pr-test-analyzer` when the change claims coverage but does not prove leakage, schema drift, serving fallback, or promotion-gate behavior.
-- Use `silent-failure-hunter` when pipelines can appear green while skipping data, labels, eval slices, alerts, or artifact publication.
-- Use `e2e-runner` for product flows where predictions affect user-visible or business-critical behavior.
+- Use `neva-library:performance-optimizer` for latency, memory, batching, GPU utilization, cold start, and cost per prediction.
+- Use `neva-library:build-error-resolver` for CI, dependency, native extension, CUDA, and environment-specific failures outside PyTorch itself.
+- Use `neva-library:pr-test-analyzer` when the change claims coverage but does not prove leakage, schema drift, serving fallback, or promotion-gate behavior.
+- Use `neva-library:silent-failure-hunter` when pipelines can appear green while skipping data, labels, eval slices, alerts, or artifact publication.
+- Use `neva-library:e2e-runner` for product flows where predictions affect user-visible or business-critical behavior.
 - Use `a11y-architect` when prediction explanations, confidence states, or fallback UI need to be accessible.
-- Use `doc-updater` when new model contracts, promotion gates, dashboards, or rollback runbooks need durable project documentation.
-- Use `documentation-lookup` before relying on evolving ML serving, vector DB, feature store, or eval-framework APIs.
+- Use `neva-library:doc-updater` when new model contracts, promotion gates, dashboards, or rollback runbooks need durable project documentation.
+- Use `neva-library:documentation-lookup` before relying on evolving ML serving, vector DB, feature store, or eval-framework APIs.
 
 ## Critical Review Areas
 

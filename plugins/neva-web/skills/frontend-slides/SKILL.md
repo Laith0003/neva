@@ -178,7 +178,7 @@ Use these maxima unless the user explicitly asks for denser slides and readabili
 
 - `frontend-patterns` for component and interaction patterns around the deck
 - `neva-mobile:liquid-glass-design` when a presentation intentionally borrows Apple glass aesthetics
-- `neva-core:e2e-testing` if you need automated browser verification for the final deck
+- `neva-library:e2e-testing` if you need automated browser verification for the final deck
 
 ## Deliverable Checklist
 

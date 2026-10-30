@@ -232,4 +232,4 @@ Run this skill again (`neva-core:verification-loop`).
 
 ## Integration with Hooks
 
-This skill complements PostToolUse hooks but provides deeper verification. Hooks catch issues immediately; this skill provides comprehensive review. `neva-core:delivery-gate` is the mechanical Stop-hook counterpart.
+This skill complements PostToolUse hooks but provides deeper verification. Hooks catch issues immediately; this skill provides comprehensive review. `neva-library:delivery-gate` (opt-in library; its Stop hook ships in core) explains the mechanical Stop-hook counterpart.

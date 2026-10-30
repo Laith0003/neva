@@ -102,7 +102,7 @@ If useful, point to the next Neva-native lane:
 
 - `project-flow-ops`
 - `workspace-surface-audit`
-- `api-connector-builder`
+- `neva-library:api-connector-builder` (opt-in library; otherwise build it inline)
 - `dashboard-builder`
 - `tdd-workflow`
 - `verification-loop`

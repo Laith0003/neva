@@ -46,14 +46,15 @@ A test or check that has only ever been green is unproven.
 
 ## Troubleshooting Test Failures
 
-1. Use **neva-core:tdd-guide**
+1. Use the `tdd-workflow` skill (or **neva-library:tdd-guide** where the opt-in library is enabled)
 2. Check test isolation
 3. Verify mocks are correct
 4. Fix the implementation, not the tests (unless the tests are wrong)
 
 ## Agent Support
 
-- **neva-core:tdd-guide**: use proactively for new features; enforces tests first
+- `tdd-workflow` skill (core, always on): use proactively for new features; enforces tests first
+- **neva-library:tdd-guide**: the same discipline as a subagent, where the opt-in library is enabled
 
 ## Test Structure (AAA Pattern)
 

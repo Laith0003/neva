@@ -31,7 +31,7 @@ In run order. "Tools: all" means the module sees every tool call of that event a
 | Id | Events | Tools | Profiles | File | What it does |
 |---|---|---|---|---|---|
 | `session_start` | SessionStart | all | minimal, standard, strict | `session_start.py` | Inject strong instincts (canonical project/<id> and global folders), today's journal head, inbox open actions, open instinct proposals and the last session summary for this worktree or repo (8000 char cap); prune session files older than 30 days. |
-| `ck_session_start` | SessionStart | all | standard, strict | `ck.py` | ck skill: record current-session.json and inject the project's saved goal, where it left off and next steps (or the 3 most recent ck projects). No-op when ck data does not exist. |
+| `ck_session_start` | SessionStart | all | standard, strict | `ck.py` | neva-library:ck skill (opt-in): record current-session.json and inject the project's saved goal, where it left off and next steps (or the 3 most recent ck projects). No-op when ck data does not exist. |
 | `prompt_context` | UserPromptSubmit | all | standard, strict | `prompt_context.py` | Once per session: GOALS.md and project states when a prompt is about direction; the matching project note when the working directory is under its code path. |
 | `hookify_prompt` | UserPromptSubmit | all | minimal, standard, strict | `hookify.py` | hookify rules with event prompt or all: warn with context or block the prompt. |
 | `no_verify` | PreToolUse | Bash | minimal, standard, strict | `pre_bash.py` | Block git hook bypasses: --no-verify (and prefixes), commit -n clusters, -c core.hooksPath, git config core.hooksPath, HUSKY=0. |

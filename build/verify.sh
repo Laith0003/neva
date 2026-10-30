@@ -857,13 +857,13 @@ else
 fi
 rm -rf "$NEG_DIR"
 
-head_ "25. the plugin harness (neva-core and the domain plugins) installs, validates and passes its suites"
+head_ "25. the plugin harness (neva-core, neva-library and the domain plugins) installs, validates and passes its suites"
 # Added 2026-10-04 with the ECC-derived harness. A marketplace that validates but whose hooks crash,
 # or whose hooks pass tests but never register, ships nothing. Each check below can fail.
-if python3 -c "import json,sys; d=json.load(open('$REPO/.claude-plugin/marketplace.json')); sys.exit(0 if len(d['plugins'])==8 else 1)" 2>/dev/null; then
-  ok "marketplace.json parses and lists 8 plugins"
+if python3 -c "import json,sys; d=json.load(open('$REPO/.claude-plugin/marketplace.json')); sys.exit(0 if len(d['plugins'])==9 else 1)" 2>/dev/null; then
+  ok "marketplace.json parses and lists 9 plugins"
 else
-  bad "marketplace.json" "missing, invalid, or not 8 plugins; fix .claude-plugin/marketplace.json"
+  bad "marketplace.json" "missing, invalid, or not 9 plugins; fix .claude-plugin/marketplace.json"
 fi
 if python3 - "$REPO" <<'PYEOF'
 import json, sys, os
@@ -925,7 +925,7 @@ head_ "26. cross-harness adapters are generated, valid and checked for drift"
 # or unittest's summary gets lost behind the generator's own progress lines.
 ADAPTER_CHECK="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 build/adapters.py --check 2>&1)"
 if printf '%s\n' "$ADAPTER_CHECK" | grep -q '^adapters: clean$'; then
-  ok "generated harness adapters are in sync with plugins/neva-core"
+  ok "generated harness adapters are in sync with plugins/neva-core and plugins/neva-library"
 else
   bad "adapter drift" "run: python3 build/adapters.py, then commit adapters/"
 fi
@@ -1312,6 +1312,47 @@ else
   bad "omni sync suite" "$(printf '%s' "$OMNI_PY_OUT" | tr '\n' ' ')"
   printf '%s\n' "$OMNI_PY_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
 fi
+
+head_ "30. no skill, command or agent reference dangles across the core and library split (2026-10-29)"
+# neva-core is always on and neva-library is opt-in. A core file that names a library-only item
+# by an invocable name, a plugin:name that the plugin does not ship, or a CLAUDE_PLUGIN_ROOT path
+# that is not in its own plugin sends the model to nothing. build/check-plugin-refs.py checks all three.
+REFS_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 build/check-plugin-refs.py 2>&1)"
+if printf '%s\n' "$REFS_OUT" | grep -q '^check-plugin-refs: clean$'; then
+  ok "plugin cross references resolve (core never depends on the opt-in library)"
+else
+  bad "dangling plugin reference" "run: python3 build/check-plugin-refs.py and fix each line it prints"
+  printf '%s\n' "$REFS_OUT" | head -20
+fi
+# Negative controls: plant one dangling reference of each kind in a copy. Each must make the
+# checker exit nonzero AND name the planted file, so a failure elsewhere cannot pass for it.
+REFS_NEG="$(mktemp -d "$SANDBOX/refs-neg-XXXXXX")"
+REFS_NEG_OK=1
+for PLANT in core-slash namespaced plugin-root plugin-root-unbraced library-one-root domain-backtick domain-bold domain-table prose skill-call python-path; do
+  rm -rf "$REFS_NEG/repo"; mkdir -p "$REFS_NEG/repo"
+  cp -R "$REPO/.claude-plugin" "$REPO/plugins" "$REFS_NEG/repo/"
+  case "$PLANT" in
+    core-slash)           FILE="plugins/neva-core/rules/agents.md";               LINE='Then run /plan-canvas.' ;;
+    namespaced)           FILE="plugins/neva-library/commands/feature-dev.md";    LINE='Dispatch neva-core:planner.' ;;
+    plugin-root)          FILE="plugins/neva-library/commands/harness-audit.md";  LINE='python3 "${CLAUDE_PLUGIN_ROOT}/scripts/harness_audit.py"' ;;
+    plugin-root-unbraced) FILE="plugins/neva-library/commands/loop-status.md";    LINE='python3 "$CLAUDE_PLUGIN_ROOT/scripts/loop_status.py"' ;;
+    library-one-root)     FILE="plugins/neva-library/skills/plan-canvas/SKILL.md"; LINE='node "${CLAUDE_PLUGIN_ROOT}/skills/plan-canvas/scripts/plan-canvas.js"' ;;
+    domain-backtick)      FILE="plugins/neva-web/commands/react-build.md";        LINE='Use the `tdd-guide` subagent.' ;;
+    domain-bold)          FILE="plugins/neva-web/rules/typescript/testing.md";    LINE='- **e2e-runner** runs the flows' ;;
+    domain-table)         FILE="plugins/neva-ops/skills/kubernetes-patterns/SKILL.md"; LINE='| deploy | plan-canvas | review |' ;;
+    prose)                FILE="plugins/neva-domains/agents/mle-reviewer.md";     LINE='Then use the planner agent.' ;;
+    skill-call)           FILE="plugins/neva-core/rules/testing.md";              LINE='Skill("plan-canvas")' ;;
+    python-path)          FILE="plugins/neva-core/hooks/neva_hooks/common.py";    LINE='PLANTED = os.path.join(ROOT, "skills", "plan-canvas")' ;;
+  esac
+  printf '\n%s\n' "$LINE" >> "$REFS_NEG/repo/$FILE"
+  PLANT_OUT="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 build/check-plugin-refs.py --root "$REFS_NEG/repo" 2>&1)"
+  PLANT_RC=$?
+  if [ "$PLANT_RC" -eq 0 ] || ! printf '%s\n' "$PLANT_OUT" | grep -q "^$FILE:"; then
+    REFS_NEG_OK=0; bad "negative control" "check-plugin-refs did not flag the planted $PLANT reference in $FILE (exit $PLANT_RC)"
+  fi
+done
+[ "$REFS_NEG_OK" -eq 1 ] && ok "negative control: 11 planted dangling references (core slash, stale namespace, braced and unbraced plugin root, a library path that only holds under one root, domain backtick, bold and table, prose, Skill(), python path) each fail and name their file"
+rm -rf "$REFS_NEG"
 
 printf "\n%s\n" "-----------------------------------------"
 printf "verify: %s passed, %s failed, %s skipped\n" "$PASS" "$FAIL" "$SKIPPED"

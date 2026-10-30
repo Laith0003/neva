@@ -95,7 +95,7 @@ Before writing a utility or adding functionality, mentally run through:
 0. Does this already exist in the repo? → `rg` through relevant modules/tests first
 1. Is this a common problem? → Search npm/PyPI
 2. Is there an MCP for this? → Check `~/.claude/settings.json` and search
-3. Is there a skill for this? → Check `$HOME/.claude/skills/` and installed plugins (the `skill-scout` skill does this thoroughly)
+3. Is there a skill for this? → Check `$HOME/.claude/skills/` and installed plugins (where the opt-in `neva-library` is enabled, `neva-library:skill-scout` does this thoroughly)
 4. Is there a GitHub implementation/template? → Run GitHub code search for maintained OSS before writing net-new code
 
 ### Full Mode (agent)
@@ -140,20 +140,20 @@ tool name exposed by the active harness.
 
 ## Integration Points
 
-### With planner agent
-The planner should invoke researcher before Phase 1 (Architecture Review):
+### With the neva-library:planner agent (opt-in library)
+Where the library is enabled, the planner should invoke researcher before Phase 1 (Architecture Review):
 - Researcher identifies available tools
 - Planner incorporates them into the implementation plan
 - Avoids "reinventing the wheel" in the plan
 
-### With architect agent
-The architect should consult researcher for:
+### With the neva-library:architect agent (opt-in library)
+Where the library is enabled, the architect should consult researcher for:
 - Technology stack decisions
 - Integration pattern discovery
 - Existing reference architectures
 
-### With skill-scout skill
-When the thing that may already exist is a skill, `skill-scout` runs the search, vetting, and ranking.
+### With the neva-library:skill-scout skill (opt-in library)
+When the thing that may already exist is a skill and the opt-in `neva-library` is enabled, `neva-library:skill-scout` runs the search, vetting, and ranking.
 
 ### With iterative-retrieval skill
 Combine for progressive discovery:

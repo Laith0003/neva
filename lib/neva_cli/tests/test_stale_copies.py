@@ -84,29 +84,29 @@ class TestStaleCopies(Sandbox):
 
 
 class TestOpenCodeUpgradeFromMain(Sandbox):
-    """Start from a manifest that holds skills/neva/ck/SKILL.md, as the main-era install left it."""
+    """Start from a manifest that holds skills/neva/tdd-workflow/SKILL.md, as the main-era install left it."""
 
     def test_upgrade_removes_unprefixed_skills(self):
         self.env({"NEVA_ADAPTERS_DIR": str(self.adapters)})
-        owner = self.home / ".config/opencode/skills/ck/SKILL.md"
+        owner = self.home / ".config/opencode/skills/tdd-workflow/SKILL.md"
         owner.parent.mkdir(parents=True)
-        owner.write_text("---\nname: ck\n---\nthe owner's ck\n", encoding="utf-8")
+        owner.write_text("---\nname: tdd-workflow\n---\nthe owner's tdd-workflow\n", encoding="utf-8")
         before = self.snapshot_home()
         self.write_adapter("opencode", {"harness": "opencode", "entries": [
             {"src": "skills", "dest": "~/" + SKILLS, "mode": "copy"}]},
-            {"skills/ck/SKILL.md": "---\nname: ck\n---\nNeva's old ck\n"})
+            {"skills/tdd-workflow/SKILL.md": "---\nname: tdd-workflow\n---\nNeva's old tdd-workflow\n"})
         code, output = self.install(harness="opencode")
         self.assertEqual(0, code, output)
-        stale = self.home / SKILLS / "ck" / "SKILL.md"
+        stale = self.home / SKILLS / "tdd-workflow" / "SKILL.md"
         self.assertIn(str(stale), [entry["dest"] for entry in self.entries("opencode")])
         self.env({"NEVA_ADAPTERS_DIR": str(SHIPPED)})
         code, output = self.install(harness="opencode")
         self.assertEqual(0, code, output)
-        self.assertFalse(stale.parent.exists(), "the unprefixed ck still shadows the owner's skill")
+        self.assertFalse(stale.parent.exists(), "the unprefixed tdd-workflow still shadows the owner's skill")
         unprefixed = [p.name for p in (self.home / SKILLS).iterdir() if not p.name.startswith("neva-")]
         self.assertEqual([], unprefixed)
-        self.assertTrue((self.home / SKILLS / "neva-ck" / "SKILL.md").is_file())
-        self.assertEqual("---\nname: ck\n---\nthe owner's ck\n", owner.read_text(encoding="utf-8"))
+        self.assertTrue((self.home / SKILLS / "neva-tdd-workflow" / "SKILL.md").is_file())
+        self.assertEqual("---\nname: tdd-workflow\n---\nthe owner's tdd-workflow\n", owner.read_text(encoding="utf-8"))
         code, output = self.uninstall()
         self.assertEqual(0, code, output)
         self.assertHomeUnchanged(before)

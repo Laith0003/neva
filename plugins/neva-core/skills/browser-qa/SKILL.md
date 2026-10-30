@@ -287,5 +287,5 @@ Any open critical issue means DO NOT SHIP.
 ## Integration
 
 - Pair with `neva-ops:canary-watch` for post-deploy monitoring.
-- Pair with `neva-core:benchmark` for performance baselines.
+- Pair with `neva-library:benchmark` (opt-in library) for performance baselines.
 - Fixes in `--fix` mode follow `neva-core:tdd-workflow` for the regression test and `neva-core:verification-loop` before any "fixed" claim.

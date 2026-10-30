@@ -263,4 +263,4 @@ CI=true vitest run --coverage
 
 - Skills: `skills/react-testing/`, `skills/tdd-workflow/`, `skills/accessibility/`, `skills/e2e-testing/`
 - Rules: `rules/react/testing.md`
-- Agents: `react-reviewer` (reviews test quality), `tdd-guide` (enforces TDD process)
+- Agents: `react-reviewer` (reviews test quality), `neva-library:tdd-guide` (opt-in library; otherwise the core tdd-workflow skill) (enforces TDD process)

@@ -109,7 +109,7 @@ DEBUG=false
 - `/plan`: create an implementation plan and wait for confirmation
 - `/tdd`: test-driven development workflow
 - `/code-review`: review code quality in a fresh context
-- `/build-fix`: fix build errors
+- `/neva-library:build-fix`: fix build errors (opt-in neva-library)
 
 ## Git Workflow
 

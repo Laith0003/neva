@@ -372,7 +372,7 @@ Coverage target is 90% line coverage as a floor, not a goal. Sharp tests with 85
 
 # Review
 /code-review            # General quality check
-/security-scan          # Brakeman + dependency audit
+/neva-library:security-scan          # Brakeman + dependency audit
 
 # Verification
 /verify                 # Lint, type-check, test, security scan in one pass

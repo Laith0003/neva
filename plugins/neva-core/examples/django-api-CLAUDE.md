@@ -294,7 +294,7 @@ pytest --lf
 
 # Review
 /python-review          # Python-specific code review
-/security-scan          # Django security audit
+/neva-library:security-scan          # Django security audit
 /code-review            # General quality check
 
 # Verification

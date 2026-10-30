@@ -91,7 +91,8 @@ claude plugin install neva-core@neva
 
 | Plugin | What it holds |
 |---|---|
-| `neva-core` | The process loop, planner, architect, code and security reviewers, TDD guide, the learning engine (instincts), session memory, compaction discipline, orchestration, the Python hook runtime |
+| `neva-core` | Always on, kept small: 9 skills (search-first, iterative-retrieval, tdd-workflow, verification-loop, browser-qa, safety-guard, strategic-compact, continuous-learning-v2, neva-guide), 13 commands (plan, code-review, the instinct commands, three epic commands), the code and security reviewer agents, and every hook, rule, context, script and workflow |
+| `neva-library` | Opt-in: the other 85 skills, 41 commands and 28 agents (planner, architect, TDD guide, orchestration, planning variants, eval and agent engineering, harness admin, session tools, GitHub epics). Needs `neva-core` |
 | `neva-web` | PHP and Laravel, TypeScript, React, Next, Vue, Nuxt, Angular, databases, frontend patterns |
 | `neva-mobile` | Flutter and Dart, Swift and SwiftUI, Kotlin and Compose, React Native |
 | `neva-backend-langs` | Python, Django, FastAPI, Go, Rust, Java, Spring, Quarkus, Kotlin server, C++, C#, F#, Perl, Rails |
@@ -101,6 +102,32 @@ claude plugin install neva-core@neva
 | `neva-domains` | Healthcare, supply chain, machine learning, scientific and market domains |
 
 Keep `neva-core` on everywhere and enable the others per project, so the skill list stays small.
+Every skill, command and agent a plugin ships puts its name and description into every session.
+The split took `neva-core` from about 12,600 always-on tokens to about 1,450
+(`claude plugin details neva-core@neva`); `neva-library` adds about 11,200 where it is enabled.
+
+### Opt in to the library
+
+Install `neva-library` once and leave it off, then turn it on only in the projects that use it:
+
+```
+claude plugin install neva-library@neva
+claude plugin disable neva-library@neva
+```
+
+In a project that wants it, add it to that project's `.claude/settings.json`:
+
+```json
+{
+  "enabledPlugins": {
+    "neva-library@neva": true
+  }
+}
+```
+
+Library items are named `neva-library:<name>`, for example `/neva-library:plan-canvas` or the
+`neva-library:planner` agent. Commands in the library that drive `neva-core` scripts find the
+installed core on their own; set `NEVA_CORE_ROOT` to the core plugin folder to override.
 Hook profiles: `NEVA_HOOK_PROFILE=minimal|standard|strict`; switch any module off with
 `NEVA_DISABLED_HOOKS`. Details: [docs/harness/](docs/harness/).
 
