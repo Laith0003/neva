@@ -1,0 +1,5 @@
+{
+  "extraKnownMarketplaces": {
+    "community": {"source": "https://plugins.example.com/marketplace.json@v1.4.0"}
+  }
+}

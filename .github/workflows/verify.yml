@@ -29,6 +29,8 @@ jobs:
           if [ -n "$LEAK_SCAN_LOCAL" ]; then printf '%s\n' "$LEAK_SCAN_LOCAL" > build/leak-scan.local; fi
       - name: Leak scan
         run: python3 build/leak-scan.py .
+      - name: Shield scan
+        run: python3 bin/neva shield --path . --fail-on high
       - name: Licence guard
         run: python3 build/licence-guard.py
       - name: Acceptance harness

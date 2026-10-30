@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Bash(git status)"],
+    "deny": ["Read(~/.ssh/**)"]
+  }
+}

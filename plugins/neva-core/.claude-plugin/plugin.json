@@ -1,6 +1,6 @@
 {
   "name": "neva-core",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Process, memory and learning core: search first, test first, verify, review, safety guards and the instinct loop, with every hook. Always on. Everything else is in the opt-in neva-library.",
   "license": "FSL-1.1-ALv2 (ECC-derived files MIT, see NOTICE)",
   "author": {

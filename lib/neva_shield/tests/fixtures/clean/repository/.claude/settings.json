@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": ["Bash(git status)", "Bash(npm test)", "Read(./src/**)"],
+    "deny": ["Read(~/.ssh/**)", "Read(**/.env*)"]
+  }
+}

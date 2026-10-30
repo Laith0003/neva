@@ -364,6 +364,7 @@ class TestPreBash(HookTest):
             "+++ b/src/config.ts", "@@ -0,0 +1,4 @@", f"+const k = '{fake_key}';", "+debugger;",
             "+// debugger in a comment is fine", "+const x = 1;",
             "+++ b/src/log.js", "@@ -3,0 +4,2 @@", "+console.log('hi')", "+const api_key = 'your_api_key_here';",
+            # neva-shield: ignore SECRET002
             "+++ b/app/settings.py", "@@ -1,0 +10,1 @@", "+password = 'hunter2hunter2xyz'",
         ])
         errors, warns = pre_bash.scan_added_lines(diff)
@@ -441,6 +442,7 @@ class TestPreWrite(HookTest):
 
 class TestObserveAndMcp(HookTest):
     def test_observe_pre_post_truncate_scrub(self):
+        # neva-shield: ignore SECRET002
         secret = "API_KEY=" + "abcd1234efgh5678"
         big = "y" * 6000
         self.s.dispatch("PreToolUse", self.base(tool_name="Bash", tool_input={"command": f"export {secret}; echo {big}"}))
