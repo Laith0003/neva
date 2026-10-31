@@ -53,6 +53,26 @@ class Hero(World):
         self.assertEqual(move["state"], "proposed")
         self.assertIsNone(move["next"])
 
+    def test_two_first_steps_name_neither(self):
+        self.edit("reviews/Move proposal 2026-03-13.md", "**Recommendation", "Start with Northwind.\n\nStart with Tailspin.\n\n**Recommendation")
+        self.assertIsNone(self.today()["move"]["next"])
+
+    def test_a_do_pick_takes_no_first_step_from_another_option(self):
+        self.edit("reviews/Move proposal 2026-03-13.md", "**Recommendation", "**A. Build it.**\nStart with the database.\n\n**B. Sell it.**\n\n**Do B.** It pays.\n\n**Recommendation")
+        self.assertIsNone(self.today()["move"]["next"])
+
+    def test_a_title_does_not_end_the_first_step(self):
+        self.edit("reviews/Move proposal 2026-03-13.md", "**Recommendation", "Start with Dr. Hadid, because she decides. Then the rest.\n\n**Recommendation")
+        self.assertEqual(self.today()["move"]["next"], "Start with Dr. Hadid, because she decides.")
+
+    def test_a_move_that_fails_the_number_gate_keeps_no_step_or_proposal(self):
+        self.edit("reviews/Move proposal 2026-03-13.md", "**Recommendation", "Start with Northwind.\n\n**Recommendation")
+        self.edit("reviews/Move proposal 2026-03-13.md", "Collect Northwind and Tailspin", "Collect 7,777 from Northwind")
+        move = self.today()["move"]
+        self.assertEqual(move["state"], "unknown")
+        self.assertIsNone(move["next"])
+        self.assertIsNone(move["proposal"])
+
     def test_evidence_links_the_proposal_to_money_it_names(self):
         move = self.today()["move"]
         self.assertEqual(move["evidence"], "3,400 USD owed: Northwind 3,000, Tailspin 400. 1,900 due now.")

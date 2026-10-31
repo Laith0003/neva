@@ -163,7 +163,7 @@ def checked(base, figures, gate):
     if gate.number_ok(probe):
         return base
     base.update(state="unknown", title="Move not verified", state_line="A figure on this move has no source line.",
-                why_now=None, evidence=None)
+                next=None, why_now=None, evidence=None, proposal=None)
     return base
 
 
