@@ -43,6 +43,16 @@ class Hero(World):
     def test_no_next_step_is_said_never_invented(self):
         self.assertIsNone(self.today()["move"]["next"])
 
+    def test_the_first_step_a_proposal_names_is_the_next_step(self):
+        self.edit("reviews/Move proposal 2026-03-13.md", "**Recommendation", "Start with Northwind, because Tailspin clears nothing.\n\n**Recommendation")
+        self.assertEqual(self.today()["move"]["next"], "Start with Northwind, because Tailspin clears nothing.")
+
+    def test_a_first_step_with_a_figure_is_left_out_not_gated(self):
+        self.edit("reviews/Move proposal 2026-03-13.md", "**Recommendation", "Start with Northwind, it owes 9,000.\n\n**Recommendation")
+        move = self.today()["move"]
+        self.assertEqual(move["state"], "proposed")
+        self.assertIsNone(move["next"])
+
     def test_evidence_links_the_proposal_to_money_it_names(self):
         move = self.today()["move"]
         self.assertEqual(move["evidence"], "3,400 USD owed: Northwind 3,000, Tailspin 400. 1,900 due now.")

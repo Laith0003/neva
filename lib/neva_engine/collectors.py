@@ -327,8 +327,11 @@ def collect_proposals(cfg, reader):
         if why:
             sentence = why.group(why.lastindex).split(". ")[0].strip()
             why_text, why_line = sentence.rstrip(".") + "." if sentence else "", line_no(body, why.start())
+        # The proposal's own first step, or none. A figure here would need a source line of its own, so it stays out.
+        first = re.search(r"(?m)^\s*(Start with [^\n]*?\.)(?:\s|$)", body)
+        first_text = first.group(1) if first and not re.search(r"\d", first.group(1)) else None
         facts.append(Fact("goals", "proposal", "newest", {"date": day, "why_line": why_line}, path, line, ts=day, quote=title,
-                          memo={"title": title, "why": why_text, "name": os.path.splitext(os.path.basename(path))[0]}))
+                          memo={"title": title, "why": why_text, "first": first_text, "name": os.path.splitext(os.path.basename(path))[0]}))
     return facts
 
 
