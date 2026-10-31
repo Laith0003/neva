@@ -4,5 +4,6 @@ identity.env
 .DS_Store
 OLD_VAULT/
 __pycache__/
+node_modules/
 *.pyc
 build/leak-scan.local

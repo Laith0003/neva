@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "npx",
+      "args": ["-y", "notes-mcp@latest"]
+    },
+    "billing": {
+      "type": "http",
+      "url": "http://billing.example.com/mcp"
+    },
+    "reports": {
+      "type": "http",
+      "url": "https://reports.example.com/mcp"
+    }
+  }
+}

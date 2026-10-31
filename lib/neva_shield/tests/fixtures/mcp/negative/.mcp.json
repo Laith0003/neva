@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "npx",
+      "args": ["-y", "notes-mcp@1.4.2"]
+    },
+    "billing": {
+      "type": "http",
+      "url": "https://billing.example.com/mcp",
+      "headers": {"Authorization": "Bearer ${BILLING_TOKEN}"},
+      "env": {"BILLING_API_KEY": "${BILLING_API_KEY}"}
+    }
+  }
+}

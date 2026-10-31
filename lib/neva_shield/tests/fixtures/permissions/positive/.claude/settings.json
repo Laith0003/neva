@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(python3 -c *)",
+      "mcp__files__file_upload",
+      "Write(/home/user/**)",
+      "WebFetch(*)"
+    ]
+  }
+}
