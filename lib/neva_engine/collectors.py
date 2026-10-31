@@ -327,8 +327,11 @@ def collect_proposals(cfg, reader):
         if why:
             sentence = why.group(why.lastindex).split(". ")[0].strip()
             why_text, why_line = sentence.rstrip(".") + "." if sentence else "", line_no(body, why.start())
+        # The proposal's own first step, or none. Only a ranked pick has one step to read, and a figure would need a source line of its own.
+        firsts = [] if do else re.findall(r"(?m)^\s*(Start with [^\n]*?(?<![A-Z][a-z])(?<![A-Z][a-z]{2})\.)(?:\s|$)", body)
+        first_text = firsts[0] if len(firsts) == 1 and not re.search(r"\d", firsts[0]) else None
         facts.append(Fact("goals", "proposal", "newest", {"date": day, "why_line": why_line}, path, line, ts=day, quote=title,
-                          memo={"title": title, "why": why_text, "name": os.path.splitext(os.path.basename(path))[0]}))
+                          memo={"title": title, "why": why_text, "first": first_text, "name": os.path.splitext(os.path.basename(path))[0]}))
     return facts
 
 

@@ -122,7 +122,8 @@ def hero(facts, usable, block, gate, today):
         if passed:
             line += f" Your last move expired on {short(win_by)}."
         link = {"name": proposal.memo["name"], "path": proposal.path, "line": proposal.line}
-        base.update(state="proposed", title=proposal.memo["title"], state_line=line, why_now=proposal.memo["why"] or None,
+        base.update(state="proposed", title=proposal.memo["title"], state_line=line, next=proposal.memo.get("first"),
+                    why_now=proposal.memo["why"] or None,
                     sources=[link] + base["sources"],
                     proposal={"title": proposal.memo["title"], "date": proposal.value["date"]})
         evidence, extra = money_evidence(proposal.memo["title"], block, facts)
@@ -162,7 +163,7 @@ def checked(base, figures, gate):
     if gate.number_ok(probe):
         return base
     base.update(state="unknown", title="Move not verified", state_line="A figure on this move has no source line.",
-                why_now=None, evidence=None)
+                next=None, why_now=None, evidence=None, proposal=None)
     return base
 
 
