@@ -285,7 +285,7 @@ Every block carries: instinct id(s), confidence, evidence count, projects seen i
 | both boxes ticked | error `block <id>: both approve and reject are ticked. Fix: untick one.` |
 
 Rules the applier enforces:
-- It writes exactly the fenced text. The human may edit the fence or the destination row before ticking; the edit wins.
+- It writes exactly the fenced text. The human may edit the fence before ticking; the edit wins. Kind, destination and write mode come from the engine's ledger record, not the table rows. A block proposed before the engine recorded its rendered hash is never applied: it is withdrawn once and re-proposed with its hash, and needs a fresh tick.
 - Destinations must be inside the vault, the user Claude config dir (`~/.claude` or `CLAUDE_CONFIG_DIR`), or a registered project's `.claude/`. Anything else fails with `destination ... is outside ... Fix: edit the 'Proposed destination' row`.
 - `create` never overwrites: an existing different file fails with `destination exists: <path>. Fix: rename or remove it, or edit the 'Proposed destination' row.` An identical file counts as applied.
 - Each resolved block gets a line `Applied YYYY-MM-DD to <destination>.` or `Rejected YYYY-MM-DD.`; failures get `Failed YYYY-MM-DD: <error>` and stay open for retry.
