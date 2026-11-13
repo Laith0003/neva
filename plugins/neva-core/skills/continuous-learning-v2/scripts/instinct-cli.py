@@ -1797,53 +1797,72 @@ def _rule_blocks() -> list[dict]:
 
 
 CONFIRM_STATED_ID = "confirm-stated:notes"
+CONFIRM_AGAIN_ID = "confirm-stated:again"
 _CONFIRM_LINE = re.compile(r'^- \[([ xX])\] confirm `(vault:[^`\n]+)`$', re.M)
 
 
-def _confirm_stated_block() -> list[dict]:
-    """Once, after the upgrade: one block listing every note that claims `source: user-stated` but has
-    no add-ledger record. That field is model-writable, so it is never trusted on its own; he ticks the
-    line of each note he wrote, and only those are recorded as his. Never filed a second time."""
+def _confirm_display(inst: dict) -> str:
+    """Exactly what the vouch covers (_note_hash): the trust fields and the whole body, in order."""
+    return "\n".join(f"{k}: {inst.get(k, '')}" for k in TRUST_FIELDS) + "\n\n" + str(inst.get('content', '')).strip()
+
+
+def _confirm_stated_block(slug: str = "notes", only: Optional[set] = None) -> list[dict]:
+    """One block listing notes that claim `source: user-stated` but have no add-ledger record. That
+    field is model-writable, so it is never trusted on its own: each note is shown whole (every field
+    the vouch covers and the full body) and he ticks the line of each one he wrote. A note that cannot
+    be shown safely is listed without a confirm line. `confirm-stated:notes` is filed once, after the
+    upgrade; `confirm-stated:again` once more, for notes that changed between the block and his tick."""
     ledger = _load_ledger()
+    bid = f"confirm-stated:{slug}"
     # Only an install that ran before the add ledger existed has notes to confirm; a fresh ledger has
     # no history to carry over, and its notes were written by add, which records them.
-    if CONFIRM_STATED_ID in ledger or not ledger:
+    if bid in ledger or not ledger:
         return []
     stated = _load_user_stated()
-    notes = []
+    lines, hashes, shown, unsafe = [], {}, [], []
     for directory, label in [(GLOBAL_DIR, "global")] + [(d, "project") for d in _all_project_dirs()]:
         for inst in _load_instincts_from_dir(directory, label):
             path = Path(inst['_source_file'])
+            ref = _vault_ref(path)
+            if only is not None and ref not in only:
+                continue
             if str(inst.get('source', '')) != 'user-stated' or _stated_now(stated, inst):
                 continue
             if not _validate_instinct_id(path.stem):
                 continue
-            notes.append((_vault_ref(path), inst))
-    if not notes:
+            display = _confirm_display(inst)
+            problem = _text_problem("note", display, "\n\t") or (
+                "it holds a fence line" if _FENCE_LINE.search(display) else "") or (
+                "it holds a block id marker" if _MARKER_TEXT.search(display) else "")
+            if problem:
+                unsafe.append(f"{ref}: cannot be shown safely, not offered ({problem})")
+                continue
+            lines.append(f"- [ ] confirm `{ref}`")
+            hashes[ref] = hashlib.sha256(display.encode("utf-8")).hexdigest()
+            shown.append(f"=== {ref}\n{display}")
+    if not lines and not unsafe:
         return []
-    lines, hashes = [], {}
-    body = []
-    for ref, inst in notes:
-        lines.append(f"- [ ] confirm `{ref}`")
-        hashes[ref] = _note_hash(inst)
-        body.append(f"{ref}\n  trigger: {inst.get('trigger', '')}\n  action: {_action_of(inst)}")
-    block = _block("confirm-stated", "notes", [
+    text = "\n\n".join(shown + unsafe) or "nothing could be shown safely"
+    block = _block("confirm-stated", slug, [
         ("Kind", "confirm-stated"),
         ("Why", "these notes say source: user-stated, a field the analyzer can write, and have no record that you "
-                "wrote them; tick the confirm line of each one that is yours, then tick approve"),
-        ("Notes", str(len(notes))),
-    ], "\n\n".join(body), text_lang="text")
+                "wrote them; each is shown whole below; tick the confirm line of each one that is yours, then "
+                "tick approve"),
+        ("Notes", str(len(lines))),
+    ], text, text_lang="text")
     block['extra_lines'] = ["Tick the confirm line of each note you wrote yourself:", ""] + lines + [""]
     block['source_hashes'] = hashes
-    print(f"Filed {CONFIRM_STATED_ID} once: {len(notes)} note(s) claim to be your own words; tick the ones that are.")
+    print(f"Filed {bid} once: {len(lines)} note(s) claim to be your own words; tick the ones that are.")
     return [block]
 
 
 def _confirm_stated_apply(block: dict, entry: dict) -> str:
+    """Record each ticked note whose displayed content, recomputed from the note now, still equals what
+    the block showed. A note changed since is not vouched; it is offered once more."""
     hashes = (entry or {}).get('source_hashes') or {}
     masked = _fence_scan(block['body'])[0]
     stated = _load_user_stated()
-    recorded = 0
+    recorded, changed = 0, []
     for tick, ref in _CONFIRM_LINE.findall(masked):
         if tick == ' ' or ref not in hashes:
             continue
@@ -1852,14 +1871,17 @@ def _confirm_stated_apply(block: dict, entry: dict) -> str:
         except ValueError:
             continue
         parsed = parse_instinct_file(path.read_text(encoding="utf-8")) if path.is_file() else []
-        if parsed and _note_hash(parsed[0]) == hashes[ref]:
-            stated[ref] = {"date": _today(), "sha": hashes[ref], "confirmed": True}
+        if parsed and hashlib.sha256(_confirm_display(parsed[0]).encode("utf-8")).hexdigest() == hashes[ref]:
+            stated[ref] = {"date": _today(), "sha": _note_hash(parsed[0]), "confirmed": True}
             recorded += 1
         else:
-            print(f"block {CONFIRM_STATED_ID}: {ref} changed since it was listed, so it was not recorded. Fix: "
-                  f"run `add --restate <id>` from its project if the note is yours as it reads now.", file=sys.stderr)
+            changed.append(ref)
+            print(f"block {block['block_id']}: {ref} changed after the block showed it, so it was not recorded. "
+                  f"It is offered once more on the next propose.", file=sys.stderr)
     if recorded:
         _save_state_json(USER_STATED_FILE, stated)
+    if changed and block['block_id'] == CONFIRM_STATED_ID:
+        _save_state_json(CONFIRM_AGAIN_FILE, {"refs": changed, "date": _today()})
     print(f"Recorded {recorded} note(s) as your own words.")
     return ''
 
@@ -1947,7 +1969,7 @@ def _render_block(block: dict) -> str:
         cell = str(value).replace('|', '\\|')
         out.append(f"| {key} | {cell} |")
     out += [""] + list(block.get('extra_lines') or [])
-    out += ["Text to write:" if block['kind'] != 'confirm-stated' else "What each note says:", "",
+    out += ["Text to write:" if block['kind'] != 'confirm-stated' else "Each note, whole, as the vouch covers it:", "",
             f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
     return "\n".join(out)
 
@@ -2375,6 +2397,8 @@ PROMOTED_NOTES_FILE = STATE_DIR / "promoted-notes.json"
 # Written by instinct-analyze.py after each successful batch: for every note the batch created or
 # changed, the sessions and days of that batch's own observation lines.
 NOTE_SESSIONS_FILE = STATE_DIR / "note-sessions.json"
+# Notes a confirm-stated block showed that changed before he ticked them: offered once more.
+CONFIRM_AGAIN_FILE = STATE_DIR / "confirm-again.json"
 
 
 def _load_note_sessions() -> dict:
@@ -2660,7 +2684,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         # same content, never by one that merely means something close.
         block['stated'] = bool(block.get('members')) and all(
             _stated_now(user_stated, m) or _approved_now(promoted_now, m) for m in block['members'])
-        if not repropose and not block['returning']:
+        if not repropose and not block['returning'] and block['kind'] != 'confirm-stated':
             match = _matching_decision(ledger, block, block['content'], exact_only=block['stated'])
             if match:
                 print(f"Skipped {bid}: says the same as {match[0]}, {match[1].get('status')} "
@@ -2792,6 +2816,9 @@ def cmd_propose(args) -> int:
     blocks += _rule_blocks()
     blocks += _retire_blocks()
     blocks += _confirm_stated_block()
+    again = learning_io.read_json_object(CONFIRM_AGAIN_FILE) if CONFIRM_AGAIN_FILE.exists() else {}
+    if again.get('refs'):
+        blocks += _confirm_stated_block("again", set(again['refs']))
     return _emit_blocks(blocks, dry_run=args.dry_run)
 
 
@@ -2875,7 +2902,7 @@ def _allowed_destination(path: Path) -> bool:
 
 def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     """Apply one block. Returns '' on success or an error naming the field and the fix."""
-    if block['block_id'] == CONFIRM_STATED_ID:
+    if block['block_id'] in (CONFIRM_STATED_ID, CONFIRM_AGAIN_ID):
         return _confirm_stated_apply(block, entry)
     f = block['fields']
     kind = f.get('Kind', '')
