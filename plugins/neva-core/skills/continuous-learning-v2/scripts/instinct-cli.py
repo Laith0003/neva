@@ -2304,7 +2304,13 @@ def _gate_corpus() -> list:
     skills = [config] + _env_dirs("NEVA_SKILL_DIRS")
     extra = [(f"global instinct {i.get('id')}", quality_gate.lesson_text(i))
              for i in _load_instincts_from_dir(GLOBAL_DIR, "global")]
-    return quality_gate.load_corpus(rules, memory, skills, extra)
+    skipped = []
+    corpus = quality_gate.load_corpus(rules, memory, skills, extra, skipped=skipped)
+    for path in skipped:
+        print(f"Warning: the quality gate did not read {path}: it is over "
+              f"{quality_gate.MAX_CORPUS_FILE_BYTES // 1024} KB. Fix: split it, or move it out of the rules or "
+              f"memory folder; lessons it holds are not seen as already written down.", file=sys.stderr)
+    return corpus
 
 
 def _load_parked() -> dict:

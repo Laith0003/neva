@@ -38,6 +38,9 @@ import instinct_match
 OVERLAP_THRESHOLD = 0.6
 MIN_SHARED = 3
 COEFFICIENT_MIN_STEMS = 6
+# A rules or memory file larger than this is skipped (and named by the caller): the corpus is notes a
+# human wrote, and a file this size is a dump, not a rule.
+MAX_CORPUS_FILE_BYTES = 256 * 1024
 MIN_SESSIONS = 2
 MIN_DAYS = 2
 ACTIVE_DAYS = 30
@@ -90,7 +93,17 @@ def _description(path):
     return m.group(1).strip().strip('"\'') if m else ""
 
 
-def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
+def _too_big(path, skipped):
+    try:
+        big = os.path.getsize(path) > MAX_CORPUS_FILE_BYTES
+    except OSError:
+        return True
+    if big and skipped is not None:
+        skipped.append(path)
+    return big
+
+
+def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=(), skipped=None):
     """[(source label, stems)] for every unit of text that already says something.
 
     rules_dirs   every *.md below, split into paragraphs, headings and bullets
@@ -98,7 +111,8 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
     skill_roots  config folders: skills/*/SKILL.md and commands/**/*.md descriptions, plus the same
                  inside installed plugins (plugins/cache/<market>/<plugin>/<version>/)
     extra        (label, text) pairs, for global instincts
-    Missing folders are skipped: an empty corpus restates nothing."""
+    Missing folders are skipped: an empty corpus restates nothing. A rules or memory file over
+    MAX_CORPUS_FILE_BYTES is not read; its path is appended to `skipped` for the caller to report."""
     units, seen_files = [], set()
 
     def add(label, text):
@@ -115,10 +129,11 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
 
     for root in rules_dirs:
         for path in sorted(glob.glob(os.path.join(root, "**", "*.md"), recursive=True)):
-            if not once(path):
+            if not once(path) or _too_big(path, skipped):
                 continue
             try:
-                text = open(path, encoding="utf-8", errors="replace").read()
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
             except OSError:
                 continue
             for part in _paragraphs(text):
@@ -126,9 +141,11 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
     for root in memory_dirs:
         paths = [os.path.join(root, "MEMORY.md")] + glob.glob(os.path.join(root, "**", "INDEX.md"), recursive=True)
         for path in sorted(paths):
-            if not os.path.isfile(path) or not once(path):
+            if not os.path.isfile(path) or not once(path) or _too_big(path, skipped):
                 continue
-            for line in open(path, encoding="utf-8", errors="replace").read().splitlines():
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+            for line in lines:
                 if line.startswith("- "):
                     add(f"memory index {os.path.relpath(path, root)}", line)
     for root in skill_roots:
