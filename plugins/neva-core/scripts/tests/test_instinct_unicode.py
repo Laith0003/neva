@@ -92,5 +92,28 @@ class TokenizerCase(unittest.TestCase):
         self.assertIsNone(cli._matching_decision(ledger, block, emoji_b))
 
 
+class ArabicFoldingCase(unittest.TestCase):
+    """Rewording that only changes hamza on alef, taa marbuta, alef maqsura or the article still matches."""
+
+    def _same(self, a, b):
+        return instinct_match.jaccard(set(instinct_match.tokens(a)), set(instinct_match.tokens(b)))
+
+    def test_hamza_forms_match(self):
+        a = "\u0623\u0636\u0641 \u0631\u0633\u0627\u0644\u0629 \u062a\u0634\u0631\u062d \u0627\u0644\u0625\u0635\u0644\u0627\u062d"
+        b = "\u0627\u0636\u0641 \u0631\u0633\u0627\u0644\u0647 \u062a\u0634\u0631\u062d \u0627\u0644\u0627\u0635\u0644\u0627\u062d"
+        self.assertEqual(self._same(a, b), 1.0)
+
+    def test_the_article_does_not_matter(self):
+        self.assertEqual(instinct_match.tokens("\u0627\u0644\u0627\u062e\u062a\u0628\u0627\u0631\u0627\u062a"),
+                         instinct_match.tokens("\u0627\u062e\u062a\u0628\u0627\u0631\u0627\u062a"))
+
+    def test_alef_maqsura_matches_yaa(self):
+        self.assertEqual(instinct_match.tokens("\u0645\u0633\u062a\u0648\u0649"),
+                         instinct_match.tokens("\u0645\u0633\u062a\u0648\u064a"))
+
+    def test_two_different_arabic_lessons_still_do_not_match(self):
+        self.assertLess(self._same(ERRORS_ACTION, BACKUP_ACTION), instinct_match.DUPLICATE_JACCARD)
+
+
 if __name__ == "__main__":
     unittest.main()

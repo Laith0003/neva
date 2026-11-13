@@ -90,7 +90,8 @@ class TestMatcher(unittest.TestCase):
         # Decided 2026-11-13: lessons are written in Arabic too, so Arabic words are tokens (the
         # English-only tokenizer gave every Arabic lesson the same empty key). "في" is a stop word.
         m = load_match()
-        self.assertEqual(list(m.tokens("حدث اللوحة في فيجما")), ["حدث", "اللوحة", "فيجما"])
+        # Folded spelling: the article drops and taa marbuta becomes haa, so rewordings meet.
+        self.assertEqual(list(m.tokens("حدث اللوحة في فيجما")), ["حدث", "لوحه", "فيجما"])
 
     def test_score_needs_two_shared_or_one_rare(self):
         m = load_match()
