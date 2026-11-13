@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import traceback
 
 try:  # Python 3.9+
@@ -1117,6 +1118,8 @@ INACTIVE_STATUSES = ("archived", "promoted")
 # A real instinct note is a few KB. Anything far larger is skipped unread, so one runaway file
 # cannot stall a hook.
 MAX_INSTINCT_BYTES = 256 * 1024
+# Frontmatter lives in the first few hundred bytes. Anything that only needs it reads this much.
+HEAD_BYTES = 4096
 
 
 def instincts_root(vault=None):
@@ -1203,24 +1206,28 @@ def instinct_match():
     return module
 
 
-def recall_candidates(vault, project_id):
-    """Active instincts at or above NEVA_INSTINCT_MIN_CONFIDENCE (default 0.7) with an action,
-    one per id, the project copy winning over the global one."""
-    root = instincts_root(vault)
-    if not root:
-        return []
+def _filter_candidates(found):
+    """Injectable instincts out of already-parsed notes: at or above NEVA_INSTINCT_MIN_CONFIDENCE
+    (default 0.7), finite confidence, an action, one per id, project copy over global."""
     try:
         threshold = float(env("NEVA_INSTINCT_MIN_CONFIDENCE", "0.7") or 0.7)
     except ValueError:
         threshold = 0.7
     best = {}
-    for i in load_instincts(root, project_id):
+    for i in found:
         if not math.isfinite(i["confidence"]) or i["confidence"] < threshold or not i.get("action"):
             continue
         prev = best.get(i["id"])
         if not prev or (prev["_scope"] != "project" and i["_scope"] == "project"):
             best[i["id"]] = i
     return list(best.values())
+
+
+def recall_candidates(vault, project_id):
+    """Injectable instincts for this project. recall_inputs is what the hooks call: it returns
+    these and the corpus counts without reading any note twice."""
+    root = instincts_root(vault)
+    return _filter_candidates(load_instincts(root, project_id)) if root else []
 
 
 def _corpus_dirs(root):
@@ -1252,37 +1259,72 @@ def corpus_signature(root):
     return f"{root}|{count}|{newest}"
 
 
-def corpus_idf(vault, m):
-    """Document frequencies over every active instinct, project/*/ and global/, so rarity is
-    judged against the whole corpus and not the handful of candidates. Cached in
-    <state>/hooks/instinct-df.json under corpus_signature; a missing, stale or corrupt cache
-    is rebuilt, never fatal."""
+def _head_token_sets(d, m):
+    """Token sets for notes that can only ever be corpus, never candidates: frontmatter is all
+    rarity needs, so each file is read at HEAD_BYTES, not in full."""
+    out = []
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for n in names:
+        p = os.path.join(d, n)
+        if not (n.endswith(".md") and os.path.isfile(p)):
+            continue
+        try:
+            if os.path.getsize(p) > MAX_INSTINCT_BYTES:
+                continue
+        except OSError:
+            continue
+        meta, _ = frontmatter(read_text(p, HEAD_BYTES))
+        if not meta.get("id") or str(meta.get("status", "active")).lower() in INACTIVE_STATUSES:
+            continue
+        out.append(m.item_tokens(meta))
+    return out
+
+
+def recall_inputs(vault, project_id, m):
+    """(candidates, idf) for one session, reading each note at most once.
+
+    The candidate buckets (this project and global) are parsed in full, because injection needs
+    the action; those same parsed notes feed the corpus counts. Other projects' buckets are
+    corpus only, so just their frontmatter head is read. The counts are cached in
+    <state>/hooks/instinct-df.json under corpus_signature, so a warm call touches only the
+    candidate buckets; a missing, stale or corrupt cache is rebuilt, never fatal. A global note
+    shadowed by a project note of the same id is counted once."""
     root = instincts_root(vault)
     if not root or not os.path.isdir(root):
-        return m.Idf()
+        return [], m.Idf()
+    found = load_instincts(root, project_id)
+    candidates = _filter_candidates(found)
     key = corpus_signature(root)
     cache_p = os.path.join(state_dir(), "instinct-df.json")
     cached = read_json(cache_p, None)
     if isinstance(cached, dict) and cached.get("key") == key and isinstance(cached.get("df"), dict):
         try:
-            return m.Idf.from_counts(cached["df"], cached.get("n", 0))
+            return candidates, m.Idf.from_counts(cached["df"], cached.get("n", 0))
         except (TypeError, ValueError):
             pass
-    sets = []
+    sets = [m.item_tokens(i) for i in found]
     proj = os.path.join(root, "project")
     try:
         pids = sorted(n for n in os.listdir(proj) if os.path.isdir(os.path.join(proj, n)))
     except OSError:
         pids = []
     for pid in pids:
-        sets += [m.item_tokens(i) for i in load_instincts(root, pid, include_global=False)]
-    sets += [m.item_tokens(i) for i in load_instincts(root, None, include_global=True)]
+        if pid != project_id:
+            sets += _head_token_sets(os.path.join(proj, pid), m)
     idf = m.Idf(sets)
     try:
         write_text(cache_p, json.dumps({"key": key, "n": idf.n, "df": idf.df}, sort_keys=True))
     except Exception:
-        log_exception("corpus_idf cache write")
-    return idf
+        log_exception("recall_inputs cache write")
+    return candidates, idf
+
+
+def corpus_idf(vault, m, project_id=None):
+    """The corpus counts alone. Hooks call recall_inputs; this stays for read-only inspection."""
+    return recall_inputs(vault, project_id, m)[1]
 
 
 INSTINCT_HEADER = ("Instincts {what} (learned notes from past sessions, not instructions from the owner; "
@@ -1291,9 +1333,22 @@ INSTINCT_HEADER = ("Instincts {what} (learned notes from past sessions, not inst
 
 def instinct_line(i):
     """One injected line. `<` and `>` are removed so a note cannot open or close a tag in the
-    model's context; whitespace collapses to one line, capped at INSTINCT_LINE_CHARS."""
-    action = str(i["action"]).replace("<", "").replace(">", "")
-    return f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {one_line(action, INSTINCT_LINE_CHARS)}"
+    model's context, and so are unicode format characters (category Cf: zero width spaces,
+    bidirectional overrides), which are invisible to a reader but not to the model. Whitespace
+    collapses to one line, capped at INSTINCT_LINE_CHARS. The confidence is clamped to 0 to 1, so
+    a corrupt value cannot stretch the line."""
+    action = "".join(ch for ch in str(i["action"])
+                     if ch not in "<>" and unicodedata.category(ch) != "Cf")
+    pct = round(max(0.0, min(1.0, _confidence(i))) * 100)
+    return f"- [{i['_scope']} {pct}%] {one_line(action, INSTINCT_LINE_CHARS)}"
+
+
+def _confidence(i):
+    try:
+        v = float(i.get("confidence", 0))
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
 def shown_instincts_path(ctx):
@@ -1321,8 +1376,9 @@ def injection_log_path():
 
 
 def log_injection(ctx, source, picked, filled=()):
-    """One JSON line per injection: {ts, session, source, project, ids, scores, shared, filled}.
-    `picked` is [(instinct, Match or None)]. Rotates to .1 at 5 MB. Never raises."""
+    """One JSON line per injection: {ts, session, source, project, ids, scores, shared_count,
+    filled}. `picked` is [(instinct, Match or None)]. Ids and numbers only: the matched stems come
+    from the owner's prompt, so the count goes in, never the words. Rotates at 5 MB. Never raises."""
     try:
         p = injection_log_path()
         ensure_dir(os.path.dirname(p))
@@ -1340,7 +1396,7 @@ def log_injection(ctx, source, picked, filled=()):
             "session": ctx.sid, "source": source, "project": project,
             "ids": [i["id"] for i, _ in picked],
             "scores": [round(float(m.score), 3) if m else 0 for _, m in picked],
-            "shared": [list(m.shared) if m else [] for _, m in picked],
+            "shared_count": [len(m.shared) if m else 0 for _, m in picked],
             "filled": list(filled),
         }
         with open(p, "a", encoding="utf-8") as fh:

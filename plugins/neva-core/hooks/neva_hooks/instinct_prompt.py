@@ -41,11 +41,10 @@ def run(ctx):
         if limit == 0:
             return None
         m = c.instinct_match()
-        items = c.recall_candidates(ctx.vault, ctx.project["id"])
+        items, idf = c.recall_inputs(ctx.vault, ctx.project["id"], m)
         if not items:
             return None
         shown = set(c.shown_instincts(ctx))
-        idf = c.corpus_idf(ctx.vault, m)
         fresh = [i for i in items if i["id"] not in shown]
         picked = m.rank(prompt, fresh, limit, idf=idf, seen=[i for i in items if i["id"] in shown])
         if not picked:

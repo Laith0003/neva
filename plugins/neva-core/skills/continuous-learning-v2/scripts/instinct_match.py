@@ -5,11 +5,14 @@ with the skill), and the CLI imports it, so the interface below is the contract.
 embedding scorer can replace the lexical one later without touching the callers.
 
   tokens(text)                 ordered, de-duplicated stems of `text`, stop words removed
+  query_tokens(text)           the same, bounded: a frozenset of at most MAX_QUERY_STEMS stems
+                               taken from the first MAX_QUERY_CHARS characters
   item_tokens(item)            stems of an instinct's trigger, id and tags (what a query matches)
   Idf(token_sets)              document frequency over the whole instinct corpus (every active
                                note in every project and global, not only the candidates)
   Idf.from_counts(df, n)       the same from cached counts
-  score(query, item, idf)      Match(score, shared, qualifies)
+  score(query, item, idf)      Match(score, shared, qualifies); pass a prepared query set when
+                               scoring many items, so the query is built once
   near_duplicate(a, b)         Jaccard on action plus trigger stems, at or above 0.6
   rank(query, items, ...)      qualifying items, best first, near-duplicates collapsed
 
@@ -22,6 +25,11 @@ import re
 from collections import namedtuple
 
 MIN_SHARED = 2
+# A pasted file is not a query. Both bounds keep one prompt from costing more than the hook's
+# budget: the text is tokenized up to the first MAX_QUERY_CHARS, and only the first
+# MAX_QUERY_STEMS distinct stems are kept, so scoring one note is bounded whatever arrives.
+MAX_QUERY_CHARS = 8000
+MAX_QUERY_STEMS = 200
 RARE_DF = 3
 RARE_SHARE = 0.02
 DUPLICATE_JACCARD = 0.6
@@ -76,6 +84,18 @@ def tokens(text, stop=STOP_WORDS):
     return out
 
 
+def query_tokens(text):
+    """A bounded, prepared query: frozenset of at most MAX_QUERY_STEMS stems from the first
+    MAX_QUERY_CHARS characters. Already-tokenized input is truncated, not re-tokenized."""
+    if isinstance(text, (set, frozenset)):
+        toks = list(text)
+    elif isinstance(text, str):
+        toks = tokens(text[:MAX_QUERY_CHARS])
+    else:
+        toks = list(text or ())
+    return frozenset(toks[:MAX_QUERY_STEMS])
+
+
 def _field(item, key):
     v = item.get(key) if isinstance(item, dict) else None
     if isinstance(v, (list, tuple)):
@@ -125,10 +145,11 @@ Match = namedtuple("Match", "score shared qualifies")
 
 
 def score(query, item, idf):
-    """Match of `query` (text or stems) against `item` (an instinct dict or a set of stems)."""
-    q = tokens(query) if isinstance(query, str) else list(query)
+    """Match of `query` (text, stems, or a frozenset from query_tokens) against `item` (an
+    instinct dict or a set of stems). Set intersection, so the cost follows the smaller side."""
+    q = query if isinstance(query, frozenset) else query_tokens(query)
     have = item_tokens(item)
-    shared = tuple(t for t in q if t in have)
+    shared = tuple(sorted(q & have))
     if not shared:
         return Match(0, (), False)
     total = round(sum(idf.weight(t) for t in shared), 6)
@@ -197,7 +218,7 @@ def rank(query, items, limit, idf=None, seen=()):
     if limit <= 0:
         return []
     idf = idf or Idf(item_tokens(i) for i in items)
-    q = tokens(query) if isinstance(query, str) else list(query)
+    q = query_tokens(query)
     scored = [(i, score(q, i, idf)) for i in items]
     scored = [(i, m) for i, m in scored if m.qualifies]
     scored.sort(key=lambda e: order_key(e[0], e[1].score))

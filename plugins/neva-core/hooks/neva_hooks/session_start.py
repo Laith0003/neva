@@ -92,7 +92,7 @@ def _project_note_name(vault, cwd):
     cwd = os.path.realpath(cwd)
     best = ("", "")
     for name, p in _project_notes(vault):
-        meta, _ = c.frontmatter(c.read_text(p))
+        meta, _ = c.frontmatter(c.read_text(p, c.HEAD_BYTES))
         for root in _code_paths(meta):
             if (cwd == root or cwd.startswith(root + os.sep)) and len(root) > len(best[0]):
                 best = (root, name)
@@ -127,12 +127,14 @@ def select_start(ctx, m, items, limit, idf):
 def instinct_block(ctx):
     """Instincts matched to where the session is. Any error is logged and yields no block."""
     try:
-        items = c.recall_candidates(ctx.vault, ctx.project["id"])
+        limit = c.env_int("NEVA_INSTINCT_MAX", 3, 0, 50)
+        if not limit:
+            return ""
+        m = c.instinct_match()
+        items, idf = c.recall_inputs(ctx.vault, ctx.project["id"], m)
         if not items:
             return ""
-        limit = c.env_int("NEVA_INSTINCT_MAX", 3, 0, 50)
-        m = c.instinct_match()
-        picked = select_start(ctx, m, items, limit, c.corpus_idf(ctx.vault, m)) if limit else []
+        picked = select_start(ctx, m, items, limit, idf)
         if not picked:
             return ""
         # Lines first: a note that cannot be rendered fails here, before anything is recorded.

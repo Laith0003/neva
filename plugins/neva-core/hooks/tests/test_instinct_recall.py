@@ -123,7 +123,7 @@ class TestMatcher(unittest.TestCase):
         out = m.rank(prompt, items, 3, idf=idf)
         took = time.time() - t
         self.assertEqual(len(out), 3)
-        self.assertLess(took, 2.0, f"rank took {took:.2f}s on 2,000 matching notes")
+        self.assertLess(took, 0.5, f"rank took {took:.2f}s on 2,000 matching notes")
 
     def test_rank_matches_the_reference_on_forty_notes(self):
         m = load_match()
@@ -157,6 +157,27 @@ class TestMatcher(unittest.TestCase):
         for query in ("figma board layer", "git rebase", "deploy hook token cache", "panel frame export"):
             got = [i["id"] for i, _ in m.rank(query, items, 3, idf=idf, seen=seen)]
             self.assertEqual(got, reference(query, 3), query)
+
+    def test_query_is_bounded_in_length_and_stems(self):
+        m = load_match()
+        self.assertEqual(m.MAX_QUERY_CHARS, 8000)
+        self.assertEqual(m.MAX_QUERY_STEMS, 200)
+        tail = " zebraxq"
+        huge = ("filler%d " % 0) + "pad " * 4000 + tail
+        self.assertGreater(len(huge), m.MAX_QUERY_CHARS)
+        q = m.query_tokens(huge)
+        self.assertNotIn("zebraxq", q, "text past the char cap is never tokenized")
+        many = " ".join(f"w{k}word" for k in range(500))
+        self.assertEqual(len(m.query_tokens(many)), m.MAX_QUERY_STEMS)
+        self.assertLessEqual(len(m.query_tokens("a " * 100000)), m.MAX_QUERY_STEMS)
+
+    def test_score_takes_a_prepared_query_set(self):
+        m = load_match()
+        item = {"trigger": "when about to call use_figma on a board"}
+        idf = m.Idf([m.item_tokens(item)] + [{"widget"}] * 99)
+        prepared = m.query_tokens("update the figma board")
+        self.assertIsInstance(prepared, (set, frozenset))
+        self.assertEqual(m.score(prepared, item, idf), m.score("update the figma board", item, idf))
 
     def test_near_duplicate(self):
         m = load_match()
@@ -491,6 +512,63 @@ class TestPromptRecall(RecallTest):
         self.assertNotIn("BROKEN-ACTION", r.context)
         self.assertNotIn("HUGE-ACTION", r.context)
         self.assertLess(took, 5.0)
+
+    def test_huge_prompt_on_a_large_corpus_is_fast_end_to_end(self):
+        # Most of them global, so they are candidates and the query is scored against each one;
+        # the rest in other project buckets, which count for rarity only.
+        for k in range(5000):
+            pid = "global" if k < 4500 else f"project/other{k % 9}"
+            self.note(f"{pid}/big-{k}.md", f"big-{k}", f"when the widget{k % 83} panel{k % 47} turns",
+                      f"BIG-{k} do the thing {k}")
+        self.note("global/figma-load.md", "figma-load", "when about to call use_figma on a figma board",
+                  "FIGMA-ACTION Load the figma skill first")
+        # Distinct words, not a repeated phrase: an unbounded query would carry ~96,000 stems and
+        # be compared against every note.
+        prompt = ("update the figma board. " + " ".join(f"w{k}word" for k in range(200000)))[:1024 * 1024]
+        self.assertGreaterEqual(len(prompt), 1024 * 1024)
+        self.assertFalse(os.path.exists(self.df_cache()), "the cache must be cold")
+        t = time.time()
+        r = self.prompt(prompt, cwd=self.s.tmp, sid="s-huge")
+        took = time.time() - t
+        self.assertAllowed(r)
+        self.assertIn("FIGMA-ACTION", r.context)
+        self.assertLess(took, 2.0, f"the hook took {took:.2f}s on a 1 MB prompt and 5,000 notes")
+
+    def test_invisible_characters_are_stripped(self):
+        self.note("global/sneaky.md", "sneaky", "when a figma board loads",
+                  "SNEAKY-A​‮SNEAKY-B‏SNEAKY-C")
+        r = self.prompt("figma board", cwd=self.s.tmp, sid="s-cf")
+        line = self.instinct_lines(r.context)[0]
+        for ch in ("​", "‮", "‏"):
+            self.assertNotIn(ch, line, repr(ch))
+        self.assertIn("SNEAKY-ASNEAKY-BSNEAKY-C", line)
+
+    def test_confidence_is_clamped_for_display(self):
+        self.note("global/wild.md", "wild", "when a figma board loads", "WILD-ACTION", conf="1e30")
+        r = self.prompt("figma board", cwd=self.s.tmp, sid="s-wild")
+        line = self.instinct_lines(r.context)[0]
+        self.assertIn("[global 100%]", line)
+        self.assertLessEqual(len(line), 200 + len("- [global 100%] "))
+        self.note("global/neg.md", "neg", "when a kestrel panel loads", "NEG-ACTION", conf="-5")
+        r = self.start(cwd=self.sub("panel"), sid="s-neg", NEVA_INSTINCT_MIN_CONFIDENCE="-99")
+        for line in self.instinct_lines(r.context):
+            if "NEG-ACTION" in line:
+                self.assertIn("[global 0%]", line)
+
+    def test_injection_log_holds_ids_and_scores_only(self):
+        self.seed_figma()
+        self.prompt("update the zeppelin figma board frames", cwd=self.s.tmp, sid="s-logfields")
+        rec = self.injections()[-1]
+        self.assertEqual(set(rec), {"ts", "session", "source", "project", "ids", "scores",
+                                    "shared_count", "filled"})
+        self.assertEqual(rec["ids"], ["figma-load"])
+        self.assertEqual(rec["source"], "prompt")
+        self.assertEqual(rec["session"], "s-logfields")
+        self.assertEqual(rec["shared_count"], [2])
+        self.assertEqual(len(rec["scores"]), 1)
+        blob = json.dumps(rec)
+        for stem in ("figma", "board", "frame", "zeppelin", "updat"):
+            self.assertNotIn(f'"{stem}"', blob, "no prompt stems in the log")
 
     def test_broken_vault_never_blocks_the_prompt(self):
         root = os.path.join(self.s.vault, "06 Memory", "instincts")
