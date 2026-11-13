@@ -187,22 +187,17 @@ def claimed_sessions(inst):
     return {s.lower() for s in _SESSION.findall(m.group(1) if m else "")}
 
 
-def member_projects(inst):
-    """The projects whose records can vouch for this note: its own, or those it was promoted from."""
-    pids = [str(inst.get("project_id") or "")]
-    pids += [p.strip() for p in str(inst.get("promoted_from") or "").split(",")]
-    return [p for p in pids if p and p != "None"]
-
-
-def evidence(members, observed, stated=()):
+def evidence(members, observed, stated=(), projects=None):
     """(sessions, days, any_records) across every member the human did not state. `observed` maps a
-    project id to {session id: set of ISO days} read from that project's observation records."""
+    project id to {session id: set of ISO days} read from that project's observation records.
+    `projects` maps a note's `_source_file` to the projects whose records may vouch for it; the
+    caller derives it from the note's folder or an engine record, never from its frontmatter."""
     sessions, days, any_records = set(), set(), False
     for inst in members:
         if inst.get("_source_file") in stated:
             continue
         claimed = claimed_sessions(inst)
-        for pid in member_projects(inst):
+        for pid in (projects or {}).get(inst.get("_source_file"), ()):
             records = (observed or {}).get(pid) or {}
             if records:
                 any_records = True
@@ -212,11 +207,11 @@ def evidence(members, observed, stated=()):
     return sessions, days, any_records
 
 
-def thin(members, observed=None, stated=()):
+def thin(members, observed=None, stated=(), projects=None):
     """A reason when the recorded evidence is under two sessions on two days, else ''."""
     if members and all(m.get("_source_file") in stated for m in members):
         return ""
-    sessions, days, any_records = evidence(members, observed, stated)
+    sessions, days, any_records = evidence(members, observed, stated, projects)
     if not any_records:
         return ("its projects have no observation records to count its evidence from (the note's own claims "
                 "are not counted), so it is treated as thin")
@@ -249,15 +244,17 @@ def dormant(project_ids, registry, today=None):
     return f"none of its projects ({', '.join(sorted(pids))}) was active in the last {ACTIVE_DAYS} days ({when})"
 
 
-def check(members, project_ids, corpus, registry, today=None, skip_labels=(), observed=None, stated=()):
+def check(members, project_ids, corpus, registry, today=None, skip_labels=(), observed=None, stated=(),
+          projects=None):
     """Every failing reason for one candidate, in a fixed order. An empty list means it passes.
     `observed` is {project id: {session id: set of days}} from the observation records; `stated` is
-    the set of `_source_file` paths the `add` subcommand wrote."""
+    the set of `_source_file` paths the `add` subcommand wrote and that still say what it wrote;
+    `projects` is {`_source_file`: [project ids]} as evidence() describes."""
     reasons = []
     hit = restates(_stems(" ".join(lesson_text(m) for m in members)), corpus, skip_labels)
     if hit:
         reasons.append(f"restates {hit[0]} (overlap {hit[1]:.2f} >= {OVERLAP_THRESHOLD})")
-    for reason in (vague(members, stated), thin(members, observed, stated), dormant(project_ids, registry, today)):
+    for reason in (vague(members, stated), thin(members, observed, stated, projects), dormant(project_ids, registry, today)):
         if reason:
             reasons.append(reason)
     return reasons

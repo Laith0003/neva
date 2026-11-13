@@ -961,7 +961,7 @@ def cmd_add(args) -> int:
     title = args.id.replace('-', ' ').title()
     inst['content'] = (f"# {title}\n\n## Action\n{args.action}\n\n## Evidence\n"
                        f"- Stated by the user on {_today()}\n")
-    _record_user_stated(target)
+    _record_user_stated(target, _lesson_hash(inst))
     _write_text_atomic(target, render_instinct(inst))
     print(f"Added {args.id} ({args.scope}, confidence {conf:.2f}) at {_vault_ref(target)}")
     return 0
@@ -1431,7 +1431,7 @@ def _promote_block(cand: dict) -> dict:
     }
     text = render_instinct(best, overrides)
     sources = "; ".join(f"`{_vault_ref(Path(e[2]['_source_file']))}`" for e in cand['entries'])
-    return _block("promote-global", cand['id'], [
+    block = _block("promote-global", cand['id'], [
         ("Kind", "promote-global"),
         ("Instinct", f"`{cand['id']}`"),
         ("Confidence", f"{cand['avg_confidence']:.2f}"),
@@ -1443,6 +1443,8 @@ def _promote_block(cand: dict) -> dict:
         ("Source notes", sources),
         ("Then set on source notes", f"`status: promoted`; `promoted_to: {_vault_ref(dest)}`"),
     ], text, members=[e[2] for e in cand['entries']])
+    block['sources'] = [_vault_ref(Path(e[2]['_source_file'])) for e in cand['entries']]
+    return block
 
 
 def _cluster_destination(project: dict, kind: str, name: str, cluster: list[dict]) -> str:
@@ -1856,6 +1858,7 @@ def _preflight_state() -> None:
         learning_io.check(STATE_ROOT, STATE_BINDING_FILE)
         learning_io.check(STATE_ROOT, PARKED_FILE)
         learning_io.check(STATE_ROOT, USER_STATED_FILE)
+        learning_io.check(STATE_ROOT, PROMOTED_NOTES_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
@@ -2174,15 +2177,77 @@ PARKED_FILE = STATE_DIR / "parked.json"
 USER_STATED_FILE = STATE_DIR / "user-stated.json"
 
 
+# Global notes the engine itself created by applying a promotion: the projects they came from and
+# the lesson hash written. The only source for a global note's projects; `promoted_from` in its
+# frontmatter is model-writable and is not read for evidence.
+PROMOTED_NOTES_FILE = STATE_DIR / "promoted-notes.json"
+
+
+def _lesson_hash(inst: dict) -> str:
+    """What a note teaches, as one hash: its trigger and its action, whitespace-normalised."""
+    lesson = f"{inst.get('trigger', '')}\n{_action_of(inst)}"
+    return hashlib.sha256(" ".join(lesson.split()).encode("utf-8")).hexdigest()
+
+
 def _load_user_stated() -> dict:
     return learning_io.read_json_object(USER_STATED_FILE) if USER_STATED_FILE.exists() else {}
 
 
-def _record_user_stated(note: Path) -> None:
+def _load_promoted_notes() -> dict:
+    return learning_io.read_json_object(PROMOTED_NOTES_FILE) if PROMOTED_NOTES_FILE.exists() else {}
+
+
+def _save_state_json(path: Path, data: dict) -> None:
     learning_io.ensure_dir(STATE_ROOT, STATE_DIR)
+    learning_io.write_text_atomic(STATE_ROOT, path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def _record_user_stated(note: Path, sha: str) -> None:
     stated = _load_user_stated()
-    stated[_vault_ref(note)] = {"date": _today()}
-    learning_io.write_text_atomic(STATE_ROOT, USER_STATED_FILE, json.dumps(stated, indent=2, sort_keys=True) + "\n")
+    stated[_vault_ref(note)] = {"date": _today(), "sha": sha}
+    _save_state_json(USER_STATED_FILE, stated)
+
+
+def _stated_now(stated: dict, inst: dict) -> bool:
+    """True while the note still teaches exactly what `add` recorded for it."""
+    row = stated.get(_vault_ref(Path(inst.get('_source_file', ''))))
+    return isinstance(row, dict) and bool(row.get('sha')) and row['sha'] == _lesson_hash(inst)
+
+
+def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
+    """A row whose note is gone or no longer says what `add` wrote is kept and marked stale, never
+    deleted: the record of what the human once said stays, it just stops vouching."""
+    current = {_vault_ref(Path(i['_source_file'])): i for i in notes if i.get('_source_file')}
+    changed = False
+    for ref, row in stated.items():
+        if not isinstance(row, dict) or row.get('stale'):
+            continue
+        inst = current.get(ref)
+        if inst is None:
+            try:
+                gone = not _resolve_ref(ref).exists()
+            except ValueError:
+                gone = True
+            if not gone:
+                continue
+        elif row.get('sha') == _lesson_hash(inst):
+            continue
+        row['stale'] = _today()
+        changed = True
+    if changed and write:
+        _save_state_json(USER_STATED_FILE, stated)
+
+
+def _note_projects(inst: dict, promoted: dict) -> list:
+    """Projects whose observation records may vouch for a note: a project note's own folder, or for
+    a global note the projects the engine recorded when it created it, while it still says the same."""
+    path = Path(inst.get('_source_file', ''))
+    if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
+        return [path.parent.name] if _validate_project_id(path.parent.name) else []
+    row = promoted.get(_vault_ref(path))
+    if isinstance(row, dict) and row.get('sha') == _lesson_hash(inst):
+        return [p for p in row.get('projects') or [] if _validate_project_id(str(p))]
+    return []
 
 
 def _observed_sessions(pid: str, cache: dict) -> dict:
@@ -2246,7 +2311,8 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     if not blocks:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
-    user_stated, observed_cache = _load_user_stated(), {}
+    user_stated, promoted_notes, observed_cache = _load_user_stated(), _load_promoted_notes(), {}
+    _mark_stale_stated(user_stated, [m for b in blocks for m in b.get('members') or []], write=not dry_run)
     passed, parked_now = [], 0
     for block in blocks:
         bid = block['block_id']
@@ -2256,14 +2322,15 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
         if corpus is None:
             corpus = _gate_corpus()
         members = block['members']
-        pids = sorted({str(m.get('project_id')) for m in members if m.get('project_id')})
+        projects = {m.get('_source_file'): _note_projects(m, promoted_notes) for m in members}
+        # Activity is judged on the projects whose folders hold the notes, never on a frontmatter id.
+        pids = sorted({p for m in members if Path(m.get('_source_file', '')).parent.name in
+                       projects[m.get('_source_file')] for p in projects[m.get('_source_file')]})
         skip = {f"global instinct {m.get('id')}" for m in members}
-        stated = {m['_source_file'] for m in members
-                  if m.get('_source_file') and _vault_ref(Path(m['_source_file'])) in user_stated}
-        observed = {pid: _observed_sessions(pid, observed_cache)
-                    for m in members for pid in quality_gate.member_projects(m)}
+        stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
+        observed = {pid: _observed_sessions(pid, observed_cache) for ps in projects.values() for pid in ps}
         reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
-                                     stated=stated)
+                                     stated=stated, projects=projects)
         entry = dict(parked.get(bid) or {})
         if reasons:
             entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
@@ -2358,6 +2425,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         _ledger_record(ledger, bid, status='proposed', file=str(path), date=_today(),
                        rendered_sha256=_rendered_hash(as_written[bid]['body']),
                        destination=dict(block['fields']).get('Proposed destination'),
+                       sources=block.get('sources'),
                        ticked_at_propose=bool(as_written[bid]['approve']), **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
@@ -2511,7 +2579,7 @@ def _allowed_destination(path: Path) -> bool:
     return any(resolved == r or r in resolved.parents for r in roots)
 
 
-def _apply_block(block: dict) -> str:
+def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     """Apply one block. Returns '' on success or an error naming the field and the fix."""
     f = block['fields']
     kind = f.get('Kind', '')
@@ -2535,12 +2603,14 @@ def _apply_block(block: dict) -> str:
                 f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
     mode = f.get('Write mode', '')
     text = block['text']
+    created = False
     if mode == 'create':
         if dest.exists():
             if dest.read_text(encoding="utf-8") == text:
                 return ''
             return f"block {bid}: destination exists: {dest}. Fix: rename or remove it, or edit the 'Proposed destination' row."
         _write_text_atomic(dest, text)
+        created = True
     elif mode == 'append':
         dest.parent.mkdir(parents=True, exist_ok=True)
         existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
@@ -2559,11 +2629,12 @@ def _apply_block(block: dict) -> str:
     else:
         return f"block {bid}: 'Write mode' is '{mode}'. Fix: set it to create, append, or set-frontmatter."
     if kind == 'promote-global':
-        refs = re.findall(r'`([^`]+)`', f.get('Source notes', ''))
-        stated = _load_user_stated()
-        if refs and all(r.strip() in stated for r in refs):
-            # A promotion of lessons the human stated, approved by the human, is still theirs.
-            _record_user_stated(dest)
+        # The source list is the engine's own, recorded at propose time; the 'Source notes' row is text
+        # in the proposal file and is used only for blocks proposed before the ledger recorded sources.
+        engine_sources = (entry or {}).get('sources')
+        refs = list(engine_sources) if engine_sources else re.findall(r'`([^`]+)`', f.get('Source notes', ''))
+        if created and engine_sources:
+            _record_promoted_note(dest, text, engine_sources)
         for ref in refs:
             try:
                 src = _resolve_ref(ref)
@@ -2572,6 +2643,35 @@ def _apply_block(block: dict) -> str:
             if src.exists():
                 set_frontmatter_fields(src, {'status': 'promoted', 'promoted_to': _vault_ref(dest)})
     return ''
+
+
+def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
+    """Record a global note this apply just created: the projects its sources sit in, and the lesson
+    it holds. When every source is a lesson the human stated, still unchanged, and the note holds one
+    of their lessons, the human's vouch carries to it."""
+    written = parse_instinct_file(text)
+    if not written:
+        return
+    sha = _lesson_hash(written[0])
+    notes, pids = [], []
+    for ref in sources:
+        try:
+            path = _resolve_ref(ref)
+        except ValueError:
+            return
+        parsed = parse_instinct_file(path.read_text(encoding="utf-8")) if path.exists() else []
+        if parsed:
+            parsed[0]['_source_file'] = str(path)
+            notes.append(parsed[0])
+        if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
+            pids.append(path.parent.name)
+    promoted = _load_promoted_notes()
+    promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources}
+    _save_state_json(PROMOTED_NOTES_FILE, promoted)
+    stated = _load_user_stated()
+    if len(notes) == len(sources) and all(_stated_now(stated, n) for n in notes) and \
+            sha in {_lesson_hash(n) for n in notes}:
+        _record_user_stated(dest, sha)
 
 
 def _mark_block(text: str, block: dict, outcome: str, tick_approve: bool) -> str:
@@ -2792,7 +2892,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             go = block['approve'] or mode in ("all", "ids")
             if not go:
                 continue
-            err = _apply_block(block)
+            err = _apply_block(block, ledger.get(bid))
             if err:
                 print(err, file=sys.stderr)
                 text = _mark_block(text, block, f"Failed {_today()}: {err}", False)
