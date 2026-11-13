@@ -258,9 +258,11 @@ def _config_destination_problem(dest: Path, root: Path, allowed: tuple, label: s
     """None when `dest` is not in the config folder `root`; '' when it is and its shape is allowed;
     else why not. The folder is matched by its spelling and by its real path, and the destination
     by both too, so neither a symlink nor `..` nor letter case moves a write in or out of it."""
-    literal = os.path.normpath(os.path.abspath(os.path.expanduser(str(dest))))
+    # Resolved the way the OS will: abspath then realpath on the raw spelling, never normpath first,
+    # which would fold `..` before a link is followed. Callers refuse `..` before they get here.
+    literal = os.path.abspath(os.path.expanduser(str(dest)))
     real = os.path.realpath(literal)
-    root_lit = os.path.normpath(os.path.abspath(os.path.expanduser(str(root))))
+    root_lit = os.path.abspath(os.path.expanduser(str(root)))
     root_real = os.path.realpath(root_lit)
     rel_lit = _rel_under(literal, root_lit)
     if rel_lit is None:
@@ -2319,12 +2321,17 @@ def _apply_block(block: dict) -> str:
         dest = _resolve_ref(f.get('Proposed destination', ''))
     except ValueError as e:
         return f"block {bid}: 'Proposed destination' is invalid ({e}). Fix: use vault:<path>, ~/<path>, or an absolute path."
-    if not _allowed_destination(dest):
-        return (f"block {bid}: destination {dest} is outside the vault, ~/.claude, and registered project .claude "
-                f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
+    if ".." in Path(os.path.expanduser(str(dest))).parts:
+        return (f"block {bid}: destination {dest} has a '..' segment, which can leave its folder through a link. "
+                f"Fix: edit the 'Proposed destination' row to the plain path, with no '..'.")
     problem = _destination_problem(dest)
     if problem:
         return f"block {bid}: {problem}."
+    # From here on only the resolved path is used: the path that was checked is the path written.
+    dest = Path(os.path.realpath(os.path.abspath(os.path.expanduser(str(dest)))))
+    if not _allowed_destination(dest):
+        return (f"block {bid}: destination {dest} is outside the vault, ~/.claude, and registered project .claude "
+                f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
     mode = f.get('Write mode', '')
     text = block['text']
     if mode == 'create':

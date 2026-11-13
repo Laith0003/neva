@@ -96,5 +96,46 @@ class ConfigGuardCase(unittest.TestCase):
         self.assertEqual(self._written(), [os.path.join("rules", "instincts-code-style.md")], r.stdout + r.stderr)
 
 
+class ResolvedDestinationCase(ConfigGuardCase):
+    """The path that is checked is the path that is written: `..` is refused outright, and a
+    destination is resolved the way the OS will resolve it before any check."""
+
+    def setUp(self):
+        super().setUp()
+        self.sb.run("status", env=self.env)  # registers repoA, so its .claude is a destination root
+        self.project = self.sb.repos["repoA"]
+        os.makedirs(os.path.join(self.config, "commands"))
+
+    def test_a_link_and_dot_dot_into_the_global_commands_folder_is_refused(self):
+        os.symlink(os.path.join(self.config, "rules"), os.path.join(self.project, "link"))
+        self._redirect(os.path.join(self.project, "link", "..", "commands", "x.md"))
+        r = self._apply()
+        self.assertEqual(self._written(), [], r.stdout + r.stderr)
+        self.assertIn("'..'", r.stderr)
+
+    def test_a_linked_parent_with_no_dot_dot_is_refused(self):
+        os.makedirs(os.path.join(self.project, ".claude"))
+        os.symlink(os.path.join(self.config, "commands"), os.path.join(self.project, ".claude", "commands"))
+        self._redirect(os.path.join(self.project, ".claude", "commands", "x.md"))
+        r = self._apply()
+        self.assertEqual(self._written(), [], r.stdout + r.stderr)
+        self.assertIn("Fix:", r.stderr)
+
+    def test_a_plain_project_destination_still_works(self):
+        os.makedirs(os.path.join(self.project, ".claude", "commands"))
+        self._redirect(os.path.join(self.project, ".claude", "commands", "ok.md"))
+        r = self._apply()
+        self.assertTrue(os.path.isfile(os.path.join(self.project, ".claude", "commands", "ok.md")), r.stdout + r.stderr)
+
+    def test_a_destination_whose_folder_does_not_exist_yet_is_created_when_its_shape_is_allowed(self):
+        # Decided: the existing part of the path is resolved and checked; the missing folders are
+        # created as real folders, so a first skill or command in a project needs no setup.
+        self._redirect(os.path.join(self.project, ".claude", "skills", "new-skill", "SKILL.md"))
+        r = self._apply()
+        target = os.path.join(self.project, ".claude", "skills", "new-skill", "SKILL.md")
+        self.assertTrue(os.path.isfile(target), r.stdout + r.stderr)
+        self.assertFalse(os.path.islink(os.path.dirname(target)))
+
+
 if __name__ == "__main__":
     unittest.main()
