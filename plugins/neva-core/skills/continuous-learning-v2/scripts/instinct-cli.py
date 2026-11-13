@@ -1637,7 +1637,17 @@ _RULE_TAIL = re.compile(r'^Trigger: (.*)\. Source: instinct `([A-Za-z0-9._-]+)` 
                         r'observations\)\.$')
 
 
-def _rule_char_problem(name: str, value: str, allow: str = "") -> str:
+def _text_problem(name: str, value: str, allow: str = "") -> str:
+    """The one sanitiser for model-derived text, run on every field and body of every kind of block,
+    at render and at apply. '' when `value` may reach a file, else why not, naming `name` and any code
+    point as U+XXXX (the raw character is never echoed). The rules:
+      characters  every character is in a category starting with L, N, P or S, or is Zs, or is a
+                  combining mark (Mn, Mc) that is not a variation selector, or is in `allow`; the
+                  invisible letters and marks in _RULE_INVISIBLE are refused
+      comments    '<!--' or '-->' anywhere: the reading view hides a comment
+      references  an HTML character reference (&#8203; &#x200B; &zwj;): the reading view renders a
+                  character the file does not hold. A bare '&' passes."""
+    value = str(value)
     for c in value:
         cp = ord(c)
         cat = unicodedata.category(c)
@@ -1647,7 +1657,17 @@ def _rule_char_problem(name: str, value: str, allow: str = "") -> str:
         ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation and cp not in _RULE_INVISIBLE
         if not ok:
             return f"its {name} holds U+{cp:04X} ({cat}), a character a reader cannot see or that breaks the line"
+    m = _RULE_COMMENT.search(value)
+    if m:
+        return f"its {name} holds an HTML comment marker ('{m.group(0)}'), which the reading view hides"
+    m = _RULE_ENTITY.search(value)
+    if m:
+        return (f"its {name} holds an HTML character reference ('{m.group(0)}'), which the reading view "
+                f"shows as a character the file does not hold")
     return ""
+
+
+_rule_char_problem = _text_problem
 
 
 def _rule_escape_tags(text: str) -> str:
@@ -1889,7 +1909,12 @@ def _unsafe_reason(block: dict) -> str:
         return f"its text holds a fence line ('{m.group(1)}'), which would close the block's fence"
     if _MARKER_TEXT.search(text):
         return "its text holds a '<!-- block_id' marker"
-    return ""
+    # The one sanitiser, on every field and the body, whatever the kind.
+    for key, value in block['fields']:
+        problem = _text_problem(f"'{key}' field", str(value))
+        if problem:
+            return problem
+    return _text_problem("text", text, "\n\t")
 
 
 class UnsafeBlock(ValueError):
