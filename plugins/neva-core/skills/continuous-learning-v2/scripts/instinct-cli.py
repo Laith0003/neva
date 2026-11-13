@@ -961,6 +961,7 @@ def cmd_add(args) -> int:
     title = args.id.replace('-', ' ').title()
     inst['content'] = (f"# {title}\n\n## Action\n{args.action}\n\n## Evidence\n"
                        f"- Stated by the user on {_today()}\n")
+    _record_user_stated(target)
     _write_text_atomic(target, render_instinct(inst))
     print(f"Added {args.id} ({args.scope}, confidence {conf:.2f}) at {_vault_ref(target)}")
     return 0
@@ -1854,6 +1855,7 @@ def _preflight_state() -> None:
         learning_io.check(STATE_ROOT, PROMOTION_EVENTS_FILE)
         learning_io.check(STATE_ROOT, STATE_BINDING_FILE)
         learning_io.check(STATE_ROOT, PARKED_FILE)
+        learning_io.check(STATE_ROOT, USER_STATED_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
@@ -2167,6 +2169,53 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
 # ---------------------------------------------------------------------------
 
 PARKED_FILE = STATE_DIR / "parked.json"
+# Notes the `add` subcommand wrote (vault refs). The only proof a lesson is the human's own words:
+# the note's `source: user-stated` field is model-writable and is not trusted on its own.
+USER_STATED_FILE = STATE_DIR / "user-stated.json"
+
+
+def _load_user_stated() -> dict:
+    return learning_io.read_json_object(USER_STATED_FILE) if USER_STATED_FILE.exists() else {}
+
+
+def _record_user_stated(note: Path) -> None:
+    learning_io.ensure_dir(STATE_ROOT, STATE_DIR)
+    stated = _load_user_stated()
+    stated[_vault_ref(note)] = {"date": _today()}
+    learning_io.write_text_atomic(STATE_ROOT, USER_STATED_FILE, json.dumps(stated, indent=2, sort_keys=True) + "\n")
+
+
+def _observed_sessions(pid: str, cache: dict) -> dict:
+    """{session id: set of ISO days} from every observation file of one project bucket: live,
+    rotated, archived and quarantined. Lines that are not JSON records with a session are skipped."""
+    if pid in cache:
+        return cache[pid]
+    out = defaultdict(set)
+    if _validate_project_id(pid):
+        obs = OBS_ROOT / pid
+        files = [obs / "observations.jsonl"]
+        for sub in ("observations.pending", "observations.archive", "observations.quarantine"):
+            if (obs / sub).is_dir():
+                files += sorted((obs / sub).glob("*.jsonl"))
+        for path in files:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if '"session"' not in line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except ValueError:
+                            continue
+                        session, stamp = rec.get("session") if isinstance(rec, dict) else None, None
+                        if isinstance(rec, dict):
+                            stamp = str(rec.get("timestamp") or "")[:10]
+                        if isinstance(session, str) and session and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamp or ""):
+                            out[session.lower()].add(stamp)
+            except OSError:
+                continue
+    cache[pid] = dict(out)
+    return cache[pid]
 
 
 def _env_dirs(name: str) -> list:
@@ -2197,6 +2246,7 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     if not blocks:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
+    user_stated, observed_cache = _load_user_stated(), {}
     passed, parked_now = [], 0
     for block in blocks:
         bid = block['block_id']
@@ -2208,7 +2258,12 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
         members = block['members']
         pids = sorted({str(m.get('project_id')) for m in members if m.get('project_id')})
         skip = {f"global instinct {m.get('id')}" for m in members}
-        reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip)
+        stated = {m['_source_file'] for m in members
+                  if m.get('_source_file') and _vault_ref(Path(m['_source_file'])) in user_stated}
+        observed = {pid: _observed_sessions(pid, observed_cache)
+                    for m in members for pid in quality_gate.member_projects(m)}
+        reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
+                                     stated=stated)
         entry = dict(parked.get(bid) or {})
         if reasons:
             entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
@@ -2504,7 +2559,12 @@ def _apply_block(block: dict) -> str:
     else:
         return f"block {bid}: 'Write mode' is '{mode}'. Fix: set it to create, append, or set-frontmatter."
     if kind == 'promote-global':
-        for ref in re.findall(r'`([^`]+)`', f.get('Source notes', '')):
+        refs = re.findall(r'`([^`]+)`', f.get('Source notes', ''))
+        stated = _load_user_stated()
+        if refs and all(r.strip() in stated for r in refs):
+            # A promotion of lessons the human stated, approved by the human, is still theirs.
+            _record_user_stated(dest)
+        for ref in refs:
             try:
                 src = _resolve_ref(ref)
             except ValueError:

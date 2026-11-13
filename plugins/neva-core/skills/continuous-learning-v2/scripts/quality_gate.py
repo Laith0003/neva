@@ -8,7 +8,11 @@ never shown as a proposal and never deleted. The four checks:
                 memory index file, a skill or command description, a global instinct, or another
                 candidate already accepted in this run
   vague         it names a tool or a count of tool use, not a behaviour
-  thin          its evidence does not span two sessions on two different days
+  thin          its evidence does not span two sessions on two different days, counted from the
+                observation records the hooks wrote: a session the note names counts only when the
+                records of one of its projects hold it, and days are the records' own dates. No
+                records means no count, which is thin. A lesson the human stated with `add` (the
+                caller passes those as `stated`) is exempt; the note's `source` field is not trusted
   dormant       none of its projects had any activity in the last ACTIVE_DAYS days
 
 Restatement is token overlap on instinct_match stems: the overlap coefficient (shared stems over
@@ -156,7 +160,7 @@ def restates(stems, corpus, skip_labels=()):
 
 # ------------------------------------------------------------------ the other three checks
 
-def vague(members):
+def vague(members, stated=()):
     """A reason when the lesson names a tool or a count instead of a behaviour, else ''."""
     for inst in members:
         action = _action(inst)
@@ -169,30 +173,48 @@ def vague(members):
     return ""
 
 
-def evidence(members):
-    """(sessions, days) across every member: session ids and dates in the Evidence section, plus the
-    note's own date and last_observed."""
-    sessions, days = set(), set()
+def claimed_sessions(inst):
+    """Session ids the note's Evidence section names. A claim only: thin() keeps those the records hold."""
+    content = inst.get("content", "") or ""
+    m = re.search(r"## Evidence\s*\n(.*?)(?:\n## |\Z)", content, re.S)
+    return {s.lower() for s in _SESSION.findall(m.group(1) if m else "")}
+
+
+def member_projects(inst):
+    """The projects whose records can vouch for this note: its own, or those it was promoted from."""
+    pids = [str(inst.get("project_id") or "")]
+    pids += [p.strip() for p in str(inst.get("promoted_from") or "").split(",")]
+    return [p for p in pids if p and p != "None"]
+
+
+def evidence(members, observed, stated=()):
+    """(sessions, days, any_records) across every member the human did not state. `observed` maps a
+    project id to {session id: set of ISO days} read from that project's observation records."""
+    sessions, days, any_records = set(), set(), False
     for inst in members:
-        content = inst.get("content", "") or ""
-        m = re.search(r"## Evidence\s*\n(.*?)(?:\n## |\Z)", content, re.S)
-        body = m.group(1) if m else ""
-        sessions |= {s.lower() for s in _SESSION.findall(body)}
-        days |= set(_DAY.findall(body))
-        for key in ("date", "last_observed"):
-            if _DAY.fullmatch(str(inst.get(key, ""))):
-                days.add(str(inst[key]))
-    return sessions, days
+        if inst.get("_source_file") in stated:
+            continue
+        claimed = claimed_sessions(inst)
+        for pid in member_projects(inst):
+            records = (observed or {}).get(pid) or {}
+            if records:
+                any_records = True
+            for session in claimed & set(records):
+                sessions.add(session)
+                days |= set(records[session])
+    return sessions, days, any_records
 
 
-def thin(members):
-    """A reason when the evidence is under two sessions on two days, else ''. A lesson the user
-    stated (`source: user-stated`) is the user's own words and is not held to session counts."""
-    if members and all(str(m.get("source", "")) == "user-stated" for m in members):
+def thin(members, observed=None, stated=()):
+    """A reason when the recorded evidence is under two sessions on two days, else ''."""
+    if members and all(m.get("_source_file") in stated for m in members):
         return ""
-    sessions, days = evidence(members)
+    sessions, days, any_records = evidence(members, observed, stated)
+    if not any_records:
+        return ("its projects have no observation records to count its evidence from (the note's own claims "
+                "are not counted), so it is treated as thin")
     if len(sessions) < MIN_SESSIONS or len(days) < MIN_DAYS:
-        return (f"its evidence spans {len(sessions)} session(s) on {len(days)} day(s); "
+        return (f"its evidence spans {len(sessions)} session(s) on {len(days)} day(s) in the observation records; "
                 f"{MIN_SESSIONS} sessions on {MIN_DAYS} different days are needed")
     return ""
 
@@ -220,13 +242,15 @@ def dormant(project_ids, registry, today=None):
     return f"none of its projects ({', '.join(sorted(pids))}) was active in the last {ACTIVE_DAYS} days ({when})"
 
 
-def check(members, project_ids, corpus, registry, today=None, skip_labels=()):
-    """Every failing reason for one candidate, in a fixed order. An empty list means it passes."""
+def check(members, project_ids, corpus, registry, today=None, skip_labels=(), observed=None, stated=()):
+    """Every failing reason for one candidate, in a fixed order. An empty list means it passes.
+    `observed` is {project id: {session id: set of days}} from the observation records; `stated` is
+    the set of `_source_file` paths the `add` subcommand wrote."""
     reasons = []
     hit = restates(_stems(" ".join(lesson_text(m) for m in members)), corpus, skip_labels)
     if hit:
         reasons.append(f"restates {hit[0]} (overlap {hit[1]:.2f} >= {OVERLAP_THRESHOLD})")
-    for reason in (vague(members), thin(members), dormant(project_ids, registry, today)):
+    for reason in (vague(members, stated), thin(members, observed, stated), dormant(project_ids, registry, today)):
         if reason:
             reasons.append(reason)
     return reasons

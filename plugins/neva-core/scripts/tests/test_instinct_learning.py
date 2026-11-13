@@ -130,6 +130,16 @@ class InstinctSandbox:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
 
+    def observe(self, pid, records):
+        """Write observation records (session id, ISO day) for one project bucket, the shape the
+        observe hook writes. The quality gate counts sessions and days from these, not from notes."""
+        d = os.path.join(self.tmp, "data", "neva", "observations", pid)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "observations.jsonl"), "a", encoding="utf-8") as fh:
+            for session, day in records:
+                fh.write(json.dumps({"timestamp": f"{day}T12:00:00Z", "event": "tool_complete",
+                                     "tool": "Edit", "session": session}) + "\n")
+
     def events_path(self):
         return os.path.join(self.tmp, "state", "neva", "instincts", "promotion-events.jsonl")
 
@@ -286,9 +296,13 @@ class PromotionEventsCase(unittest.TestCase):
     def test_event_log_parent_symlink_is_refused(self):
         outside, target = self._outside()
         instincts = os.path.dirname(self.sb.events_path())
-        os.makedirs(os.path.dirname(instincts))
+        # `add` writes its own ledger in the state folder, so the lessons go in first and the folder
+        # is then swapped for a link, as an attacker would do between runs.
+        self.sb.add("repoA", "prefer-explicit-errors", 0.9)
+        self.sb.add("repoB", "prefer-explicit-errors", 0.85)
+        shutil.rmtree(instincts)
         os.symlink(outside, instincts)
-        r = self._propose_one()
+        r = self.sb.run("propose", check=False)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(instincts, r.stderr)
         self.assertIn("symlink", r.stderr)
