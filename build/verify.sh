@@ -904,6 +904,16 @@ else
   bad "harness scripts suite" "$(printf '%s' "$ST_OUT" | tr '\n' ' ')"
   printf '%s\n' "$ST_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
 fi
+# The learning skill's own CLI suite sits beside the script it tests, not under scripts/tests.
+# It runs on the standard library (its StdlibCase), so it is discovered here, not left unrun.
+LT_FULL="$(cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/skills/continuous-learning-v2/scripts -p 'test_*.py' 2>&1)"
+LT_OUT="$(printf '%s\n' "$LT_FULL" | tail -3)"
+if printf '%s' "$LT_OUT" | grep -q '^OK'; then
+  ok "learning CLI suite: $(printf '%s' "$LT_OUT" | grep -o 'Ran [0-9]* tests')"
+else
+  bad "learning CLI suite" "$(printf '%s' "$LT_OUT" | tr '\n' ' ')"
+  printf '%s\n' "$LT_FULL" | grep -E '^(FAIL|ERROR):|Error:|^    [a-zA-Z].*' | head -20
+fi
 if command -v claude >/dev/null 2>&1; then
   if (cd "$REPO" && claude plugin validate . 2>&1 | grep -q 'Validation passed'); then
     ok "claude plugin validate passes on the marketplace"
