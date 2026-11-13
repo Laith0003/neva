@@ -41,6 +41,8 @@ Commands
   promote [ID]      Propose project to global promotion (writes proposals)
   propose           Write every qualifying candidate to today's proposal file
   apply-promotions  Apply ticked blocks (or, with --all, every open block)
+  reject ID         Reject a block by id or slug, with --reason; keyed by content too
+  list              Open proposal blocks; --rejected for rejections with reason and date
   decay             Lower confidence 0.02 per full week without observation
   projects          List, delete, merge, gc known projects
   prune             Delete pending instincts older than 30 days (TTL)
@@ -80,6 +82,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import learning_io  # noqa: E402  managed writes refuse symlinks below their root
+import instinct_match  # noqa: E402  the repo's one tokenizer and near-duplicate test
 
 
 # ---------------------------------------------------------------------------
@@ -1757,6 +1760,113 @@ def _event_week_key(ts: str) -> str:
     return f"{year}-W{week:02d}"
 
 
+# ---------------------------------------------------------------------------
+# Content keys: a decision is about what a block says, not about its slug
+# ---------------------------------------------------------------------------
+
+def _content_tokens(text: str) -> list[str]:
+    """Lowercased, punctuation and stop words stripped, light stemming, sorted and unique: the same
+    lesson reworded ("when handling errors in services", "When handling the errors in a service!")
+    gives the same list. Uses instinct_match.tokens, the tokenizer recall already uses."""
+    return sorted(set(instinct_match.tokens(text)))
+
+
+def _content_key(tokens: list[str]) -> str:
+    return hashlib.sha256(" ".join(tokens).encode("utf-8")).hexdigest()[:16]
+
+
+def _content_family(kind: str) -> str:
+    """Rejecting a retire means "keep this instinct": it must never suppress a promotion of the same
+    lesson, and the other way round. Every other kind writes durable memory and shares one family."""
+    return "retire" if kind == "retire" else "memory"
+
+
+def _instinct_text(inst: dict) -> str:
+    return f"{inst.get('trigger', '')} {_action_of(inst)}"
+
+
+def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
+    """The lesson a block carries: the trigger and action of every instinct it names, looked up in
+    the vault (project buckets named in the block, then global, inactive notes included). Falls back
+    to the instinct note in the fence, then to the fence itself. Works the same for a block being
+    proposed now and for one a slug-only ledger recorded long ago, so old rejections still hold."""
+    ids = re.findall(r'`([^`]+)`', fields.get('Instinct', ''))
+    pids = re.findall(r'\(([0-9A-Za-z._-]+)\)', fields.get('Projects seen in', ''))
+    dirs = [PROJECT_INSTINCTS_DIR / pid for pid in pids if PROJECT_INSTINCTS_DIR and _validate_project_id(pid)]
+    dirs += [GLOBAL_DIR] if GLOBAL_DIR else []
+    texts = []
+    for iid in ids:
+        if not _validate_instinct_id(iid):
+            continue
+        for d in dirs:
+            for inst in _load_instincts_from_dir(d, "any", include_inactive=True):
+                if inst.get('id') == iid:
+                    texts.append(_instinct_text(inst))
+                    break
+            else:
+                continue
+            break
+    if not texts and fence_text:
+        parsed = parse_instinct_file(fence_text) if fence_text.lstrip().startswith("---") else []
+        texts = [_instinct_text(i) for i in parsed if i.get('trigger')] or [fence_text]
+    tokens = _content_tokens(" ".join(texts))
+    return {'content_key': _content_key(tokens), 'content_tokens': tokens}
+
+
+def _block_content(block: dict) -> dict:
+    return _content_from_fields(dict(block['fields']), block.get('text'))
+
+
+def _ledger_record(ledger: dict, bid: str, **updates) -> dict:
+    """Update one ledger entry in place, keeping what it already holds (slug, content key, reason)."""
+    entry = dict(ledger.get(bid) or {})
+    kind, _, slug = bid.partition(':')
+    entry.setdefault('kind', kind)
+    entry.setdefault('slug', slug)
+    entry.update({k: v for k, v in updates.items() if v is not None})
+    ledger[bid] = entry
+    return entry
+
+
+def _backfill_content(ledger: dict) -> None:
+    """Give decided entries recorded before content keys existed a key, from their block in the
+    proposal file when it is still there. Entries whose block is gone keep their slug only."""
+    by_file = defaultdict(list)
+    for bid, entry in ledger.items():
+        if isinstance(entry, dict) and entry.get('status') in ('rejected', 'applied') and not entry.get('content_key'):
+            by_file[entry.get('file', '')].append(bid)
+    for file, bids in by_file.items():
+        try:
+            parsed = {b['block_id']: b for b in _parse_blocks(Path(file).read_text(encoding="utf-8"))}
+        except (OSError, ValueError):
+            continue
+        for bid in bids:
+            if bid in parsed:
+                ledger[bid].update(_content_from_fields(parsed[bid]['fields'], parsed[bid]['text']))
+
+
+def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tuple]:
+    """(block id, entry) of a decision that already covers this block's content: any rejection in the
+    same family, or an application of the same kind, whose content key is equal or whose tokens are a
+    near duplicate (instinct_match.DUPLICATE_JACCARD, the threshold recall uses)."""
+    family, toks = _content_family(block['kind']), set(content['content_tokens'])
+    for bid, entry in ledger.items():
+        if not isinstance(entry, dict) or bid == block['block_id']:
+            continue
+        status, kind = entry.get('status'), entry.get('kind') or bid.partition(':')[0]
+        if status == 'rejected' and _content_family(kind) == family:
+            pass
+        elif status == 'applied' and kind == block['kind']:
+            pass
+        else:
+            continue
+        if entry.get('content_key') == content['content_key'] or (
+                toks and instinct_match.jaccard(toks, set(entry.get('content_tokens') or ()))
+                >= instinct_match.DUPLICATE_JACCARD):
+            return bid, entry
+    return None
+
+
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
     if not dry_run:
         _preflight_state()
@@ -1766,6 +1876,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     ledger = _load_ledger()
+    _backfill_content(ledger)
     in_vault = _vault_block_states()
     fresh = []
     for block in blocks:
@@ -1777,6 +1888,13 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
             if prior.get('status') in ('applied', 'rejected'):
                 continue
             if prior.get('status') == 'proposed' and Path(prior.get('file', '')).exists():
+                continue
+        block['content'] = _block_content(block)
+        if not repropose:
+            match = _matching_decision(ledger, block, block['content'])
+            if match:
+                print(f"Skipped {bid}: says the same as {match[0]}, {match[1].get('status')} "
+                      f"{match[1].get('date', '')} ({match[1].get('reason') or 'no reason recorded'}).")
                 continue
         fresh.append(block)
     if not fresh:
@@ -1799,7 +1917,8 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         content = re.sub(r'^status: done$', 'status: open', content, count=1, flags=re.M)
     _write_text_atomic(path, content)
     for block in fresh:
-        ledger[block['block_id']] = {'status': 'proposed', 'file': str(path), 'date': _today()}
+        _ledger_record(ledger, block['block_id'], status='proposed', file=str(path), date=_today(),
+                       **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
     _inbox_pointer(path, done=False)
@@ -2036,7 +2155,8 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                        and bid not in parsed_ids and bid not in malformed
                        and (only_ids is None or bid in only_ids)]
         for bid in removed_ids:
-            ledger[bid] = {'status': 'rejected', 'file': str(path), 'date': _today()}
+            _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
+                           reason=ledger[bid].get('reason') or "block removed from the proposal file")
             _log_promotion_event("rejected", bid)
             rejected += 1
         for block in parsed:
@@ -2053,7 +2173,9 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                 continue
             if block['reject']:
                 text = _mark_block(text, block, f"Rejected {_today()}.", False)
-                ledger[bid] = {'status': 'rejected', 'file': str(path), 'date': _today()}
+                _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
+                               reason=_block_reason(block) or "ticked reject",
+                               **_content_from_fields(block['fields'], block['text']))
                 _log_promotion_event("rejected", bid)
                 rejected += 1
                 continue
@@ -2068,7 +2190,8 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                 continue
             dest = block['fields'].get('Proposed destination', '')
             text = _mark_block(text, block, f"Applied {_today()} to {dest}.", not block['approve'])
-            ledger[bid] = {'status': 'applied', 'file': str(path), 'date': _today()}
+            _ledger_record(ledger, bid, status='applied', file=str(path), date=_today(),
+                           **_content_from_fields(block['fields'], block['text']))
             _log_promotion_event("approved", bid)
             applied += 1
         finished = not malformed and all(b['resolved'] for b in _parse_blocks(text))
@@ -2088,6 +2211,94 @@ def cmd_apply_promotions(args) -> int:
         print("No open instinct proposal files.")
         return 0
     return _apply_files(files, mode="all" if args.all else "ticked")
+
+
+def _block_reason(block: dict) -> str:
+    """A `Reason: ...` line the human wrote inside the block, if any."""
+    m = re.search(r'^Reason:\s*(.+?)\s*$', block.get('body', ''), re.M)
+    return m.group(1) if m else ""
+
+
+def _resolve_block_ref(ref: str, ledger: dict) -> list[str]:
+    """Block ids that `ref` names: an exact `kind:slug` id, else every id whose slug is `ref`."""
+    known = set(ledger) | set(_vault_block_states())
+    if ref in known:
+        return [ref]
+    return sorted(bid for bid in known if bid.partition(':')[2] == ref)
+
+
+def cmd_reject(args) -> int:
+    """Record a rejection by block id or slug, with a reason. The block is ticked reject in its
+    proposal file when it is still open there, and the ledger keeps the slug, the content key, the
+    reason and the date, so the same lesson under another slug is never proposed again."""
+    reason = (args.reason or "").strip()
+    if not reason:
+        print("--reason is empty. Fix: pass --reason \"<why this is rejected>\".", file=sys.stderr)
+        return 1
+    _preflight_state()
+    ledger = _load_ledger()
+    ids = _resolve_block_ref(args.block, ledger)
+    if not ids:
+        print(f"No proposal block or ledger entry is named '{args.block}'. Fix: pass a block id such as "
+              f"promote-global:<slug>, or a slug; `instinct-cli.py list` shows the open ones.", file=sys.stderr)
+        return 1
+    if len(ids) > 1:
+        print(f"'{args.block}' names {len(ids)} blocks: {', '.join(ids)}. Fix: pass the full block id.",
+              file=sys.stderr)
+        return 1
+    bid = ids[0]
+    if (ledger.get(bid) or {}).get('status') == 'applied':
+        print(f"{bid} was applied on {ledger[bid].get('date', 'an earlier day')}. Fix: retire or edit what it "
+              f"wrote instead; a rejection cannot undo it.", file=sys.stderr)
+        return 1
+    content, where = None, (ledger.get(bid) or {}).get('file', '')
+    for path in _proposal_files():
+        text = path.read_text(encoding="utf-8")
+        block = next((b for b in _parse_blocks(text) if b['block_id'] == bid), None)
+        if block is None:
+            continue
+        where = str(path)
+        content = _content_from_fields(block['fields'], block['text'])
+        if not block['resolved']:
+            body = block['body'].replace("- [ ] reject", "- [x] reject", 1)
+            body = body.replace("- [x] reject\n", f"- [x] reject\n\nRejected {_today()}: {reason}\n", 1)
+            text = text.replace(block['body'], body, 1)
+            finished = all(b['resolved'] for b in _parse_blocks(text))
+            if finished:
+                text = re.sub(r'^status: open$', 'status: done', text, count=1, flags=re.M)
+            _write_text_atomic(path, text)
+            if finished:
+                _inbox_pointer(path, done=True)
+        break
+    if content is None:
+        prior = ledger.get(bid) or {}
+        content = {k: prior[k] for k in ('content_key', 'content_tokens') if k in prior}
+    was_rejected = (ledger.get(bid) or {}).get('status') == 'rejected'
+    entry = _ledger_record(ledger, bid, status='rejected', file=where or None, date=_today(), reason=reason,
+                           **content)
+    _save_ledger(ledger)
+    if not was_rejected:
+        _log_promotion_event("rejected", bid)
+    print(f"Rejected {bid} (slug {entry['slug']}, content key {entry.get('content_key', 'none')}): {reason}")
+    return 0
+
+
+def cmd_list(args) -> int:
+    """List ledger entries: open proposals by default, or every rejection with --rejected."""
+    ledger = _load_ledger()
+    want = 'rejected' if args.rejected else 'proposed'
+    rows = sorted(((bid, e) for bid, e in ledger.items() if isinstance(e, dict) and e.get('status') == want),
+                  key=lambda r: (r[1].get('date', ''), r[0]))
+    if not rows:
+        print(f"No {want} blocks in the ledger at {PROMOTIONS_LEDGER}.")
+        return 0
+    for bid, e in rows:
+        line = f"{e.get('date', '????-??-??')}  {bid}  key={e.get('content_key', 'none')}"
+        if want == 'rejected':
+            line += f"  reason: {e.get('reason') or 'none recorded'}"
+        print(line)
+    print(f"{len(rows)} {want} block(s).")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2442,6 +2653,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--all', action='store_true',
                    help='Apply every open block not ticked reject ("apply instinct promotions")')
 
+    p = sub.add_parser('reject', help='Reject a proposal block by id or slug, with a reason')
+    p.add_argument('block', help='block id (kind:slug) or slug')
+    p.add_argument('--reason', required=True, help='why it is rejected; stored with the date')
+
+    p = sub.add_parser('list', help='List open proposal blocks, or rejected ones')
+    p.add_argument('--rejected', action='store_true', help='List rejected blocks with reason and date')
+
     p = sub.add_parser('decay', help='Apply confidence decay')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--quiet', action='store_true')
@@ -2472,6 +2690,7 @@ COMMANDS = {
     'status': cmd_status, 'search': cmd_search, 'stats': cmd_stats, 'add': cmd_add,
     'import': cmd_import, 'export': cmd_export, 'evolve': cmd_evolve, 'promote': cmd_promote,
     'propose': cmd_propose, 'apply-promotions': cmd_apply_promotions, 'decay': cmd_decay,
+    'reject': cmd_reject, 'list': cmd_list,
     'projects': cmd_projects, 'prune': cmd_prune,
 }
 
