@@ -12,6 +12,7 @@ Every write lands in a temporary config folder and vault.
 
 Run:  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/scripts/tests
 """
+import json
 import os
 import re
 import unittest
@@ -43,6 +44,14 @@ class ConfigGuardCase(unittest.TestCase):
         text = text[:row.start()] + f"| Proposed destination | `{dest}` |" + text[row.end():]
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
+        # Apply takes the destination from the engine's ledger, not the row, so the ledger is pointed
+        # there too: this tests the guard against a destination however it arrives.
+        ledger_path = os.path.join(self.sb.tmp, "state", "neva", "instincts", "promotions.json")
+        with open(ledger_path, encoding="utf-8") as fh:
+            ledger = json.load(fh)
+        ledger[BID]["destination"] = f"`{dest}`"
+        with open(ledger_path, "w", encoding="utf-8") as fh:
+            json.dump(ledger, fh)
         self.sb.tick(path, BID, "approve")
 
     def _apply(self, flag=False):

@@ -1828,7 +1828,7 @@ Each block below is a candidate to become durable memory. Nothing in this file h
 
 - Tick `approve` to accept a block. The next nightly run (or `instinct-cli.py apply-promotions`) writes exactly the text in its fence to its destination.
 - Tick `reject` to decline it. It will not be proposed again.
-- Edit the fenced text or the destination row before ticking if you want a different result.
+- Edit the fenced text before ticking if you want different words. Where and how it is written come from the engine's record, not the table rows: to send it elsewhere, tick reject.
 - Say "apply instinct promotions" to accept every block in this file that is not ticked `reject`.
 
 """
@@ -2683,6 +2683,14 @@ def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
         return f"block {bid}: {problem}."
     # From here on only the resolved path is used: the path that was checked is the path written.
     dest = Path(os.path.realpath(os.path.abspath(os.path.expanduser(str(dest)))))
+    # Whatever the block id says, a write that lands in an always-loaded rules file is held to the
+    # rule-text checks.
+    rel = _rel_under(str(dest), os.path.realpath(os.path.expanduser(CLAUDE_DIR_REF)))
+    if rel is not None and GLOBAL_ALLOWED[0].fullmatch(rel):
+        problem = _rule_text_problem(block['text'])
+        if problem:
+            return (f"block {bid}: it writes into the rules file {dest}, and its text fails the rule checks: "
+                    f"{problem}. Fix: tick reject.")
     if not _allowed_destination(dest):
         return (f"block {bid}: destination {dest} is outside the vault, ~/.claude, and registered project .claude "
                 f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
@@ -2823,6 +2831,9 @@ def _same_file(a, b) -> bool:
 
 
 LEGACY_TOKEN_COVERAGE = 0.8
+# The one write mode the engine ever proposes for each kind.
+KIND_WRITE_MODE = {'promote-global': 'create', 'evolve-skill': 'create', 'evolve-command': 'create',
+                   'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter'}
 
 
 def _legacy_problem(entry: dict, block: dict) -> str:
@@ -2882,6 +2893,10 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) 
     if not _same_file(entry.get('file'), path):
         return (f"{where} skipped: the ledger proposed it in {entry.get('file') or 'no file'}, not in this file. "
                 f"Fix: tick it in the file the ledger names, or delete this copy.")
+    kind_row = str(block['fields'].get('Kind', '')).strip()
+    if kind_row and kind_row != bid.partition(':')[0]:
+        return (f"{where} refused: its Kind row says '{kind_row}' but its id is a {bid.partition(':')[0]} block. "
+                f"Fix: restore the Kind row to '{bid.partition(':')[0]}', or tick reject.")
     unsafe = _unsafe_reason({'block_id': bid, 'kind': bid.partition(':')[0], 'slug': bid.partition(':')[2],
                              'fields': list(block['fields'].items()), 'text': block['text'] or ""})
     if unsafe:
@@ -2945,6 +2960,13 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                 failed += 1
                 continue
             entry = ledger[bid]
+            if entry.get('rendered_sha256'):
+                # The engine's record decides what is written and where; the table rows in the file
+                # are display. A row changed after propose cannot redirect or retype the write.
+                block['fields'] = dict(block['fields'], **{
+                    'Kind': bid.partition(':')[0],
+                    'Proposed destination': str(entry.get('destination') or ''),
+                    'Write mode': KIND_WRITE_MODE.get(bid.partition(':')[0], '')})
             legacy = '' if entry.get('rendered_sha256') else _legacy_problem(entry, block)
             if legacy and (block['approve'] or block['reject'] or mode in ("all", "ids")):
                 msg = (f"{path.name}: block {bid} was proposed before the engine recorded what it wrote, and "
