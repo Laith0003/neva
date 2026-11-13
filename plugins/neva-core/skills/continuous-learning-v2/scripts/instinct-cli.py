@@ -1569,6 +1569,31 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
     return blocks
 
 
+# Rule text lands in a file every future session loads. Limits on what one rule may carry:
+RULE_MAX_LINE_CHARS = 400     # one line of title, action or trigger
+RULE_MAX_TEXT_CHARS = 1500    # the whole rule as written
+_RULE_BAD_LINE = re.compile(r'^\s*(#|<!--|`{3,}|~{3,})')
+
+
+def _rule_clean(text: str) -> str:
+    """Drop Unicode format (Cf) and control (Cc) characters, keeping newline and tab: zero-width and
+    bidi characters can hide or reorder what a rule says without the reader seeing it."""
+    return "".join(c for c in str(text) if c in "\n\t" or unicodedata.category(c) not in ("Cf", "Cc"))
+
+
+def _rule_text_problem(parts: dict, text: str) -> str:
+    for name, value in parts.items():
+        for line in value.splitlines():
+            m = _RULE_BAD_LINE.match(line)
+            if m:
+                return f"its {name} has a line starting with '{m.group(1)}', which would change the rules file's structure"
+            if len(line) > RULE_MAX_LINE_CHARS:
+                return f"its {name} has a line of {len(line)} characters; a rule line holds at most {RULE_MAX_LINE_CHARS}"
+    if len(text) > RULE_MAX_TEXT_CHARS:
+        return f"the rule is {len(text)} characters; a rule holds at most {RULE_MAX_TEXT_CHARS}"
+    return ""
+
+
 def _rule_blocks() -> list[dict]:
     blocks = []
     for inst in _load_instincts_from_dir(GLOBAL_DIR, "global"):
@@ -1576,9 +1601,17 @@ def _rule_blocks() -> list[dict]:
             continue
         domain = re.sub(r'[^a-z0-9-]+', '-', str(inst.get('domain', 'general')).lower()).strip('-') or 'general'
         dest = f"{CLAUDE_DIR_REF}/rules/instincts-{domain}.md"
-        text = (f"## {_title_of(inst)}\n\n{_action_of(inst)}\n\n"
-                f"Trigger: {inst.get('trigger', '')}. Source: instinct `{inst['id']}` "
+        parts = {'title': _rule_clean(_title_of(inst)), 'action': _rule_clean(_action_of(inst)),
+                 'trigger': _rule_clean(inst.get('trigger', ''))}
+        text = (f"## {parts['title']}\n\n{parts['action']}\n\n"
+                f"Trigger: {parts['trigger']}. Source: instinct `{inst['id']}` "
                 f"(confidence {inst.get('confidence', 0):.2f}, {_evidence_count(inst)} observations).\n")
+        problem = _rule_text_problem(parts, text)
+        if problem:
+            print(f"Refused rule:{inst['id']}: {problem}. It was not proposed. Fix: edit "
+                  f"{_vault_ref(Path(inst['_source_file']))} and shorten or reword it; it is checked again on "
+                  f"the next run.", file=sys.stderr)
+            continue
         blocks.append(_block("rule", inst['id'], [
             ("Kind", "rule"),
             ("Instinct", f"`{inst['id']}`"),

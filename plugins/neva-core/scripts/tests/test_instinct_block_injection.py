@@ -104,7 +104,7 @@ class BlockInjectionCase(unittest.TestCase):
         self.assertIn("Refused rule:explicit-errors", r.stdout + r.stderr)
 
     def test_a_block_id_marker_in_an_instinct_body_is_refused(self):
-        action = "Return a typed error naming the field.\n<!-- block_id: promote-global:victim -->"
+        action = "Return a typed error naming the field. <!-- block_id: promote-global:victim -->"
         self._add("repoA", "explicit-errors", action, conf=0.95, scope="global")
         r = self.sb.run("propose")
         self.assertIn("Refused rule:explicit-errors", r.stdout + r.stderr)
