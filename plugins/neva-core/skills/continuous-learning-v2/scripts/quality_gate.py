@@ -7,7 +7,8 @@ never shown as a proposal and never deleted. The four checks:
   restates      the lesson is already written down: a paragraph in the rules folder, a line in a
                 memory index file, a skill or command description, a global instinct, or another
                 candidate already accepted in this run
-  vague         it names a tool or a count of tool use, not a behaviour
+  vague         it names a tool or a count of tool use, not a behaviour; a text with no words this
+                check can compare is parked as unreadable instead; a lesson the human stated is exempt
   thin          its evidence does not span two sessions on two different days, counted from the
                 observation records the hooks wrote: a session the note names counts only when the
                 records of one of its projects hold it, and days are the records' own dates. No
@@ -161,9 +162,15 @@ def restates(stems, corpus, skip_labels=()):
 # ------------------------------------------------------------------ the other three checks
 
 def vague(members, stated=()):
-    """A reason when the lesson names a tool or a count instead of a behaviour, else ''."""
+    """A reason when the lesson names a tool or a count instead of a behaviour, else ''. A lesson the
+    human stated is never parked by this heuristic. A text with no words at all is parked as
+    unreadable, not as a tool name."""
     for inst in members:
+        if inst.get("_source_file") in stated:
+            continue
         action = _action(inst)
+        if not _stems(action):
+            return "its action could not be read: it holds no words this check can compare"
         if _COUNT.search(action):
             return f"its action states a count of tool use ('{_COUNT.search(action).group(0)}'), not a behaviour"
         left = _stems(action) - TOOL_WORDS
