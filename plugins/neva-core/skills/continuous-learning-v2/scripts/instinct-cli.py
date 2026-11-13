@@ -2543,7 +2543,17 @@ def cmd_promote(args) -> int:
         blocks = [_promote_block(c) for c in candidates]
     rc = _emit_blocks(blocks, dry_run=args.dry_run, repropose=bool(args.instinct_id))
     if rc == 0 and args.apply and not args.dry_run:
-        return _apply_files([_proposal_path()], mode="ids", only_ids={b['block_id'] for b in blocks})
+        # Apply in the file that holds each open block: the ledger names it, and it may be an earlier
+        # day's file than today's.
+        ids = {b['block_id'] for b in blocks}
+        ledger = _load_ledger()
+        files = []
+        for bid in sorted(ids):
+            entry = ledger.get(bid) or {}
+            where = Path(entry['file']) if entry.get('status') == 'proposed' and entry.get('file') else _proposal_path()
+            if not any(_same_file(where, f) for f in files):
+                files.append(where)
+        return _apply_files(files, mode="ids", only_ids=ids)
     return rc
 
 
