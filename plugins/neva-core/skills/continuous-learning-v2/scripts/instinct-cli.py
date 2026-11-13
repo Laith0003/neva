@@ -1882,6 +1882,18 @@ def _vault_binding_file() -> Path:
     return INSTINCTS_ROOT / VAULT_BINDING_NAME
 
 
+def _read_vault_id() -> Optional[str]:
+    """The id in the vault's .ledger-id, never read through a symlink."""
+    vault_file = _vault_binding_file()
+    if vault_file.is_symlink():
+        raise learning_io.ManagedPathError(
+            f"refusing to read {vault_file}: it is a symlink (to {os.readlink(vault_file)}). Fix: replace it "
+            f"with a real file holding this vault's ledger id, or delete it if the vault was never bound.")
+    if vault_file.is_file():
+        return vault_file.read_text(encoding="utf-8").strip() or None
+    return None
+
+
 def _proposal_files() -> list[Path]:
     if INBOX_DIR is None or not INBOX_DIR.is_dir():
         return []
@@ -1928,9 +1940,7 @@ def _check_state_binding(write: bool) -> None:
     vault's instincts folder; both must agree. An existing install is bound on its first run."""
     vault_real = os.path.realpath(VAULT)
     vault_file = _vault_binding_file()
-    vault_id = None
-    if vault_file.is_file():
-        vault_id = vault_file.read_text(encoding="utf-8").strip() or None
+    vault_id = _read_vault_id()
     state = learning_io.read_json_object(STATE_BINDING_FILE) if STATE_BINDING_FILE.exists() else {}
     state_id, state_vault = state.get("ledger_id"), state.get("vault")
     ledger = _load_ledger()
@@ -1976,7 +1986,7 @@ def _check_state_binding(write: bool) -> None:
             f"{vault_real}|{_now_iso()}|{os.getpid()}".encode("utf-8")).hexdigest()[:16]
         learning_io.write_text_atomic(STATE_ROOT, STATE_BINDING_FILE,
                                       json.dumps({"ledger_id": new_id, "vault": vault_real}, indent=2) + "\n")
-        _write_text_atomic(vault_file, new_id + "\n")
+        learning_io.write_text_atomic(INSTINCTS_ROOT, vault_file, new_id + "\n")
 
 
 def _ledger_covers(ledger: dict, history: list) -> bool:
