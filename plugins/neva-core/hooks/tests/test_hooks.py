@@ -1478,7 +1478,8 @@ class TestInstinctRoundTrip(HookTest):
                      + datetime.date.today().isoformat() + "\n"
                      "decay_weeks_applied: 0\nstatus: active\ntags: [instinct, workflow]\n---\n\n"
                      "# Read before edit\n\n## Action\nRead the whole file before editing it.\n\n"
-                     "## Evidence\n- Observed 11 times\n")
+                     "## Evidence\n- Observed 6 times in session aaaaaaaa-1111-2222-3333-444444444444 on 2026-01-01\n"
+                     "- Observed 5 times in session bbbbbbbb-1111-2222-3333-444444444444 on 2026-01-02\n")
 
     def run_round_trip(self, inbox_note, proposals_dir, **env):
         self.observe_session()

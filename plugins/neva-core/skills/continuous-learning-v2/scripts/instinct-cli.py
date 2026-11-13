@@ -41,13 +41,14 @@ Commands
   propose           Write every qualifying candidate to today's proposal file
   apply-promotions  Apply ticked blocks (or, with --all, every open block)
   reject ID         Reject a block by id or slug, with --reason; keyed by content too
-  list              Open proposal blocks; --rejected for rejections with reason and date
+  list              Open proposal blocks; --rejected for rejections, --parked for the quality gate
   decay             Lower confidence 0.02 per full week without observation
   projects          List, delete, merge, gc known projects
   prune             Delete pending instincts older than 30 days (TTL)
 """
 
 import argparse
+import glob
 import hashlib
 import ipaddress
 import json
@@ -82,6 +83,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import learning_io  # noqa: E402  managed writes refuse symlinks below their root
 import instinct_match  # noqa: E402  the repo's one tokenizer and near-duplicate test
+import quality_gate  # noqa: E402  deterministic checks before anything is proposed
 
 
 # ---------------------------------------------------------------------------
@@ -1337,9 +1339,11 @@ def _show_promotion_candidates() -> None:
 # Proposal blocks
 # ---------------------------------------------------------------------------
 
-def _block(kind: str, slug: str, fields: list[tuple[str, str]], text: str, text_lang: str = "markdown") -> dict:
+def _block(kind: str, slug: str, fields: list[tuple[str, str]], text: str, text_lang: str = "markdown",
+           members: Optional[list] = None) -> dict:
+    """One proposal block. `members` are the instincts it carries, for the quality gate."""
     return {'block_id': f"{kind}:{slug}", 'kind': kind, 'slug': slug, 'fields': fields,
-            'text': text.rstrip("\n") + "\n", 'lang': text_lang}
+            'text': text.rstrip("\n") + "\n", 'lang': text_lang, 'members': list(members or [])}
 
 
 def _projects_field(entries) -> str:
@@ -1374,7 +1378,7 @@ def _promote_block(cand: dict) -> dict:
         ("Write mode", "create"),
         ("Source notes", sources),
         ("Then set on source notes", f"`status: promoted`; `promoted_to: {_vault_ref(dest)}`"),
-    ], text)
+    ], text, members=[e[2] for e in cand['entries']])
 
 
 def _cluster_destination(project: dict, kind: str, name: str, cluster: list[dict]) -> str:
@@ -1454,7 +1458,8 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
             continue
         blocks.append(_block("evolve-skill", name, _cluster_fields(
             "skill", name, cand['instincts'], dest,
-            f"{len(cand['instincts'])} instincts share trigger keywords '{trigger}'"), content))
+            f"{len(cand['instincts'])} instincts share trigger keywords '{trigger}'"), content,
+            members=cand['instincts']))
 
     for inst, cmd_name in bounded(_assign_unique_slugs(
             workflow_instincts, lambda i: _evolved_command_name(i.get('trigger', 'unknown'))), 'command'):
@@ -1473,7 +1478,8 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
             continue
         blocks.append(_block("evolve-command", cmd_name, _cluster_fields(
             "command", cmd_name, [inst], dest,
-            f"workflow instinct with confidence {inst.get('confidence', 0.5):.2f} >= 0.70"), content))
+            f"workflow instinct with confidence {inst.get('confidence', 0.5):.2f} >= 0.70"), content,
+            members=[inst]))
 
     for cand, agent_name in bounded(_assign_unique_slugs(
             agent_candidates, lambda c: _evolved_agent_name(str(c.get('trigger', '')).strip())), 'agent'):
@@ -1495,7 +1501,8 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
             continue
         blocks.append(_block("evolve-agent", agent_name, _cluster_fields(
             "agent", agent_name, cand['instincts'], dest,
-            f"{len(cand['instincts'])} instincts, average confidence {cand['avg_confidence']:.2f} >= 0.75"), content))
+            f"{len(cand['instincts'])} instincts, average confidence {cand['avg_confidence']:.2f} >= 0.75"), content,
+            members=cand['instincts']))
     return blocks
 
 
@@ -1519,7 +1526,7 @@ def _rule_blocks() -> list[dict]:
             ("Proposed destination", f"`{dest}`"),
             ("Write mode", "append"),
             ("Source notes", f"`{_vault_ref(Path(inst['_source_file']))}`"),
-        ], text))
+        ], text, members=[inst]))
     return blocks
 
 
@@ -1602,6 +1609,7 @@ def _preflight_state() -> None:
         learning_io.check(STATE_ROOT, PROMOTIONS_LEDGER)
         learning_io.check(STATE_ROOT, PROMOTION_EVENTS_FILE)
         learning_io.check(STATE_ROOT, STATE_BINDING_FILE)
+        learning_io.check(STATE_ROOT, PARKED_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
@@ -1899,6 +1907,76 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
     return None
 
 
+# ---------------------------------------------------------------------------
+# Quality gate: what fails is parked with its reason, never proposed, never deleted
+# ---------------------------------------------------------------------------
+
+PARKED_FILE = STATE_DIR / "parked.json"
+
+
+def _env_dirs(name: str) -> list:
+    return [p for p in (os.environ.get(name) or "").split(os.pathsep) if p and os.path.isabs(p)]
+
+
+def _gate_corpus() -> list:
+    """What is already written down. Rules: NEVA_RULES_DIR, else <config dir>/rules. Memory index
+    files: NEVA_MEMORY_DIR, else every <config dir>/projects/*/memory. Skills and commands: the
+    config dir and its installed plugins, plus NEVA_SKILL_DIRS. And every global instinct."""
+    config = str(Path(CLAUDE_DIR_REF).expanduser())
+    rules = _env_dirs("NEVA_RULES_DIR") or [os.path.join(config, "rules")]
+    memory = _env_dirs("NEVA_MEMORY_DIR") or sorted(glob.glob(os.path.join(config, "projects", "*", "memory")))
+    skills = [config] + _env_dirs("NEVA_SKILL_DIRS")
+    extra = [(f"global instinct {i.get('id')}", quality_gate.lesson_text(i))
+             for i in _load_instincts_from_dir(GLOBAL_DIR, "global")]
+    return quality_gate.load_corpus(rules, memory, skills, extra)
+
+
+def _load_parked() -> dict:
+    return learning_io.read_json_object(PARKED_FILE) if PARKED_FILE.exists() else {}
+
+
+def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
+    """Blocks that pass the gate. Failing ones go to the parked list with every reason and the
+    date; a parked entry is updated on each run and kept when it later passes (marked cleared).
+    A retire block is not gated: it removes, it does not add."""
+    if not blocks:
+        return blocks
+    corpus, registry, parked = None, load_registry(), _load_parked()
+    passed, parked_now = [], 0
+    for block in blocks:
+        bid = block['block_id']
+        if block['kind'] == 'retire' or not block.get('members'):
+            passed.append(block)
+            continue
+        if corpus is None:
+            corpus = _gate_corpus()
+        members = block['members']
+        pids = sorted({str(m.get('project_id')) for m in members if m.get('project_id')})
+        skip = {f"global instinct {m.get('id')}" for m in members}
+        reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip)
+        entry = dict(parked.get(bid) or {})
+        if reasons:
+            entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
+                          'content_key': (block.get('content') or {}).get('content_key')})
+            entry.setdefault('first_parked', _today())
+            entry.pop('cleared', None)
+            parked[bid] = entry
+            parked_now += 1
+            print(f"Parked {bid}: {'; '.join(reasons)}.")
+            continue
+        if entry:
+            entry.update({'cleared': _today(), 'last_checked': _today()})
+            parked[bid] = entry
+        passed.append(block)
+        corpus.append((f"candidate {bid}", set(quality_gate.instinct_match.tokens(
+            " ".join(quality_gate.lesson_text(m) for m in members)))))
+    if not dry_run and parked:
+        learning_io.write_text_atomic(STATE_ROOT, PARKED_FILE, json.dumps(parked, indent=2) + "\n")
+    if parked_now:
+        print(f"{parked_now} candidate(s) parked by the quality gate; `instinct-cli.py list --parked` shows why.")
+    return passed
+
+
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
     if not dry_run:
         _preflight_state()
@@ -1929,6 +2007,8 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
                       f"{match[1].get('date', '')} ({match[1].get('reason') or 'no reason recorded'}).")
                 continue
         fresh.append(block)
+    if not repropose:
+        fresh = _gate(fresh, dry_run)
     if not fresh:
         print("No new instinct candidates to propose.")
         return 0
@@ -2335,6 +2415,17 @@ def cmd_reject(args) -> int:
 
 def cmd_list(args) -> int:
     """List ledger entries: open proposals by default, or every rejection with --rejected."""
+    if args.parked:
+        parked = _load_parked()
+        if not parked:
+            print(f"Nothing is parked ({PARKED_FILE}).")
+            return 0
+        for bid, e in sorted(parked.items(), key=lambda r: (r[1].get('first_parked', ''), r[0])):
+            state = f"cleared {e['cleared']}" if e.get('cleared') else f"parked since {e.get('first_parked', '?')}"
+            print(f"{bid}  {state}  checked {e.get('last_checked', '?')}: {'; '.join(e.get('reasons', []))}")
+        print(f"{sum(1 for e in parked.values() if not e.get('cleared'))} parked, "
+              f"{sum(1 for e in parked.values() if e.get('cleared'))} cleared later.")
+        return 0
     ledger = _load_ledger()
     want = 'rejected' if args.rejected else 'proposed'
     rows = sorted(((bid, e) for bid, e in ledger.items() if isinstance(e, dict) and e.get('status') == want),
@@ -2709,6 +2800,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser('list', help='List open proposal blocks, or rejected ones')
     p.add_argument('--rejected', action='store_true', help='List rejected blocks with reason and date')
+    p.add_argument('--parked', action='store_true', help='List candidates the quality gate parked, with reasons')
 
     p = sub.add_parser('decay', help='Apply confidence decay')
     p.add_argument('--dry-run', action='store_true')

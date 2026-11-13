@@ -98,7 +98,10 @@ class InstinctSandbox:
         return result
 
     def add(self, cwd, iid, conf, domain="code-style", trigger="when handling errors in services"):
-        self.run("add", "--id", iid, "--trigger", trigger, "--action", "Do the thing.",
+        # The action names a behaviour (the quality gate parks one that does not), and it comes
+        # from the id, so two lessons with different ids never read as one.
+        action = f"Apply the {iid.replace('-', ' ')} practice in every change."
+        self.run("add", "--id", iid, "--trigger", trigger, "--action", action,
                   "--domain", domain, "--confidence", str(conf), cwd=cwd)
 
     def proposal_path(self):
