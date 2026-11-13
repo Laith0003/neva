@@ -156,6 +156,12 @@ def test_destination_outside_allowed_roots_is_refused(sandbox):
     text = proposal.read_text()
     text = re.sub(r"(\| Proposed destination \| )`[^`]+`", r"\1`/tmp/elsewhere/x.md`", text, count=1)
     proposal.write_text(text)
+    # Apply takes the destination from the engine's ledger, so the ledger is pointed there too.
+    import json
+    ledger_path = Path(sandbox["env"]["XDG_STATE_HOME"]) / "neva" / "instincts" / "promotions.json"
+    ledger = json.loads(ledger_path.read_text())
+    ledger["promote-global:prefer-explicit-errors"]["destination"] = "`/tmp/elsewhere/x.md`"
+    ledger_path.write_text(json.dumps(ledger))
     result = run("apply-promotions", "--all", check=False)
     assert "is outside the vault" in result.stderr
     assert not Path("/tmp/elsewhere/x.md").exists()
