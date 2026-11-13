@@ -1172,6 +1172,104 @@ def load_instincts(root, project_id=None, include_global=True):
     return found
 
 
+# ---------------------------------------------------------------- instinct recall
+
+INSTINCT_MATCH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                              "skills", "continuous-learning-v2", "scripts", "instinct_match.py")
+INJECTION_LOG_MAX_BYTES = 5 * 1024 * 1024
+INSTINCT_LINE_CHARS = 200
+
+
+@functools.lru_cache(maxsize=None)
+def instinct_match():
+    """The skill's instinct_match module, loaded by path like learning_trigger._learning_io: it
+    ships with the skill, not the hooks package. Raises when the file is missing; callers catch."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("neva_instinct_match", INSTINCT_MATCH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {INSTINCT_MATCH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def recall_candidates(vault, project_id):
+    """Active instincts at or above NEVA_INSTINCT_MIN_CONFIDENCE (default 0.7) with an action,
+    one per id, the project copy winning over the global one."""
+    root = instincts_root(vault)
+    if not root:
+        return []
+    try:
+        threshold = float(env("NEVA_INSTINCT_MIN_CONFIDENCE", "0.7") or 0.7)
+    except ValueError:
+        threshold = 0.7
+    best = {}
+    for i in load_instincts(root, project_id):
+        if i["confidence"] < threshold or not i.get("action"):
+            continue
+        prev = best.get(i["id"])
+        if not prev or (prev["_scope"] != "project" and i["_scope"] == "project"):
+            best[i["id"]] = i
+    return list(best.values())
+
+
+def instinct_line(i):
+    return f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {one_line(i['action'], INSTINCT_LINE_CHARS)}"
+
+
+def shown_instincts_path(ctx):
+    return ctx.state_file("instincts-shown") + ".json"
+
+
+def shown_instincts(ctx):
+    v = read_json(shown_instincts_path(ctx), {}) or {}
+    ids = v.get("ids") if isinstance(v, dict) else None
+    return [str(x) for x in ids] if isinstance(ids, list) else []
+
+
+def mark_instincts_shown(ctx, ids):
+    """Union of everything shown this session, so the first-prompt pass never repeats it."""
+    try:
+        have = shown_instincts(ctx)
+        merged = have + [i for i in ids if i not in have]
+        write_json(shown_instincts_path(ctx), {"ids": merged})
+    except Exception:
+        log_exception("mark_instincts_shown")
+
+
+def injection_log_path():
+    return os.path.join(state_root(), "instinct-injections.jsonl")
+
+
+def log_injection(ctx, source, picked, filled=()):
+    """One JSON line per injection: {ts, session, source, project, ids, scores, shared, filled}.
+    `picked` is [(instinct, Match or None)]. Rotates to .1 at 5 MB. Never raises."""
+    try:
+        p = injection_log_path()
+        ensure_dir(os.path.dirname(p))
+        try:
+            if os.path.getsize(p) > INJECTION_LOG_MAX_BYTES:
+                os.replace(p, p + ".1")
+        except OSError:
+            pass
+        try:
+            project = (ctx.project or {}).get("id", "")
+        except Exception:
+            project = ""
+        rec = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "session": ctx.sid, "source": source, "project": project,
+            "ids": [i["id"] for i, _ in picked],
+            "scores": [round(float(m.score), 3) if m else 0 for _, m in picked],
+            "shared": [list(m.shared) if m else [] for _, m in picked],
+            "filled": list(filled),
+        }
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    except Exception:
+        log_exception("log_injection")
+
+
 # ---------------------------------------------------------------- context object
 
 class Ctx:

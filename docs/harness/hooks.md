@@ -30,9 +30,10 @@ In run order. "Tools: all" means the module sees every tool call of that event a
 
 | Id | Events | Tools | Profiles | File | What it does |
 |---|---|---|---|---|---|
-| `session_start` | SessionStart | all | minimal, standard, strict | `session_start.py` | Inject strong instincts (canonical project/<id> and global folders), today's journal head, inbox open actions, open instinct proposals and the last session summary for this worktree or repo (8000 char cap); prune session files older than 30 days. |
+| `session_start` | SessionStart | all | minimal, standard, strict | `session_start.py` | Inject up to `NEVA_INSTINCT_MAX` (default 3) instincts matched to the cwd, project, branch and project note (global ones only on a match, empty slots to project instincts by last_observed), today's journal head, inbox open actions, open instinct proposals and the last session summary for this worktree or repo (8000 char cap); prune session files older than 30 days. |
 | `ck_session_start` | SessionStart | all | standard, strict | `ck.py` | neva-library:ck skill (opt-in): record current-session.json and inject the project's saved goal, where it left off and next steps (or the 3 most recent ck projects). No-op when ck data does not exist. |
 | `prompt_context` | UserPromptSubmit | all | standard, strict | `prompt_context.py` | Once per session: GOALS.md and project states when a prompt is about direction; the matching project note when the working directory is under its code path. |
+| `instinct_prompt` | UserPromptSubmit | all | standard, strict | `instinct_prompt.py` | Once per session, on the first real prompt: up to `NEVA_INSTINCT_PROMPT_MAX` (default 3) instincts whose trigger matches the prompt (`instinct_match.py`), none the session start already showed. No match, no context. One line per injection in `<state>/instinct-injections.jsonl`. |
 | `hookify_prompt` | UserPromptSubmit | all | minimal, standard, strict | `hookify.py` | hookify rules with event prompt or all: warn with context or block the prompt. |
 | `no_verify` | PreToolUse | Bash | minimal, standard, strict | `pre_bash.py` | Block git hook bypasses: --no-verify (and prefixes), commit -n clusters, -c core.hooksPath, git config core.hooksPath, HUSKY=0. |
 | `safety_careful` | PreToolUse | Bash | minimal, standard, strict | `safety_guard.py` | safety-guard careful mode (on while <NEVA_STATE_DIR>/safety-guard/careful exists): ask before destructive commands. |
@@ -68,7 +69,8 @@ In run order. "Tools: all" means the module sees every tool call of that event a
 | paths, every module | `NEVA_DATA_DIR` (`~/.local/share/neva`), `NEVA_STATE_DIR` (`~/.local/state/neva`), `NEVA_VAULT` (else `VAULT_PATH` in `NEVA_CONFIG`, default `~/.config/neva/identity.env`), `NEVA_TIMEZONE`, `NEVA_DAY_ROLLOVER_HOUR` (0) |
 | journal (`session_start`, `pre_compact`, `journal_nudge`, `session_audit`) | `NEVA_JOURNAL_PATTERN` (`08 Journal/{date}.md`), `NEVA_JOURNAL_TEMPLATE` (`Templates/Daily Note.md`), `NEVA_JOURNAL_LOG_HEADING` (`## Log`), `NEVA_JOURNAL_NUDGE_MIN_TOOLS` (5) |
 | inbox (`session_start`, instinct proposals) | `NEVA_INBOX` (`00 Inbox/inbox.md`, else a root `inbox.md` when only that exists), `NEVA_INBOX_SECTION` (`Open actions`), `NEVA_PROPOSALS_DIR` (the inbox note's folder) |
-| `session_start` | `NEVA_SESSION_START_CONTEXT` (on), `NEVA_SESSION_START_MAX_CHARS` (8000), `NEVA_SESSION_RETENTION_DAYS` (30, `off` keeps files), `NEVA_INSTINCT_MIN_CONFIDENCE` (0.7), `NEVA_INSTINCT_MAX` (6), `COMPACT_STATE_TTL_DAYS` (14) |
+| `session_start` | `NEVA_SESSION_START_CONTEXT` (on), `NEVA_SESSION_START_MAX_CHARS` (8000), `NEVA_SESSION_RETENTION_DAYS` (30, `off` keeps files), `NEVA_INSTINCT_MIN_CONFIDENCE` (0.7), `NEVA_INSTINCT_MAX` (3), `COMPACT_STATE_TTL_DAYS` (14) |
+| `instinct_prompt` | `NEVA_INSTINCT_PROMPT_MAX` (3, `0` turns it off), `NEVA_INSTINCT_MIN_CONFIDENCE` (0.7) |
 | `ck_session_start` | `NEVA_CK_HOME` (`~/.local/share/neva/ck`) |
 | `prompt_context` | `NEVA_GOALS_FILE`, `NEVA_PROJECTS_DIR`, `NEVA_STRATEGY_KEYWORDS` |
 | `hookify_*` | rule files in the nearest `.claude/` folder and `CLAUDE_PROJECT_DIR/.claude` |

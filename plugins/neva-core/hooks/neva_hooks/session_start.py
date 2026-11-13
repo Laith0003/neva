@@ -2,9 +2,13 @@
 """SessionStart: bounded context for a fresh session.
 
 Injects, in priority order (the tail is what the char cap cuts first):
-  1. strong instincts (confidence >= NEVA_INSTINCT_MIN_CONFIDENCE, default 0.7, top
-     NEVA_INSTINCT_MAX, default 6) from the continuous-learning-v2 layout:
-     <vault>/06 Memory/instincts/project/<project-id>/*.md, then global/*.md
+  1. instincts matched to this session (confidence >= NEVA_INSTINCT_MIN_CONFIDENCE, default 0.7,
+     at most NEVA_INSTINCT_MAX, default 3) from the continuous-learning-v2 layout:
+     <vault>/06 Memory/instincts/project/<project-id>/*.md, then global/*.md. The query is the cwd
+     path parts, project name, git branch and project note name; instinct_match.py scores it
+     against each trigger. Global instincts show only on a match; empty slots go to project
+     instincts by last_observed. Shown ids go to a per-session state file the first-prompt
+     module (instinct_prompt) reads, and one line to <state>/instinct-injections.jsonl.
   2. today's journal head, the inbox's `## Open actions`, open instinct proposal files and
      unsorted captures (skipped on resume)
   3. the last session summary for this worktree or repository (startup only), wrapped in a
@@ -60,25 +64,68 @@ def prune():
             _prune(d, ".jsonl", 30)
 
 
+# Path parts that say nothing about the work: system folders, checkout plumbing, default branches.
+PATH_NOISE = frozenset("users home private var folders tmp temp volumes code src repo repos main master head "
+                       "claude worktree worktrees wt".split())
+
+
+def _project_note_name(vault, cwd):
+    """Name of the project note whose `code:` path holds cwd (the note prompt_context injects)."""
+    if not vault:
+        return ""
+    from .prompt_context import _code_paths, _project_notes
+    cwd = os.path.realpath(cwd)
+    best = ("", "")
+    for name, p in _project_notes(vault):
+        meta, _ = c.frontmatter(c.read_text(p))
+        for root in _code_paths(meta):
+            if (cwd == root or cwd.startswith(root + os.sep)) and len(root) > len(best[0]):
+                best = (root, name)
+    return best[1]
+
+
+def session_query(ctx, m):
+    """Stems describing where this session is: cwd path parts (below HOME), project name, git
+    branch and the matching project note name."""
+    cwd = os.path.realpath(ctx.cwd)
+    home = os.path.realpath(c.home())
+    rel = cwd[len(home):] if cwd == home or cwd.startswith(home + os.sep) else cwd
+    branch = c.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd) or ""
+    note = _project_note_name(ctx.vault, cwd)
+    text = " ".join([rel.replace(os.sep, " "), ctx.project.get("name", ""), branch, note])
+    return m.tokens(text, stop=m.STOP_WORDS | PATH_NOISE)
+
+
+def select_start(ctx, m, items, limit):
+    """Up to `limit` instincts: matches first (global ones only on a match), then project-scope
+    instincts by last_observed and evidence_count. Returns ([(instinct, Match or None)], filled ids)."""
+    if limit <= 0 or not items:
+        return [], []
+    picked = m.rank(session_query(ctx, m), items, limit)
+    taken = {i["id"] for i, _ in picked}
+    rest = [i for i in items if i["_scope"] == "project" and i["id"] not in taken]
+    rest.sort(key=lambda i: m.order_key(i, 0))
+    filled = m.collapse([(i, None) for i in rest], seen=[i for i, _ in picked])[: limit - len(picked)]
+    return picked + filled, [i["id"] for i, _ in filled]
+
+
 def instinct_block(ctx):
-    root = c.instincts_root(ctx.vault)
-    if not root:
+    """Instincts matched to where the session is. Any error is logged and yields no block."""
+    try:
+        items = c.recall_candidates(ctx.vault, ctx.project["id"])
+        if not items:
+            return ""
+        limit = c.env_int("NEVA_INSTINCT_MAX", 3, 0, 50)
+        picked, filled = select_start(ctx, c.instinct_match(), items, limit)
+        if not picked:
+            return ""
+        c.mark_instincts_shown(ctx, [i["id"] for i, _ in picked])
+        c.log_injection(ctx, "session_start", picked, filled)
+        lines = [c.instinct_line(i) for i, _ in picked]
+        return "Active instincts (matched to this session; apply when relevant):\n" + "\n".join(lines)
+    except Exception:
+        c.log_exception("[session_start] instinct_block")
         return ""
-    threshold = float(c.env("NEVA_INSTINCT_MIN_CONFIDENCE", "0.7") or 0.7)
-    limit = c.env_int("NEVA_INSTINCT_MAX", 6, 0, 50)
-    best = {}
-    for i in c.load_instincts(root, ctx.project["id"]):
-        if i["confidence"] < threshold or not i.get("action"):
-            continue
-        prev = best.get(i["id"])
-        if not prev or (prev["_scope"] != "project" and i["_scope"] == "project"):
-            best[i["id"]] = i
-    ranked = sorted(best.values(), key=lambda i: (-i["confidence"], 0 if i["_scope"] == "project" else 1, i["id"]))
-    ranked = ranked[:limit]
-    if not ranked:
-        return ""
-    lines = [f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {c.one_line(i['action'], 200)}" for i in ranked]
-    return "Active instincts (learned from past sessions; apply when relevant):\n" + "\n".join(lines)
 
 
 def journal_block(ctx):
