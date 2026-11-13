@@ -2148,6 +2148,13 @@ def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
     return {'content_key': _content_key(tokens), 'content_tokens': tokens}
 
 
+def _recorded_content(entry) -> dict:
+    """The content key and tokens the ledger took when the block was proposed. A decision records
+    these, never a recomputation from the notes, which the analyzer can rewrite after propose."""
+    entry = entry if isinstance(entry, dict) else {}
+    return {k: entry[k] for k in ('content_key', 'content_tokens') if k in entry}
+
+
 def _block_content(block: dict) -> dict:
     return _content_from_fields(dict(block['fields']), block.get('text'))
 
@@ -2177,7 +2184,9 @@ def _backfill_content(ledger: dict) -> None:
             continue
         for bid in bids:
             if bid in parsed:
-                ledger[bid].update(_content_from_fields(parsed[bid]['fields'], parsed[bid]['text']))
+                # From the fence the human decided on, never from the notes as they read today: the
+                # analyzer can rewrite its notes, and a decision must keep meaning what was shown.
+                ledger[bid].update(_content_from_fields({}, parsed[bid]['text']))
 
 
 def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tuple]:
@@ -2962,7 +2971,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                 text = _mark_block(text, block, f"Rejected {_today()}.", False)
                 _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
                                reason=_block_reason(block) or "ticked reject",
-                               **_content_from_fields(block['fields'], block['text']))
+                               **_recorded_content(ledger.get(bid)))
                 _log_promotion_event("rejected", bid)
                 rejected += 1
                 continue
@@ -2978,7 +2987,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             dest = block['fields'].get('Proposed destination', '')
             text = _mark_block(text, block, f"Applied {_today()} to {dest}.", not block['approve'])
             _ledger_record(ledger, bid, status='applied', file=str(path), date=_today(),
-                           **_content_from_fields(block['fields'], block['text']))
+                           **_recorded_content(ledger.get(bid)))
             _log_promotion_event("approved", bid)
             applied += 1
         finished = not malformed and all(b['resolved'] for b in _parse_blocks(text))
@@ -3045,7 +3054,7 @@ def cmd_reject(args) -> int:
         if block is None:
             continue
         where = str(path)
-        content = _content_from_fields(block['fields'], block['text'])
+        content = _recorded_content(ledger.get(bid))
         if not block['resolved']:
             body = block['body'].replace("- [ ] reject", "- [x] reject", 1)
             body = body.replace("- [x] reject\n", f"- [x] reject\n\nRejected {_today()}: {reason}\n", 1)
