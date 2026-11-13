@@ -210,7 +210,7 @@ class BlockInjectionCase(unittest.TestCase):
         r = self.sb.run("apply-promotions")
         self.assertIn("Applied 1", r.stdout)
 
-    def test_a_legacy_block_with_no_recorded_hash_applies_when_the_ledger_proposed_it(self):
+    def test_a_legacy_block_with_no_recorded_hash_is_never_applied(self):
         bid = self._legit()
         ledger = self._ledger()
         for key in ("rendered_sha256", "ticked_at_propose"):
@@ -218,8 +218,9 @@ class BlockInjectionCase(unittest.TestCase):
         with open(self.ledger_path, "w", encoding="utf-8") as fh:
             json.dump(ledger, fh)
         self.sb.tick(self.sb.proposal_path(), bid, "approve")
-        r = self.sb.run("apply-promotions")
-        self.assertIn("Applied 1", r.stdout)
+        r = self.sb.run("apply-promotions", check=False)
+        self.assertIn("Applied 0", r.stdout)
+        self.assertIn("needs a fresh tick", r.stderr)
 
     def test_a_legacy_block_the_ledger_does_not_know_is_skipped(self):
         bid = self._legit()
@@ -302,12 +303,12 @@ class ProvenanceByContentCase(unittest.TestCase):
         self.assertFalse(os.path.exists(self.promoted), r.stdout + r.stderr)
         self.assertIn("re-proposed", r.stderr)
 
-    def test_a_legacy_block_untouched_and_ticked_still_applies(self):
+    def test_a_legacy_block_untouched_and_ticked_is_filed_again_not_applied(self):
         self._ledger(lambda e: [e.pop(k, None) for k in ("rendered_sha256", "ticked_at_propose", "destination")])
         self.sb.tick(self.sb.proposal_path(), self.BID, "approve")
-        r = self.sb.run("apply-promotions")
-        self.assertIn("Applied 1", r.stdout)
-        self.assertTrue(os.path.exists(self.promoted))
+        r = self.sb.run("apply-promotions", check=False)
+        self.assertIn("Applied 0", r.stdout)
+        self.assertFalse(os.path.exists(self.promoted))
 
     def test_a_legacy_entry_with_no_record_is_withdrawn_and_filed_again(self):
         self._ledger(lambda e: [e.pop(k) for k in list(e) if k not in ("status", "file", "date")])

@@ -920,7 +920,7 @@ def cmd_stats(args) -> int:
     ev_rejected = sum(1 for e in events if e['event'] == 'rejected')
     ev_decided = approved + ev_rejected
     ev_rate = f"{approved / ev_decided:.2f}" if ev_decided else "n/a"
-    by_week: dict = defaultdict(lambda: {"made": 0, "approved": 0, "rejected": 0})
+    by_week: dict = defaultdict(lambda: {"made": 0, "approved": 0, "rejected": 0, "withdrawn": 0})
     for e in events:
         by_week[_event_week_key(e.get('ts', ''))][e['event']] += 1
     print(f"PROPOSALS_MADE: {made}")
@@ -1848,7 +1848,7 @@ def _save_ledger(ledger: dict) -> None:
 
 
 PROMOTION_EVENTS_FILE = STATE_DIR / "promotion-events.jsonl"
-PROMOTION_EVENT_KINDS = ("made", "approved", "rejected")
+PROMOTION_EVENT_KINDS = ("made", "approved", "rejected", "withdrawn")
 
 
 def _preflight_state() -> None:
@@ -2068,7 +2068,7 @@ def _load_promotion_events() -> list[dict]:
                     raise PromotionEventsError(
                         f"{PROMOTION_EVENTS_FILE}: line {number} is not a valid promotion event "
                         f"({problem}). Fix: correct or delete that line; each line must be a JSON "
-                        f'object like {{"ts": "...", "event": "made|approved|rejected", "block_id": "..."}}. '
+                        f'object like {{"ts": "...", "event": "made|approved|rejected|withdrawn", "block_id": "..."}}. '
                         f"The file was not changed.")
                 events.append(json.loads(line))
     except FileNotFoundError:
@@ -2830,43 +2830,9 @@ def _same_file(a, b) -> bool:
         os.path.realpath(str(b)))
 
 
-LEGACY_TOKEN_COVERAGE = 0.8
 # The one write mode the engine ever proposes for each kind.
 KIND_WRITE_MODE = {'promote-global': 'create', 'evolve-skill': 'create', 'evolve-command': 'create',
                    'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter'}
-
-
-def _legacy_problem(entry: dict, block: dict) -> str:
-    """'' when a block proposed before rendered hashes existed still says what the ledger recorded,
-    else why it cannot be trusted. The ledger never recorded the text itself, so the check is: the
-    content key the ledger holds matches the instincts the block names, those instincts' words are in
-    its fence, and its destination is the one recorded or, when none was, the one its kind implies."""
-    if not entry.get('content_key'):
-        return "the ledger recorded no content for it"
-    fields, text = block['fields'], block['text'] or ""
-    if _content_from_fields(fields, text).get('content_key') != entry['content_key']:
-        return "the instincts it names are not the ones the ledger recorded"
-    kind = block['block_id'].partition(':')[0]
-    if kind == 'retire':
-        if not re.fullmatch(r'status: archived\narchived_reason: "[^"\n]*"\n?', text):
-            return "its text is not the archive marker a retire block writes"
-    else:
-        recorded = set(entry.get('content_tokens') or ())
-        found = set(_content_tokens(text))
-        if not recorded or len(recorded & found) < LEGACY_TOKEN_COVERAGE * len(recorded):
-            return "its text no longer carries the lesson the ledger recorded"
-    dest = fields.get('Proposed destination', '').strip().strip('`').strip()
-    if entry.get('destination'):
-        if dest != str(entry['destination']).strip().strip('`').strip():
-            return "its destination is not the one the ledger recorded"
-    elif kind == 'promote-global':
-        try:
-            ok = _same_file(_resolve_ref(dest), GLOBAL_DIR / f"{block['block_id'].partition(':')[2]}{INSTINCT_EXT}")
-        except ValueError:
-            ok = False
-        if not ok:
-            return "its destination is not the global note its id implies"
-    return ""
 
 
 def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) -> str:
@@ -2876,8 +2842,8 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) 
     anything else in the file was not written by the engine. An id that appears more than once
     outside fences is refused in every copy. Text the renderer would refuse is refused here too. A
     block recorded since the rendered hash existed must have been written with its approve box
-    empty. A block proposed before then is acted on only when it still matches what the ledger
-    recorded (_legacy_problem); otherwise it is withdrawn and filed again by the next propose."""
+    empty. A block proposed before then is never acted on: _apply_files withdraws it and the next
+    propose files it again with its hash."""
     bid = block['block_id']
     entry = ledger.get(bid)
     where = f"{path.name}: block {bid}"
@@ -2967,12 +2933,16 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                     'Kind': bid.partition(':')[0],
                     'Proposed destination': str(entry.get('destination') or ''),
                     'Write mode': KIND_WRITE_MODE.get(bid.partition(':')[0], '')})
-            legacy = '' if entry.get('rendered_sha256') else _legacy_problem(entry, block)
-            if legacy and (block['approve'] or block['reject'] or mode in ("all", "ids")):
-                msg = (f"{path.name}: block {bid} was proposed before the engine recorded what it wrote, and "
-                       f"{legacy}. It is withdrawn and must be re-proposed: the next `instinct-cli.py propose` "
-                       f"files it again if it still qualifies, and you tick it there.")
+            if not entry.get('rendered_sha256'):
+                # No partial trust: a block proposed before the engine recorded what it wrote is never
+                # applied. It is withdrawn once (the renamed marker means no later run sees it again)
+                # and the next propose files it again with its hash.
+                legacy = "the engine has no record of the text it wrote"
+                msg = (f"{path.name}: block {bid} was withdrawn: it was proposed before the engine recorded "
+                       f"what it wrote. It is re-proposed with its hash by the next `instinct-cli.py propose` if "
+                       f"it still qualifies, and needs a fresh tick there.")
                 print(msg, file=sys.stderr)
+                _log_promotion_event("withdrawn", bid)
                 # The marker is renamed, so the withdrawn copy is no longer a block: neither open nor
                 # decided, and the id can be filed again, in this file too, without a duplicate.
                 body = block['body'].replace(f"<!-- block_id: {bid} -->", f"<!-- withdrawn_block_id: {bid} -->", 1)
