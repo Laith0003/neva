@@ -60,6 +60,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -221,7 +222,6 @@ CLAUDE_DIR_REF = str(_cfg) if _cfg else "~/.claude"
 
 
 EVOLVE_FLAG = "NEVA_INSTINCT_EVOLVE"
-EVOLVED_KINDS = ("skills", "commands", "agents")
 
 
 def _evolve_allowed() -> bool:
@@ -232,10 +232,73 @@ def _evolve_allowed() -> bool:
     return os.environ.get(EVOLVE_FLAG) == "1"
 
 
-def _is_global_evolved_path(path: Path) -> bool:
-    root = Path(CLAUDE_DIR_REF).expanduser().resolve()
-    resolved = path.expanduser().resolve()
-    return any(resolved == root / k or (root / k) in resolved.parents for k in EVOLVED_KINDS)
+_NAME = r"[a-z0-9][a-z0-9._-]*"
+# The only shapes the engine ever writes inside a config folder, compared casefolded. Without the
+# evolve opt-in the global folder takes the always-loaded instinct rule files and nothing else.
+GLOBAL_ALLOWED = (re.compile(rf"rules/instincts-{_NAME}\.md"),)
+EVOLVED_ALLOWED = (re.compile(rf"skills/{_NAME}/skill\.md"), re.compile(rf"commands/{_NAME}\.md"),
+                   re.compile(rf"agents/{_NAME}\.md"))
+
+
+def _fold(path: str) -> str:
+    return os.path.normcase(path).casefold()
+
+
+def _rel_under(path: str, root: str) -> Optional[str]:
+    """`path` relative to `root` as a casefolded posix string, or None when it is not below it.
+    Both sides are folded, so a case-insensitive disk cannot route around the comparison."""
+    p, r = _fold(path), _fold(root).rstrip(os.sep)
+    if p == r:
+        return ""
+    if not p.startswith(r + os.sep):
+        return None
+    return p[len(r) + 1:].replace(os.sep, "/")
+
+
+def _config_destination_problem(dest: Path, root: Path, allowed: tuple, label: str) -> Optional[str]:
+    """None when `dest` is not in the config folder `root`; '' when it is and its shape is allowed;
+    else why not. The folder is matched by its spelling and by its real path, and the destination
+    by both too, so neither a symlink nor `..` nor letter case moves a write in or out of it."""
+    # Resolved the way the OS will: abspath then realpath on the raw spelling, never normpath first,
+    # which would fold `..` before a link is followed. Callers refuse `..` before they get here.
+    literal = os.path.abspath(os.path.expanduser(str(dest)))
+    real = os.path.realpath(literal)
+    root_lit = os.path.abspath(os.path.expanduser(str(root)))
+    root_real = os.path.realpath(root_lit)
+    rel_lit = _rel_under(literal, root_lit)
+    if rel_lit is None:
+        rel_lit = _rel_under(literal, root_real)
+    rel_real = _rel_under(real, root_real)
+    if rel_lit is None and rel_real is None:
+        return None
+    if rel_lit is not None and rel_real != rel_lit:
+        return (f"{dest} goes through a link out of {label} ({root_lit}), to {real}. Fix: point the "
+                f"'Proposed destination' row at the real file, or tick reject")
+    rel = rel_real if rel_real is not None else rel_lit
+    if any(p.fullmatch(rel) for p in allowed):
+        return ""
+    shapes = ", ".join(p.pattern.replace(_NAME, "<name>").replace("\\", "") for p in allowed)
+    return (f"{dest} is in {label} ({root_lit}), where the engine writes only {shapes}. Fix: tick "
+            f"reject, or edit the 'Proposed destination' row to one of those")
+
+
+def _destination_problem(dest: Path) -> str:
+    """'' when apply may write `dest`, else an error body naming the fix."""
+    evolve = _evolve_allowed()
+    allowed = GLOBAL_ALLOWED + (EVOLVED_ALLOWED if evolve else ())
+    problem = _config_destination_problem(dest, Path(CLAUDE_DIR_REF), allowed, "the global config folder")
+    if problem is None:
+        for info in load_registry().values():
+            if info.get('root'):
+                problem = _config_destination_problem(dest, Path(info['root']) / ".claude", EVOLVED_ALLOWED,
+                                                      "a project's .claude folder")
+                if problem is not None:
+                    break
+    if problem and not evolve and any(p.fullmatch(_rel_under(os.path.realpath(str(dest)), os.path.realpath(
+            os.path.expanduser(CLAUDE_DIR_REF))) or "") for p in EVOLVED_ALLOWED):
+        problem += (f"; it writes a skill, command or agent into the global config folder, and automatic "
+                    f"evolution is off: set {EVOLVE_FLAG}=1 for this apply if you want it loaded in every project")
+    return problem or ""
 
 
 def _require_vault() -> None:
@@ -899,6 +962,7 @@ def cmd_add(args) -> int:
     title = args.id.replace('-', ' ').title()
     inst['content'] = (f"# {title}\n\n## Action\n{args.action}\n\n## Evidence\n"
                        f"- Stated by the user on {_today()}\n")
+    _record_user_stated(target, _note_hash(parse_instinct_file(render_instinct(inst))[0]))
     _write_text_atomic(target, render_instinct(inst))
     print(f"Added {args.id} ({args.scope}, confidence {conf:.2f}) at {_vault_ref(target)}")
     return 0
@@ -1302,7 +1366,11 @@ def _find_cross_project_instincts() -> dict:
             if iid and iid not in seen:
                 seen.add(iid)
                 cross[iid].append((pid, registry.get(pid, {}).get('name', inst.get('project_name', pid)), inst))
-    return {iid: entries for iid, entries in cross.items() if len({e[0] for e in entries}) >= PROMOTE_MIN_PROJECTS}
+    # Projects are counted by their real root, not their bucket id: a repo gets a new id when an origin
+    # remote is added later, and must still count once.
+    def roots(entries):
+        return {os.path.normcase(os.path.realpath((registry.get(e[0]) or {}).get('root') or e[0])) for e in entries}
+    return {iid: entries for iid, entries in cross.items() if len(roots(entries)) >= PROMOTE_MIN_PROJECTS}
 
 
 def _global_ids() -> set:
@@ -1368,7 +1436,7 @@ def _promote_block(cand: dict) -> dict:
     }
     text = render_instinct(best, overrides)
     sources = "; ".join(f"`{_vault_ref(Path(e[2]['_source_file']))}`" for e in cand['entries'])
-    return _block("promote-global", cand['id'], [
+    block = _block("promote-global", cand['id'], [
         ("Kind", "promote-global"),
         ("Instinct", f"`{cand['id']}`"),
         ("Confidence", f"{cand['avg_confidence']:.2f}"),
@@ -1380,6 +1448,8 @@ def _promote_block(cand: dict) -> dict:
         ("Source notes", sources),
         ("Then set on source notes", f"`status: promoted`; `promoted_to: {_vault_ref(dest)}`"),
     ], text, members=[e[2] for e in cand['entries']])
+    block['sources'] = [_vault_ref(Path(e[2]['_source_file'])) for e in cand['entries']]
+    return block
 
 
 def _cluster_destination(project: dict, kind: str, name: str, cluster: list[dict]) -> str:
@@ -1507,27 +1577,162 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
     return blocks
 
 
+# Rule text lands in a file every future session loads, so it is built to be safe by construction.
+# _rule_text is the one function that does it; propose renders with it and apply re-renders the
+# parsed block with it and requires the same bytes back. The rules, all in one place:
+#   characters  every character of title, action and trigger is in a Unicode category starting with
+#               L, N, P or S, or is Zs, or is a combining mark (Mn, Mc); the action may also hold tab.
+#               Refused, never stripped, so what is approved is what was proposed: Cf, Cc, Zl, Zp,
+#               Co, Cn, Cs, variation selectors and the invisible marks and letters in
+#               _RULE_INVISIBLE. Named as U+XXXX, never echoed raw.
+#   lines       title and trigger are one line; the action is one paragraph of lines
+#   length      RULE_MAX_LINE_CHARS per line, RULE_MAX_TEXT_CHARS for the whole rule
+#   comments    '<!--' or '-->' anywhere is refused: the reading view hides a comment
+#   entities    an HTML character reference (&#8203; &#x200B; &zwj;) anywhere is refused: the reading
+#               view renders it as a character the file does not hold. A bare '&' passes.
+#   tags        a '<' that opens something HTML-looking is escaped as '\<', not refused: real
+#               instincts carry placeholders such as <absolute path>, which the reading view swallows
+#   structure   each action line is left-trimmed, and a line starting with a markdown metacharacter
+#               (# > - * + = _ | [ ` ~, or digits then '.' or ')') gets a backslash before it, so no
+#               line can become a heading, setext underline, rule, quote, list, table, link
+#               definition or fence
+#   format      '## <title>', blank, the action, blank, 'Trigger: <trigger>. Source: instinct `<id>`
+#               (confidence C, N observations).' as before, so existing rule files read the same
+RULE_MAX_LINE_CHARS = 400
+RULE_MAX_TEXT_CHARS = 1500
+_RULE_INVISIBLE = {0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x034F, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D,
+                   0x180E, 0x180F}
+_RULE_COMMENT = re.compile(r'<!--|-->')
+_RULE_ENTITY = re.compile(r'&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]+);')
+_RULE_TAG = re.compile(r'(?<!\\)<(?=[A-Za-z/!?])')
+_RULE_LEAD = re.compile(r'^([#>\-*+=_|\[`~]|\d+[.)])')
+_RULE_TAIL = re.compile(r'^Trigger: (.*)\. Source: instinct `([A-Za-z0-9._-]+)` \(confidence (\d\.\d\d), (\d+) '
+                        r'observations\)\.$')
+
+
+def _rule_char_problem(name: str, value: str, allow: str = "") -> str:
+    for c in value:
+        cp = ord(c)
+        cat = unicodedata.category(c)
+        if c in allow:
+            continue
+        variation = 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF
+        ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation and cp not in _RULE_INVISIBLE
+        if not ok:
+            return f"its {name} holds U+{cp:04X} ({cat}), a character a reader cannot see or that breaks the line"
+    return ""
+
+
+def _rule_escape_tags(text: str) -> str:
+    return _RULE_TAG.sub(r"\\<", text)
+
+
+def _rule_escape_line(line: str) -> str:
+    line = _rule_escape_tags(line.lstrip(" \t"))
+    m = _RULE_LEAD.match(line)
+    if not m:
+        return line
+    lead = m.group(1)
+    if lead[0].isdigit():  # "1." -> "1\.": a backslash before a digit is not an escape
+        return lead[:-1] + "\\" + line[len(lead) - 1:]
+    return "\\" + line
+
+
+def _rule_unescape_line(line: str) -> str:
+    if line.startswith("\\") and _RULE_LEAD.match(line[1:]) and not line[1].isdigit():
+        line = line[1:]
+    else:
+        line = re.sub(r'^(\d+)\\([.)])', r'\1\2', line)
+    return line.replace("\\<", "<")
+
+
+def _rule_text(title: str, action: str, trigger: str, iid: str, confidence: float, evidence: int) -> tuple:
+    """(rule text, '') or ('', why it is refused). See the rules above."""
+    for name, value, allow in (("title", title, ""), ("trigger", trigger, ""), ("action", action, "\n\t")):
+        problem = _rule_char_problem(name, value, allow)
+        if problem:
+            return "", problem
+        m = _RULE_COMMENT.search(value)
+        if m:
+            return "", f"its {name} holds an HTML comment marker ('{m.group(0)}'), which the reading view hides"
+        m = _RULE_ENTITY.search(value)
+        if m:
+            return "", (f"its {name} holds an HTML character reference ('{m.group(0)}'), which the reading view "
+                        f"shows as a character the file does not hold")
+    lines = [ln for ln in action.split("\n")]
+    if not title.strip() or not action.strip() or any(not ln.strip() for ln in lines):
+        return "", "its title or action is empty, or its action is more than one paragraph"
+    body = "\n".join(_rule_escape_line(ln) for ln in lines)
+    head, tail = _rule_escape_tags(title.strip()), _rule_escape_tags(trigger.strip())
+    text = (f"## {head}\n\n{body}\n\n"
+            f"Trigger: {tail}. Source: instinct `{iid}` "
+            f"(confidence {confidence:.2f}, {evidence} observations).\n")
+    for line in text.split("\n"):
+        if len(line) > RULE_MAX_LINE_CHARS:
+            return "", f"it has a line of {len(line)} characters; a rule line holds at most {RULE_MAX_LINE_CHARS}"
+    if len(text) > RULE_MAX_TEXT_CHARS:
+        return "", f"the rule is {len(text)} characters; a rule holds at most {RULE_MAX_TEXT_CHARS}"
+    return text, ""
+
+
+def _rule_text_problem(text: str) -> str:
+    """'' when `text` is exactly what _rule_text writes for its own parts, else why not. Apply runs
+    this on the parsed block, so text that arrives by any route is held to the render rules."""
+    parts = text.split("\n\n")
+    if len(parts) != 3 or not parts[0].startswith("## "):
+        return "it is not a '## ' title line, the action, and a 'Trigger: ' line"
+    m = _RULE_TAIL.match(parts[2].rstrip("\n"))
+    if not m:
+        return "its last line is not 'Trigger: ... Source: instinct `<id>` (confidence C, N observations).'"
+    unescape = lambda t: t.replace("\\<", "<")  # noqa: E731  only the tag escape is undone
+    action = "\n".join(_rule_unescape_line(ln) for ln in parts[1].split("\n"))
+    again, problem = _rule_text(unescape(parts[0][3:]), action, unescape(m.group(1)), m.group(2),
+                                float(m.group(3)), int(m.group(4)))
+    if problem:
+        return problem
+    if again != text.rstrip("\n") + "\n":
+        return "it is not in the form the engine writes (an unescaped markdown line or tag)"
+    return ""
+
+
+def _rule_block(inst: dict) -> tuple:
+    """(block, '') for one global instinct, or (None, why it was refused)."""
+    domain = re.sub(r'[^a-z0-9-]+', '-', str(inst.get('domain', 'general')).lower()).strip('-') or 'general'
+    dest = f"{CLAUDE_DIR_REF}/rules/instincts-{domain}.md"
+    title, trigger = _title_of(inst), str(inst.get('trigger', ''))
+    for name, value in (("title", title), ("trigger", trigger)):
+        breaks = [c for c in value if c in "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"]
+        if breaks:
+            return None, f"its {name} must be one line and holds a line break (U+{ord(breaks[0]):04X})"
+    text, problem = _rule_text(title, _action_of(inst), trigger, inst['id'], inst.get('confidence', 0),
+                               _evidence_count(inst))
+    if problem:
+        return None, problem
+    return _block("rule", inst['id'], [
+        ("Kind", "rule"),
+        ("Instinct", f"`{inst['id']}`"),
+        ("Confidence", f"{inst.get('confidence', 0):.2f}"),
+        ("Evidence count", str(_evidence_count(inst))),
+        ("Projects seen in", inst.get('promoted_from', 'global')),
+        ("Why", f"global instinct at confidence >= {RULE_CONFIDENCE_THRESHOLD:.2f} (near-certain, core behavior)"),
+        ("Proposed destination", f"`{dest}`"),
+        ("Write mode", "append"),
+        ("Source notes", f"`{_vault_ref(Path(inst['_source_file']))}`"),
+    ], text, members=[inst]), ""
+
+
 def _rule_blocks() -> list[dict]:
     blocks = []
     for inst in _load_instincts_from_dir(GLOBAL_DIR, "global"):
         if inst.get('confidence', 0) < RULE_CONFIDENCE_THRESHOLD:
             continue
-        domain = re.sub(r'[^a-z0-9-]+', '-', str(inst.get('domain', 'general')).lower()).strip('-') or 'general'
-        dest = f"{CLAUDE_DIR_REF}/rules/instincts-{domain}.md"
-        text = (f"## {_title_of(inst)}\n\n{_action_of(inst)}\n\n"
-                f"Trigger: {inst.get('trigger', '')}. Source: instinct `{inst['id']}` "
-                f"(confidence {inst.get('confidence', 0):.2f}, {_evidence_count(inst)} observations).\n")
-        blocks.append(_block("rule", inst['id'], [
-            ("Kind", "rule"),
-            ("Instinct", f"`{inst['id']}`"),
-            ("Confidence", f"{inst.get('confidence', 0):.2f}"),
-            ("Evidence count", str(_evidence_count(inst))),
-            ("Projects seen in", inst.get('promoted_from', 'global')),
-            ("Why", f"global instinct at confidence >= {RULE_CONFIDENCE_THRESHOLD:.2f} (near-certain, core behavior)"),
-            ("Proposed destination", f"`{dest}`"),
-            ("Write mode", "append"),
-            ("Source notes", f"`{_vault_ref(Path(inst['_source_file']))}`"),
-        ], text, members=[inst]))
+        block, problem = _rule_block(inst)
+        if problem:
+            print(f"Refused rule:{inst['id']}: {problem}. It was not proposed. Fix: edit "
+                  f"{_vault_ref(Path(inst['_source_file']))} and shorten or reword it; it is checked again on "
+                  f"the next run.", file=sys.stderr)
+            continue
+        blocks.append(block)
     return blocks
 
 
@@ -1554,7 +1759,49 @@ def _retire_blocks() -> list[dict]:
     return blocks
 
 
+BLOCK_ID_RE = re.compile(r'^[a-z][a-z-]*:[A-Za-z0-9][A-Za-z0-9._-]*$')
+_FENCE_LINE = re.compile(r'^ {0,3}(`{3,}|~{3,})', re.M)
+_MARKER_TEXT = re.compile(r'<!--\s*block_id', re.I)
+
+
+def _control_chars(text: str, keep: str) -> list:
+    return sorted({f"U+{ord(c):04X}" for c in text if unicodedata.category(c) == "Cc" and c not in keep})
+
+
+def _unsafe_reason(block: dict) -> str:
+    """Why this block cannot be rendered safely, or ''. Text a model wrote is never escaped into
+    something that looks harmless: a candidate that could close its fence, carry a block id, or
+    break out of its table row is refused and reported, and the human sees the reason."""
+    bid = block['block_id']
+    if not BLOCK_ID_RE.match(bid) or bid != f"{block['kind']}:{block['slug']}":
+        return f"its block id {bid!r} is not kind:slug in letters, digits, '.', '_' or '-'"
+    for key, value in block['fields']:
+        value = str(value)
+        bad = _control_chars(value, "")
+        if bad:
+            return f"its '{key}' field holds control characters ({', '.join(bad)}), which would end the table row"
+        if _MARKER_TEXT.search(value):
+            return f"its '{key}' field holds a '<!-- block_id' marker"
+    text = block['text']
+    bad = _control_chars(text, "\n\t")
+    if bad:
+        return f"its text holds control characters ({', '.join(bad)})"
+    m = _FENCE_LINE.search(text)
+    if m:
+        return f"its text holds a fence line ('{m.group(1)}'), which would close the block's fence"
+    if _MARKER_TEXT.search(text):
+        return "its text holds a '<!-- block_id' marker"
+    return ""
+
+
+class UnsafeBlock(ValueError):
+    """A block whose text could break out of its fence or its table row."""
+
+
 def _render_block(block: dict) -> str:
+    reason = _unsafe_reason(block)
+    if reason:
+        raise UnsafeBlock(f"{block['block_id']}: {reason}")
     title = f"{block['kind']}: {block['slug']}"
     out = [f"## {title}", f"<!-- block_id: {block['block_id']} -->", "",
            "- [ ] approve", "- [ ] reject", "", "| Field | Value |", "| --- | --- |"]
@@ -1563,6 +1810,10 @@ def _render_block(block: dict) -> str:
         out.append(f"| {key} | {cell} |")
     out += ["", "Text to write:", "", f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
     return "\n".join(out)
+
+
+def _rendered_hash(body: str) -> str:
+    return hashlib.sha256(body.rstrip("\n").encode("utf-8")).hexdigest()
 
 
 PROPOSAL_HEADER = """---
@@ -1611,6 +1862,8 @@ def _preflight_state() -> None:
         learning_io.check(STATE_ROOT, PROMOTION_EVENTS_FILE)
         learning_io.check(STATE_ROOT, STATE_BINDING_FILE)
         learning_io.check(STATE_ROOT, PARKED_FILE)
+        learning_io.check(STATE_ROOT, USER_STATED_FILE)
+        learning_io.check(STATE_ROOT, PROMOTED_NOTES_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
@@ -1634,6 +1887,32 @@ def _vault_binding_file() -> Path:
     return INSTINCTS_ROOT / VAULT_BINDING_NAME
 
 
+def _read_vault_id() -> Optional[str]:
+    """The id in the vault's .ledger-id, never read through a symlink."""
+    vault_file = _vault_binding_file()
+    if vault_file.is_symlink():
+        raise learning_io.ManagedPathError(
+            f"refusing to read {vault_file}: it is a symlink (to {os.readlink(vault_file)}). Fix: replace it "
+            f"with a real file holding this vault's ledger id, or delete it if the vault was never bound.")
+    if vault_file.is_file():
+        return vault_file.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def _claim_vault_id(new_id: str) -> str:
+    """Create the vault's .ledger-id with `new_id` only if it does not exist yet (O_EXCL), and return
+    the id it holds afterwards: ours, or the one a concurrent first run wrote a moment earlier."""
+    try:
+        learning_io.write_new(INSTINCTS_ROOT, _vault_binding_file(), (new_id + "\n").encode("utf-8"))
+        return new_id
+    except FileExistsError:
+        winner = _read_vault_id()
+        if not winner:
+            raise StateBindingError(
+                f"{_vault_binding_file()} exists but is empty. Fix: delete it and run again.") from None
+        return winner
+
+
 def _proposal_files() -> list[Path]:
     if INBOX_DIR is None or not INBOX_DIR.is_dir():
         return []
@@ -1655,7 +1934,7 @@ def _vault_block_states() -> dict:
                 states[block['block_id']] = 'resolved'
             else:
                 states.setdefault(block['block_id'], 'open')
-        for bid in BLOCK_MARKER.findall(text):
+        for bid in _block_markers(text):
             states.setdefault(bid, 'open')
     return states
 
@@ -1680,9 +1959,7 @@ def _check_state_binding(write: bool) -> None:
     vault's instincts folder; both must agree. An existing install is bound on its first run."""
     vault_real = os.path.realpath(VAULT)
     vault_file = _vault_binding_file()
-    vault_id = None
-    if vault_file.is_file():
-        vault_id = vault_file.read_text(encoding="utf-8").strip() or None
+    vault_id = _read_vault_id()
     state = learning_io.read_json_object(STATE_BINDING_FILE) if STATE_BINDING_FILE.exists() else {}
     state_id, state_vault = state.get("ledger_id"), state.get("vault")
     ledger = _load_ledger()
@@ -1697,10 +1974,14 @@ def _check_state_binding(write: bool) -> None:
         state_id = None  # adopted below: a lost ledger replaced on purpose, bound to this vault
     elif vault_id and state_id != vault_id:
         found = f"ledger id {state_id}" if state_id else "no ledger id"
+        fresh = "" if state_id else (
+            " On a new machine with a synced vault, where the old state folder is not available, set "
+            "NEVA_INSTINCT_NEW_LEDGER=1 once to start a new ledger bound to this vault; blocks already in "
+            "the vault are still never proposed twice.")
         raise StateBindingError(
             f"the vault at {VAULT} is bound to ledger id {vault_id}, but the state folder {STATE_DIR} holds "
             f"{found}, so this run would ignore every block already applied, rejected or open. "
-            f"{_STATE_FIX} Nothing was written.")
+            f"{_STATE_FIX}{fresh} Nothing was written.")
     if not vault_id and not state_id:
         history = list(_vault_block_states())
         if ledger and history and not _ledger_covers(ledger, history):
@@ -1726,9 +2007,17 @@ def _check_state_binding(write: bool) -> None:
     if write and not (vault_id and state_id == vault_id):
         new_id = state_id or vault_id or hashlib.sha256(
             f"{vault_real}|{_now_iso()}|{os.getpid()}".encode("utf-8")).hexdigest()[:16]
+        if not vault_id:
+            # Two first runs at once: the vault id is created exclusively and the winner is what the
+            # state folder records, so both runs bind to one id instead of two.
+            winner = _claim_vault_id(new_id)
+            if state_id and winner != state_id:
+                raise StateBindingError(
+                    f"another run bound the vault at {VAULT} to ledger id {winner} while this run held "
+                    f"{state_id}. {_STATE_FIX} Nothing else was written.")
+            new_id = winner
         learning_io.write_text_atomic(STATE_ROOT, STATE_BINDING_FILE,
                                       json.dumps({"ledger_id": new_id, "vault": vault_real}, indent=2) + "\n")
-        _write_text_atomic(vault_file, new_id + "\n")
 
 
 def _ledger_covers(ledger: dict, history: list) -> bool:
@@ -1850,7 +2139,13 @@ def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
     if not texts and fence_text:
         parsed = parse_instinct_file(fence_text) if fence_text.lstrip().startswith("---") else []
         texts = [_instinct_text(i) for i in parsed if i.get('trigger')] or [fence_text]
-    tokens = _content_tokens(" ".join(texts))
+    raw = " ".join(texts)
+    tokens = _content_tokens(raw)
+    if not tokens:
+        # No words to compare (emoji, punctuation): keyed on the normalised text so two such lessons
+        # never share a key, and _matching_decision never matches an empty token list.
+        norm = " ".join(instinct_match.normalize(raw).split())
+        return {'content_key': "raw-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16], 'content_tokens': []}
     return {'content_key': _content_key(tokens), 'content_tokens': tokens}
 
 
@@ -1891,6 +2186,8 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
     same family, or an application of the same kind, whose content key is equal or whose tokens are a
     near duplicate (instinct_match.DUPLICATE_JACCARD, the threshold recall uses)."""
     family, toks = _content_family(block['kind']), set(content['content_tokens'])
+    if not toks:
+        return None  # a lesson with no words matches nothing
     for bid, entry in ledger.items():
         if not isinstance(entry, dict) or bid == block['block_id']:
             continue
@@ -1901,8 +2198,11 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
             pass
         else:
             continue
+        theirs = set(entry.get('content_tokens') or ())
+        if not theirs:
+            continue
         if entry.get('content_key') == content['content_key'] or (
-                toks and instinct_match.jaccard(toks, set(entry.get('content_tokens') or ()))
+                instinct_match.jaccard(toks, theirs)
                 >= instinct_match.DUPLICATE_JACCARD):
             return bid, entry
     return None
@@ -1913,6 +2213,122 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
 # ---------------------------------------------------------------------------
 
 PARKED_FILE = STATE_DIR / "parked.json"
+# Notes the `add` subcommand wrote (vault refs). The only proof a lesson is the human's own words:
+# the note's `source: user-stated` field is model-writable and is not trusted on its own.
+USER_STATED_FILE = STATE_DIR / "user-stated.json"
+
+
+# Global notes the engine itself created by applying a promotion: the projects they came from and
+# the lesson hash written. The only source for a global note's projects; `promoted_from` in its
+# frontmatter is model-writable and is not read for evidence.
+PROMOTED_NOTES_FILE = STATE_DIR / "promoted-notes.json"
+
+
+TRUST_FIELDS = ("trigger", "domain", "scope", "source")
+
+
+def _note_hash(inst: dict, scoped: bool = True) -> str:
+    """The whole note as trust sees it: the fields that matter for trust (TRUST_FIELDS) and the full
+    body, whitespace-collapsed. An edit anywhere in the body, or to one of those fields, changes it.
+    scoped=False leaves out scope and source, which a promotion changes on purpose, to compare a
+    promoted note with the notes it came from."""
+    keys = TRUST_FIELDS if scoped else ("trigger", "domain")
+    parts = [f"{k}={inst.get(k, '')}" for k in keys] + [str(inst.get('content', ''))]
+    return hashlib.sha256(" ".join("\n".join(parts).split()).encode("utf-8")).hexdigest()
+
+
+def _load_user_stated() -> dict:
+    return learning_io.read_json_object(USER_STATED_FILE) if USER_STATED_FILE.exists() else {}
+
+
+def _load_promoted_notes() -> dict:
+    return learning_io.read_json_object(PROMOTED_NOTES_FILE) if PROMOTED_NOTES_FILE.exists() else {}
+
+
+def _save_state_json(path: Path, data: dict) -> None:
+    learning_io.ensure_dir(STATE_ROOT, STATE_DIR)
+    learning_io.write_text_atomic(STATE_ROOT, path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def _record_user_stated(note: Path, sha: str) -> None:
+    stated = _load_user_stated()
+    stated[_vault_ref(note)] = {"date": _today(), "sha": sha}
+    _save_state_json(USER_STATED_FILE, stated)
+
+
+def _stated_now(stated: dict, inst: dict) -> bool:
+    """True while the note still teaches exactly what `add` recorded for it."""
+    row = stated.get(_vault_ref(Path(inst.get('_source_file', ''))))
+    return isinstance(row, dict) and bool(row.get('sha')) and row['sha'] == _note_hash(inst)
+
+
+def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
+    """A row whose note is gone or no longer says what `add` wrote is kept and marked stale, never
+    deleted: the record of what the human once said stays, it just stops vouching."""
+    current = {_vault_ref(Path(i['_source_file'])): i for i in notes if i.get('_source_file')}
+    changed = False
+    for ref, row in stated.items():
+        if not isinstance(row, dict) or row.get('stale'):
+            continue
+        inst = current.get(ref)
+        if inst is None:
+            try:
+                gone = not _resolve_ref(ref).exists()
+            except ValueError:
+                gone = True
+            if not gone:
+                continue
+        elif row.get('sha') == _note_hash(inst):
+            continue
+        row['stale'] = _today()
+        changed = True
+    if changed and write:
+        _save_state_json(USER_STATED_FILE, stated)
+
+
+def _note_projects(inst: dict, promoted: dict) -> list:
+    """Projects whose observation records may vouch for a note: a project note's own folder, or for
+    a global note the projects the engine recorded when it created it, while it still says the same."""
+    path = Path(inst.get('_source_file', ''))
+    if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
+        return [path.parent.name] if _validate_project_id(path.parent.name) else []
+    row = promoted.get(_vault_ref(path))
+    if isinstance(row, dict) and row.get('sha') == _note_hash(inst):
+        return [p for p in row.get('projects') or [] if _validate_project_id(str(p))]
+    return []
+
+
+def _observed_sessions(pid: str, cache: dict) -> dict:
+    """{session id: set of ISO days} from every observation file of one project bucket: live,
+    rotated, archived and quarantined. Lines that are not JSON records with a session are skipped."""
+    if pid in cache:
+        return cache[pid]
+    out = defaultdict(set)
+    if _validate_project_id(pid):
+        obs = OBS_ROOT / pid
+        files = [obs / "observations.jsonl"]
+        for sub in ("observations.pending", "observations.archive", "observations.quarantine"):
+            if (obs / sub).is_dir():
+                files += sorted((obs / sub).glob("*.jsonl"))
+        for path in files:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if '"session"' not in line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except ValueError:
+                            continue
+                        session, stamp = rec.get("session") if isinstance(rec, dict) else None, None
+                        if isinstance(rec, dict):
+                            stamp = str(rec.get("timestamp") or "")[:10]
+                        if isinstance(session, str) and session and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamp or ""):
+                            out[session.lower()].add(stamp)
+            except OSError:
+                continue
+    cache[pid] = dict(out)
+    return cache[pid]
 
 
 def _env_dirs(name: str) -> list:
@@ -1929,11 +2345,21 @@ def _gate_corpus() -> list:
     skills = [config] + _env_dirs("NEVA_SKILL_DIRS")
     extra = [(f"global instinct {i.get('id')}", quality_gate.lesson_text(i))
              for i in _load_instincts_from_dir(GLOBAL_DIR, "global")]
-    return quality_gate.load_corpus(rules, memory, skills, extra)
+    skipped = []
+    corpus = quality_gate.load_corpus(rules, memory, skills, extra, skipped=skipped)
+    for path in skipped:
+        print(f"Warning: the quality gate did not read {path}: it is over "
+              f"{quality_gate.MAX_CORPUS_FILE_BYTES // 1024} KB. Fix: split it, or move it out of the rules or "
+              f"memory folder; lessons it holds are not seen as already written down.", file=sys.stderr)
+    return corpus
 
 
 def _load_parked() -> dict:
     return learning_io.read_json_object(PARKED_FILE) if PARKED_FILE.exists() else {}
+
+
+# Kinds that may carry no instincts: a retire block removes, it does not add, and is not gated.
+NO_MEMBER_KINDS = ("retire",)
 
 
 def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
@@ -1943,18 +2369,44 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     if not blocks:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
+    user_stated, promoted_notes, observed_cache = _load_user_stated(), _load_promoted_notes(), {}
+    identity = Path(os.environ.get("NEVA_CONFIG") or Path.home() / ".config" / "neva" / "identity.env").expanduser()
+    try:
+        thresholds = quality_gate.load_thresholds(identity)
+    except ValueError as exc:
+        raise learning_io.LearningDataError(str(exc)) from None
+    peers = []
+    _mark_stale_stated(user_stated, [m for b in blocks for m in b.get('members') or []], write=not dry_run)
     passed, parked_now = [], 0
     for block in blocks:
         bid = block['block_id']
-        if block['kind'] == 'retire' or not block.get('members'):
-            passed.append(block)
+        if not block.get('members'):
+            if block['kind'] in NO_MEMBER_KINDS:
+                passed.append(block)
+                continue
+            # Nothing to check is not a pass: a block of any other kind with no instincts behind it
+            # fails closed, so the gate never reports success while checking nothing.
+            reasons = [f"it carries no instincts to check, and only {', '.join(NO_MEMBER_KINDS)} blocks may"]
+            entry = dict(parked.get(bid) or {})
+            entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today()})
+            entry.setdefault('first_parked', _today())
+            entry.pop('cleared', None)
+            parked[bid] = entry
+            parked_now += 1
+            print(f"Parked {bid}: {'; '.join(reasons)}.")
             continue
         if corpus is None:
             corpus = _gate_corpus()
         members = block['members']
-        pids = sorted({str(m.get('project_id')) for m in members if m.get('project_id')})
+        projects = {m.get('_source_file'): _note_projects(m, promoted_notes) for m in members}
+        # Activity is judged on the projects whose folders hold the notes, never on a frontmatter id.
+        pids = sorted({p for m in members if Path(m.get('_source_file', '')).parent.name in
+                       projects[m.get('_source_file')] for p in projects[m.get('_source_file')]})
         skip = {f"global instinct {m.get('id')}" for m in members}
-        reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip)
+        stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
+        observed = {pid: _observed_sessions(pid, observed_cache) for ps in projects.values() for pid in ps}
+        reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
+                                     stated=stated, projects=projects, peers=peers, thresholds=thresholds)
         entry = dict(parked.get(bid) or {})
         if reasons:
             entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
@@ -1969,7 +2421,7 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
             entry.update({'cleared': _today(), 'last_checked': _today()})
             parked[bid] = entry
         passed.append(block)
-        corpus.append((f"candidate {bid}", set(quality_gate.instinct_match.tokens(
+        peers.append((f"candidate {bid}", set(quality_gate.instinct_match.tokens(
             " ".join(quality_gate.lesson_text(m) for m in members)))))
     if not dry_run and parked:
         learning_io.write_text_atomic(STATE_ROOT, PARKED_FILE, json.dumps(parked, indent=2) + "\n")
@@ -2000,6 +2452,12 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
                 continue
             if prior.get('status') == 'proposed' and Path(prior.get('file', '')).exists():
                 continue
+        unsafe = _unsafe_reason(block)
+        if unsafe:
+            print(f"Refused {bid}: {unsafe}. It was not proposed. Fix: edit the instinct note so its text holds "
+                  f"no fence line, no block id marker and no control characters; it is checked again on the "
+                  f"next run.", file=sys.stderr)
+            continue
         block['content'] = _block_content(block)
         if not repropose:
             match = _matching_decision(ledger, block, block['content'])
@@ -2020,18 +2478,31 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         return 0
     path = _proposal_path()
     existing = path.read_text(encoding="utf-8") if path.exists() else PROPOSAL_HEADER.format(date=_today())
-    already = set(re.findall(r'<!-- block_id: (\S+) -->', existing))
+    already = set(_block_markers(existing))
     fresh = [b for b in fresh if b['block_id'] not in already]
     if not fresh:
         print(f"Every candidate is already in {_vault_ref(path)}.")
         return 0
-    content = existing.rstrip("\n") + "\n\n" + "\n".join(_render_block(b) for b in fresh)
+    rendered = {b['block_id']: _render_block(b) for b in fresh}
+    content = existing.rstrip("\n") + "\n\n" + "\n".join(rendered.values())
     if path.exists():
         content = re.sub(r'^status: done$', 'status: open', content, count=1, flags=re.M)
+    # Read the file back as apply-promotions will: every new block must come out as itself, once.
+    # What the engine wrote is recorded, so apply can tell a human tick from a box written ticked.
+    as_written = {b['block_id']: b for b in _parse_blocks(content)}
+    for bid in rendered:
+        if bid not in as_written:
+            print(f"Error: block {bid} does not read back from the text the engine rendered for it. Nothing "
+                  f"was written. Fix: report this; the block's text defeats the parser.", file=sys.stderr)
+            return 1
     _write_text_atomic(path, content)
     for block in fresh:
-        _ledger_record(ledger, block['block_id'], status='proposed', file=str(path), date=_today(),
-                       **block['content'])
+        bid = block['block_id']
+        _ledger_record(ledger, bid, status='proposed', file=str(path), date=_today(),
+                       rendered_sha256=_rendered_hash(as_written[bid]['body']),
+                       destination=dict(block['fields']).get('Proposed destination'),
+                       sources=block.get('sources'),
+                       ticked_at_propose=bool(as_written[bid]['approve']), **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
     _inbox_pointer(path, done=False)
@@ -2073,7 +2544,17 @@ def cmd_promote(args) -> int:
         blocks = [_promote_block(c) for c in candidates]
     rc = _emit_blocks(blocks, dry_run=args.dry_run, repropose=bool(args.instinct_id))
     if rc == 0 and args.apply and not args.dry_run:
-        return _apply_files([_proposal_path()], mode="ids", only_ids={b['block_id'] for b in blocks})
+        # Apply in the file that holds each open block: the ledger names it, and it may be an earlier
+        # day's file than today's.
+        ids = {b['block_id'] for b in blocks}
+        ledger = _load_ledger()
+        files = []
+        for bid in sorted(ids):
+            entry = ledger.get(bid) or {}
+            where = Path(entry['file']) if entry.get('status') == 'proposed' and entry.get('file') else _proposal_path()
+            if not any(_same_file(where, f) for f in files):
+                files.append(where)
+        return _apply_files(files, mode="ids", only_ids=ids)
     return rc
 
 
@@ -2112,27 +2593,65 @@ def cmd_propose(args) -> int:
 
 BLOCK_SPLIT = re.compile(r'^## .*\n<!-- block_id: (\S+) -->\n', re.M)
 BLOCK_MARKER = re.compile(r'<!-- block_id: (\S+) -->')
+_FENCE_OPEN = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
+_FENCE_CLOSE = re.compile(r'^ {0,3}(`{3,}|~{3,})[ \t]*$')
+_TEXT_FENCE = re.compile(r'^~{4,}[a-z]*$')
+
+
+def _fence_scan(text: str) -> tuple:
+    """(masked text, fences). Every line of a fenced region, its delimiters included, is replaced by
+    spaces of the same length, so offsets stay valid and nothing inside a fence can open a block,
+    carry a block id, a field row or a tick. Fences follow CommonMark: ``` or ~~~ (three or more,
+    up to three spaces of indent), closed by a run of the same character at least as long with
+    nothing after it; a fence left open runs to the end of the text. `fences` lists
+    (opener line, opener start offset, content start, content end) for each fence."""
+    out, fences, pos, open_ = [], [], 0, None
+    for line in text.split("\n"):
+        end = pos + len(line)
+        if open_ is None:
+            m = _FENCE_OPEN.match(line)
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                open_ = (line, m.group(1), pos, min(end + 1, len(text)))
+                out.append(" " * len(line))
+            else:
+                out.append(line)
+        else:
+            m = _FENCE_CLOSE.match(line)
+            if m and m.group(1)[0] == open_[1][0] and len(m.group(1)) >= len(open_[1]):
+                fences.append((open_[0], open_[2], open_[3], pos))
+                open_ = None
+            out.append(" " * len(line))
+        pos = end + 1
+    if open_ is not None:
+        fences.append((open_[0], open_[2], open_[3], len(text)))
+    return "\n".join(out), fences
+
+
+def _block_markers(text: str) -> list:
+    """Every block id marker outside a fence."""
+    return BLOCK_MARKER.findall(_fence_scan(text)[0])
 
 
 def _parse_blocks(text: str) -> list[dict]:
+    masked, fences = _fence_scan(text)
     blocks = []
-    matches = list(BLOCK_SPLIT.finditer(text))
+    matches = list(BLOCK_SPLIT.finditer(masked))
     for n, m in enumerate(matches):
         start = m.start()
         end = matches[n + 1].start() if n + 1 < len(matches) else len(text)
-        body = text[start:end]
+        body, shown = text[start:end], masked[start:end]
         fields = {}
-        for line in body.splitlines():
+        for line in shown.splitlines():
             row = re.match(r'^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|$', line)
             if row and row.group(1) not in ("Field", "---"):
                 fields[row.group(1)] = row.group(2).replace('\\|', '|')
-        fence = re.search(r'^~~~~[a-z]*\n(.*?)^~~~~\s*$', body, re.S | re.M)
+        fence = next((f for f in fences if start <= f[1] < end and _TEXT_FENCE.match(f[0])), None)
         blocks.append({
             'block_id': m.group(1), 'start': start, 'end': end, 'body': body, 'fields': fields,
-            'text': fence.group(1) if fence else None,
-            'approve': bool(re.search(r'^- \[[xX]\] approve', body, re.M)),
-            'reject': bool(re.search(r'^- \[[xX]\] reject', body, re.M)),
-            'resolved': bool(re.search(r'^(Applied|Rejected) \d{4}-\d{2}-\d{2}', body, re.M)),
+            'text': text[fence[2]:fence[3]] if fence else None,
+            'approve': bool(re.search(r'^- \[[xX]\] approve', shown, re.M)),
+            'reject': bool(re.search(r'^- \[[xX]\] reject', shown, re.M)),
+            'resolved': bool(re.search(r'^(Applied|Rejected) \d{4}-\d{2}-\d{2}', shown, re.M)),
         })
     return blocks
 
@@ -2146,7 +2665,7 @@ def _allowed_destination(path: Path) -> bool:
     return any(resolved == r or r in resolved.parents for r in roots)
 
 
-def _apply_block(block: dict) -> str:
+def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     """Apply one block. Returns '' on success or an error naming the field and the fix."""
     f = block['fields']
     kind = f.get('Kind', '')
@@ -2157,21 +2676,27 @@ def _apply_block(block: dict) -> str:
         dest = _resolve_ref(f.get('Proposed destination', ''))
     except ValueError as e:
         return f"block {bid}: 'Proposed destination' is invalid ({e}). Fix: use vault:<path>, ~/<path>, or an absolute path."
+    if ".." in Path(os.path.expanduser(str(dest))).parts:
+        return (f"block {bid}: destination {dest} has a '..' segment, which can leave its folder through a link. "
+                f"Fix: edit the 'Proposed destination' row to the plain path, with no '..'.")
+    problem = _destination_problem(dest)
+    if problem:
+        return f"block {bid}: {problem}."
+    # From here on only the resolved path is used: the path that was checked is the path written.
+    dest = Path(os.path.realpath(os.path.abspath(os.path.expanduser(str(dest)))))
     if not _allowed_destination(dest):
         return (f"block {bid}: destination {dest} is outside the vault, ~/.claude, and registered project .claude "
                 f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
-    if _is_global_evolved_path(dest) and not _evolve_allowed():
-        return (f"block {bid}: it writes a skill, command or agent into the global config folder ({dest}), and "
-                f"automatic evolution is off. Fix: tick reject, or set {EVOLVE_FLAG}=1 for this apply if you want "
-                f"it loaded in every project.")
     mode = f.get('Write mode', '')
     text = block['text']
+    created = False
     if mode == 'create':
         if dest.exists():
             if dest.read_text(encoding="utf-8") == text:
                 return ''
             return f"block {bid}: destination exists: {dest}. Fix: rename or remove it, or edit the 'Proposed destination' row."
         _write_text_atomic(dest, text)
+        created = True
     elif mode == 'append':
         dest.parent.mkdir(parents=True, exist_ok=True)
         existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
@@ -2190,7 +2715,13 @@ def _apply_block(block: dict) -> str:
     else:
         return f"block {bid}: 'Write mode' is '{mode}'. Fix: set it to create, append, or set-frontmatter."
     if kind == 'promote-global':
-        for ref in re.findall(r'`([^`]+)`', f.get('Source notes', '')):
+        # The source list is the engine's own, recorded at propose time; the 'Source notes' row is text
+        # in the proposal file and is used only for blocks proposed before the ledger recorded sources.
+        engine_sources = (entry or {}).get('sources')
+        refs = list(engine_sources) if engine_sources else re.findall(r'`([^`]+)`', f.get('Source notes', ''))
+        if created and engine_sources:
+            _record_promoted_note(dest, text, engine_sources)
+        for ref in refs:
             try:
                 src = _resolve_ref(ref)
             except ValueError:
@@ -2198,6 +2729,35 @@ def _apply_block(block: dict) -> str:
             if src.exists():
                 set_frontmatter_fields(src, {'status': 'promoted', 'promoted_to': _vault_ref(dest)})
     return ''
+
+
+def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
+    """Record a global note this apply just created: the projects its sources sit in, and the lesson
+    it holds. When every source is a lesson the human stated, still unchanged, and the note holds one
+    of their lessons, the human's vouch carries to it."""
+    written = parse_instinct_file(text)
+    if not written:
+        return
+    sha = _note_hash(written[0])
+    notes, pids = [], []
+    for ref in sources:
+        try:
+            path = _resolve_ref(ref)
+        except ValueError:
+            return
+        parsed = parse_instinct_file(path.read_text(encoding="utf-8")) if path.exists() else []
+        if parsed:
+            parsed[0]['_source_file'] = str(path)
+            notes.append(parsed[0])
+        if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
+            pids.append(path.parent.name)
+    promoted = _load_promoted_notes()
+    promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources}
+    _save_state_json(PROMOTED_NOTES_FILE, promoted)
+    stated = _load_user_stated()
+    if len(notes) == len(sources) and all(_stated_now(stated, n) for n in notes) and \
+            _note_hash(written[0], scoped=False) in {_note_hash(n, scoped=False) for n in notes}:
+        _record_user_stated(dest, sha)
 
 
 def _mark_block(text: str, block: dict, outcome: str, tick_approve: bool) -> str:
@@ -2258,6 +2818,87 @@ def _open_proposal_files() -> list[Path]:
     return out
 
 
+def _same_file(a, b) -> bool:
+    return bool(a) and bool(b) and os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(
+        os.path.realpath(str(b)))
+
+
+LEGACY_TOKEN_COVERAGE = 0.8
+
+
+def _legacy_problem(entry: dict, block: dict) -> str:
+    """'' when a block proposed before rendered hashes existed still says what the ledger recorded,
+    else why it cannot be trusted. The ledger never recorded the text itself, so the check is: the
+    content key the ledger holds matches the instincts the block names, those instincts' words are in
+    its fence, and its destination is the one recorded or, when none was, the one its kind implies."""
+    if not entry.get('content_key'):
+        return "the ledger recorded no content for it"
+    fields, text = block['fields'], block['text'] or ""
+    if _content_from_fields(fields, text).get('content_key') != entry['content_key']:
+        return "the instincts it names are not the ones the ledger recorded"
+    kind = block['block_id'].partition(':')[0]
+    if kind == 'retire':
+        if not re.fullmatch(r'status: archived\narchived_reason: "[^"\n]*"\n?', text):
+            return "its text is not the archive marker a retire block writes"
+    else:
+        recorded = set(entry.get('content_tokens') or ())
+        found = set(_content_tokens(text))
+        if not recorded or len(recorded & found) < LEGACY_TOKEN_COVERAGE * len(recorded):
+            return "its text no longer carries the lesson the ledger recorded"
+    dest = fields.get('Proposed destination', '').strip().strip('`').strip()
+    if entry.get('destination'):
+        if dest != str(entry['destination']).strip().strip('`').strip():
+            return "its destination is not the one the ledger recorded"
+    elif kind == 'promote-global':
+        try:
+            ok = _same_file(_resolve_ref(dest), GLOBAL_DIR / f"{block['block_id'].partition(':')[2]}{INSTINCT_EXT}")
+        except ValueError:
+            ok = False
+        if not ok:
+            return "its destination is not the global note its id implies"
+    return ""
+
+
+def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) -> str:
+    """'' when the engine proposed this block in this file and it still says what was written, else why not.
+
+    Only a block the ledger recorded as proposed for this very file is acted on, approve or reject:
+    anything else in the file was not written by the engine. An id that appears more than once
+    outside fences is refused in every copy. Text the renderer would refuse is refused here too. A
+    block recorded since the rendered hash existed must have been written with its approve box
+    empty. A block proposed before then is acted on only when it still matches what the ledger
+    recorded (_legacy_problem); otherwise it is withdrawn and filed again by the next propose."""
+    bid = block['block_id']
+    entry = ledger.get(bid)
+    where = f"{path.name}: block {bid}"
+    if copies > 1:
+        return (f"{where} refused: its block id appears {copies} times outside fences in this file, so it "
+                f"cannot be told which copy the engine wrote. Neither copy is applied. Fix: delete every copy "
+                f"you did not expect, then run apply-promotions again.")
+    if not isinstance(entry, dict) or entry.get('status') != 'proposed':
+        state = entry.get('status') if isinstance(entry, dict) else None
+        return (f"{where} skipped: the promotion ledger has no open proposal for it"
+                f"{f' (it is recorded as {state})' if state else ''}, so the engine did not write it. "
+                f"Fix: delete that block from the file; candidates come only from `instinct-cli.py propose`.")
+    if not _same_file(entry.get('file'), path):
+        return (f"{where} skipped: the ledger proposed it in {entry.get('file') or 'no file'}, not in this file. "
+                f"Fix: tick it in the file the ledger names, or delete this copy.")
+    unsafe = _unsafe_reason({'block_id': bid, 'kind': bid.partition(':')[0], 'slug': bid.partition(':')[2],
+                             'fields': list(block['fields'].items()), 'text': block['text'] or ""})
+    if unsafe:
+        return f"{where} refused: {unsafe}. Fix: remove that text from the block, or tick reject."
+    if bid.partition(':')[0] == 'rule':
+        problem = _rule_text_problem(block['text'] or "")
+        if problem:
+            return f"{where} refused: its rule text {problem[3:] if problem.startswith('it ') else problem}. " \
+                   f"Fix: remove that text from the block, or tick reject."
+    if entry.get('ticked_at_propose') or (
+            block['approve'] and entry.get('rendered_sha256') == _rendered_hash(block['body'])):
+        return (f"{where} refused: its approve box was ticked when the engine wrote it, so no human ticked it. "
+                f"Fix: tick reject, then run `instinct-cli.py propose` to file it again for review.")
+    return ''
+
+
 def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
     _preflight_state()
     ledger = _load_ledger()
@@ -2272,7 +2913,10 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
         parsed_ids = {b['block_id'] for b in parsed}
         # A marker still in the file but not parsed is a block someone reformatted (a blank line
         # after the heading, a ### heading). It is still pending: report it, never reject it.
-        malformed = sorted(set(BLOCK_MARKER.findall(text)) - parsed_ids)
+        marker_counts = defaultdict(int)
+        for bid in _block_markers(text):
+            marker_counts[bid] += 1
+        malformed = sorted(set(marker_counts) - parsed_ids)
         for bid in malformed:
             if only_ids is not None and bid not in only_ids:
                 continue
@@ -2296,6 +2940,27 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             bid = block['block_id']
             if only_ids is not None and bid not in only_ids:
                 continue
+            refusal = _provenance_problem(ledger, block, path, copies=marker_counts[bid])
+            if refusal:
+                print(refusal, file=sys.stderr)
+                failed += 1
+                continue
+            entry = ledger[bid]
+            legacy = '' if entry.get('rendered_sha256') else _legacy_problem(entry, block)
+            if legacy and (block['approve'] or block['reject'] or mode in ("all", "ids")):
+                msg = (f"{path.name}: block {bid} was proposed before the engine recorded what it wrote, and "
+                       f"{legacy}. It is withdrawn and must be re-proposed: the next `instinct-cli.py propose` "
+                       f"files it again if it still qualifies, and you tick it there.")
+                print(msg, file=sys.stderr)
+                # The marker is renamed, so the withdrawn copy is no longer a block: neither open nor
+                # decided, and the id can be filed again, in this file too, without a duplicate.
+                body = block['body'].replace(f"<!-- block_id: {bid} -->", f"<!-- withdrawn_block_id: {bid} -->", 1)
+                body = body.replace("- [ ] reject\n", f"- [ ] reject\n\nWithdrawn {_today()}: {legacy}; "
+                                    f"it must be re-proposed.\n", 1)
+                text = text.replace(block['body'], body, 1)
+                _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy)
+                failed += 1
+                continue
             if block['approve'] and block['reject']:
                 msg = f"block {bid}: both approve and reject are ticked. Fix: untick one."
                 print(msg, file=sys.stderr)
@@ -2313,7 +2978,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             go = block['approve'] or mode in ("all", "ids")
             if not go:
                 continue
-            err = _apply_block(block)
+            err = _apply_block(block, ledger.get(bid))
             if err:
                 print(err, file=sys.stderr)
                 text = _mark_block(text, block, f"Failed {_today()}: {err}", False)
