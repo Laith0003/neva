@@ -118,7 +118,7 @@ Resolution, shared with the hook runtime so both sides agree:
 
 Never hardcode a home path. With no vault, every command exits 2 with `NEVA_VAULT is not set (or not absolute) and the identity file has no VAULT_PATH. Fix: export NEVA_VAULT=/absolute/path/to/your/vault`. `CLAUDE_CONFIG_DIR` sets where user-level skills, commands, agents, rules land. From a hook context, `hooks/instincts.py [--cwd DIR] <command>` is a thin shim that fills in the vault and project directory and calls these scripts (`analyze` runs the nightly job).
 
-The ledger and the registry are bound to the vault. `propose`, `promote` and `evolve --propose` exit 2, write nothing, and name the variable to fix when: the state folder holds no ledger id or another vault's (fix `NEVA_STATE_DIR`); the ledger is empty while the vault already holds proposal blocks (fix `NEVA_STATE_DIR`, or set `NEVA_INSTINCT_NEW_LEDGER=1` once when the ledger is truly lost); or the registry knows none of the vault's project buckets (fix `NEVA_DATA_DIR`). Whatever the ledger says, a block id already open in any proposal file, or already applied or rejected there, is never written again, and a project block whose project root the registry does not know is skipped with a warning instead of being sent to the global config folder.
+The ledger and the registry are bound to the vault. `propose`, `promote` and `evolve --propose` exit 2, write nothing, and name the variable to fix when: the state folder holds no ledger id or another vault's (fix `NEVA_STATE_DIR`); the ledger is empty while the vault already holds proposal blocks (fix `NEVA_STATE_DIR`, or set `NEVA_INSTINCT_NEW_LEDGER=1` once when the ledger is truly lost); or the registry knows none of the vault's project buckets (fix `NEVA_DATA_DIR`). A decision is kept by content as well as by slug: each ledger entry holds a content key (the sorted, stemmed, stop-word-free tokens of the trigger and action of every instinct the block carries, hashed), and a candidate whose tokens equal or near-duplicate (Jaccard 0.6, the recall threshold) a rejected block of any kind but `retire`, or an applied block of the same kind, is skipped with a line naming the earlier decision. Rejections recorded before content keys existed get theirs from the block still in its proposal file. Whatever the ledger says, a block id already open in any proposal file, or already applied or rejected there, is never written again, and a project block whose project root the registry does not know is skipped with a warning instead of being sent to the global config folder.
 
 Sessions outside any project use the bucket id `unscoped` (observations and project instincts alike), so the analyzer never writes to `global/`.
 
@@ -276,7 +276,8 @@ Every block carries: instinct id(s), confidence, evidence count, projects seen i
 |---|---|
 | Nightly job, or `apply-promotions` | only blocks with `- [x] approve` in every open proposal file |
 | Human says "apply instinct promotions" | run `apply-promotions --all`: every open block not ticked `reject`. Report the counts and destinations afterwards. |
-| `- [x] reject` | nothing written; the block id is recorded and never proposed again |
+| `- [x] reject` | nothing written; the block id is recorded with its content key and never proposed again, and neither is the same lesson under another slug. A `Reason: ...` line inside the block is stored as the reason |
+| `instinct-cli.py reject <block id or slug> --reason "..."` | the same, from the command line: ticks reject in the proposal file and records slug, content key, reason and date. `list --rejected` shows them |
 | both boxes ticked | error `block <id>: both approve and reject are ticked. Fix: untick one.` |
 
 Rules the applier enforces:
@@ -303,6 +304,8 @@ The CLI is Python 3 (stdlib only): `python3 "${CLAUDE_PLUGIN_ROOT}/skills/contin
 | `promote [id] [--dry-run] [--apply]` | File promote-global blocks (all qualifying, or one id on request). `--apply` only when the human asked for that exact promotion |
 | `propose [--limit N] [--dry-run]` | Everything in the proposal table above |
 | `apply-promotions [--file PATH] [--all]` | Apply ticked blocks, or all open blocks |
+| `reject ID --reason TEXT` | Reject a block by id (`kind:slug`) or slug; stored by content as well as by slug |
+| `list [--rejected]` | Open proposal blocks, or every rejection with its reason, date and content key |
 | `decay [--dry-run] [--quiet]` | Weekly confidence decay |
 | `projects [delete <id> \| merge <from> <into> \| gc] [--dry-run] [--force]` | Registry maintenance. Delete removes observations only and leaves the vault notes for the human; merge moves notes and appends observations |
 | `prune [--max-age 30] [--dry-run] [--quiet]` | Delete pending instincts past their TTL |

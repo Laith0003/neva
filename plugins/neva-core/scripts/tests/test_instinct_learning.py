@@ -148,8 +148,8 @@ class PromotionStatsCase(unittest.TestCase):
         sb.tick(sb.proposal_path(), "promote-global:prefer-explicit-errors", "approve")
         sb.run("apply-promotions")
 
-        sb.add("repoA", "avoid-mocks", 0.9)
-        sb.add("repoB", "avoid-mocks", 0.85)
+        sb.add("repoA", "avoid-mocks", 0.9, trigger="when writing tests for a service layer")
+        sb.add("repoB", "avoid-mocks", 0.85, trigger="when writing tests for a service layer")
         sb.run("propose")
         sb.tick(sb.proposal_path(), "promote-global:avoid-mocks", "reject")
         sb.run("apply-promotions")
@@ -188,8 +188,8 @@ class PromotionEventsCase(unittest.TestCase):
         sb.tick(sb.proposal_path(), "promote-global:prefer-explicit-errors", "approve")
         sb.run("apply-promotions")
 
-        sb.add("repoA", "avoid-mocks", 0.9)
-        sb.add("repoB", "avoid-mocks", 0.85)
+        sb.add("repoA", "avoid-mocks", 0.9, trigger="when writing tests for a service layer")
+        sb.add("repoB", "avoid-mocks", 0.85, trigger="when writing tests for a service layer")
         sb.run("propose")
         sb.tick(sb.proposal_path(), "promote-global:avoid-mocks", "reject")
         sb.run("apply-promotions")
