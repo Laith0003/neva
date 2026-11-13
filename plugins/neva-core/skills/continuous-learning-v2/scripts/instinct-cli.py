@@ -59,6 +59,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -1553,7 +1554,49 @@ def _retire_blocks() -> list[dict]:
     return blocks
 
 
+BLOCK_ID_RE = re.compile(r'^[a-z][a-z-]*:[A-Za-z0-9][A-Za-z0-9._-]*$')
+_FENCE_LINE = re.compile(r'^ {0,3}(`{3,}|~{3,})', re.M)
+_MARKER_TEXT = re.compile(r'<!--\s*block_id', re.I)
+
+
+def _control_chars(text: str, keep: str) -> list:
+    return sorted({f"U+{ord(c):04X}" for c in text if unicodedata.category(c) == "Cc" and c not in keep})
+
+
+def _unsafe_reason(block: dict) -> str:
+    """Why this block cannot be rendered safely, or ''. Text a model wrote is never escaped into
+    something that looks harmless: a candidate that could close its fence, carry a block id, or
+    break out of its table row is refused and reported, and the human sees the reason."""
+    bid = block['block_id']
+    if not BLOCK_ID_RE.match(bid) or bid != f"{block['kind']}:{block['slug']}":
+        return f"its block id {bid!r} is not kind:slug in letters, digits, '.', '_' or '-'"
+    for key, value in block['fields']:
+        value = str(value)
+        bad = _control_chars(value, "")
+        if bad:
+            return f"its '{key}' field holds control characters ({', '.join(bad)}), which would end the table row"
+        if _MARKER_TEXT.search(value):
+            return f"its '{key}' field holds a '<!-- block_id' marker"
+    text = block['text']
+    bad = _control_chars(text, "\n\t")
+    if bad:
+        return f"its text holds control characters ({', '.join(bad)})"
+    m = _FENCE_LINE.search(text)
+    if m:
+        return f"its text holds a fence line ('{m.group(1)}'), which would close the block's fence"
+    if _MARKER_TEXT.search(text):
+        return "its text holds a '<!-- block_id' marker"
+    return ""
+
+
+class UnsafeBlock(ValueError):
+    """A block whose text could break out of its fence or its table row."""
+
+
 def _render_block(block: dict) -> str:
+    reason = _unsafe_reason(block)
+    if reason:
+        raise UnsafeBlock(f"{block['block_id']}: {reason}")
     title = f"{block['kind']}: {block['slug']}"
     out = [f"## {title}", f"<!-- block_id: {block['block_id']} -->", "",
            "- [ ] approve", "- [ ] reject", "", "| Field | Value |", "| --- | --- |"]
@@ -1562,6 +1605,10 @@ def _render_block(block: dict) -> str:
         out.append(f"| {key} | {cell} |")
     out += ["", "Text to write:", "", f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
     return "\n".join(out)
+
+
+def _rendered_hash(body: str) -> str:
+    return hashlib.sha256(body.rstrip("\n").encode("utf-8")).hexdigest()
 
 
 PROPOSAL_HEADER = """---
@@ -1654,7 +1701,7 @@ def _vault_block_states() -> dict:
                 states[block['block_id']] = 'resolved'
             else:
                 states.setdefault(block['block_id'], 'open')
-        for bid in BLOCK_MARKER.findall(text):
+        for bid in _block_markers(text):
             states.setdefault(bid, 'open')
     return states
 
@@ -1999,6 +2046,12 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
                 continue
             if prior.get('status') == 'proposed' and Path(prior.get('file', '')).exists():
                 continue
+        unsafe = _unsafe_reason(block)
+        if unsafe:
+            print(f"Refused {bid}: {unsafe}. It was not proposed. Fix: edit the instinct note so its text holds "
+                  f"no fence line, no block id marker and no control characters; it is checked again on the "
+                  f"next run.", file=sys.stderr)
+            continue
         block['content'] = _block_content(block)
         if not repropose:
             match = _matching_decision(ledger, block, block['content'])
@@ -2019,18 +2072,29 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         return 0
     path = _proposal_path()
     existing = path.read_text(encoding="utf-8") if path.exists() else PROPOSAL_HEADER.format(date=_today())
-    already = set(re.findall(r'<!-- block_id: (\S+) -->', existing))
+    already = set(_block_markers(existing))
     fresh = [b for b in fresh if b['block_id'] not in already]
     if not fresh:
         print(f"Every candidate is already in {_vault_ref(path)}.")
         return 0
-    content = existing.rstrip("\n") + "\n\n" + "\n".join(_render_block(b) for b in fresh)
+    rendered = {b['block_id']: _render_block(b) for b in fresh}
+    content = existing.rstrip("\n") + "\n\n" + "\n".join(rendered.values())
     if path.exists():
         content = re.sub(r'^status: done$', 'status: open', content, count=1, flags=re.M)
+    # Read the file back as apply-promotions will: every new block must come out as itself, once.
+    # What the engine wrote is recorded, so apply can tell a human tick from a box written ticked.
+    as_written = {b['block_id']: b for b in _parse_blocks(content)}
+    for bid in rendered:
+        if bid not in as_written:
+            print(f"Error: block {bid} does not read back from the text the engine rendered for it. Nothing "
+                  f"was written. Fix: report this; the block's text defeats the parser.", file=sys.stderr)
+            return 1
     _write_text_atomic(path, content)
     for block in fresh:
-        _ledger_record(ledger, block['block_id'], status='proposed', file=str(path), date=_today(),
-                       **block['content'])
+        bid = block['block_id']
+        _ledger_record(ledger, bid, status='proposed', file=str(path), date=_today(),
+                       rendered_sha256=_rendered_hash(as_written[bid]['body']),
+                       ticked_at_propose=bool(as_written[bid]['approve']), **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
     _inbox_pointer(path, done=False)
@@ -2111,27 +2175,65 @@ def cmd_propose(args) -> int:
 
 BLOCK_SPLIT = re.compile(r'^## .*\n<!-- block_id: (\S+) -->\n', re.M)
 BLOCK_MARKER = re.compile(r'<!-- block_id: (\S+) -->')
+_FENCE_OPEN = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
+_FENCE_CLOSE = re.compile(r'^ {0,3}(`{3,}|~{3,})[ \t]*$')
+_TEXT_FENCE = re.compile(r'^~{4,}[a-z]*$')
+
+
+def _fence_scan(text: str) -> tuple:
+    """(masked text, fences). Every line of a fenced region, its delimiters included, is replaced by
+    spaces of the same length, so offsets stay valid and nothing inside a fence can open a block,
+    carry a block id, a field row or a tick. Fences follow CommonMark: ``` or ~~~ (three or more,
+    up to three spaces of indent), closed by a run of the same character at least as long with
+    nothing after it; a fence left open runs to the end of the text. `fences` lists
+    (opener line, opener start offset, content start, content end) for each fence."""
+    out, fences, pos, open_ = [], [], 0, None
+    for line in text.split("\n"):
+        end = pos + len(line)
+        if open_ is None:
+            m = _FENCE_OPEN.match(line)
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                open_ = (line, m.group(1), pos, min(end + 1, len(text)))
+                out.append(" " * len(line))
+            else:
+                out.append(line)
+        else:
+            m = _FENCE_CLOSE.match(line)
+            if m and m.group(1)[0] == open_[1][0] and len(m.group(1)) >= len(open_[1]):
+                fences.append((open_[0], open_[2], open_[3], pos))
+                open_ = None
+            out.append(" " * len(line))
+        pos = end + 1
+    if open_ is not None:
+        fences.append((open_[0], open_[2], open_[3], len(text)))
+    return "\n".join(out), fences
+
+
+def _block_markers(text: str) -> list:
+    """Every block id marker outside a fence."""
+    return BLOCK_MARKER.findall(_fence_scan(text)[0])
 
 
 def _parse_blocks(text: str) -> list[dict]:
+    masked, fences = _fence_scan(text)
     blocks = []
-    matches = list(BLOCK_SPLIT.finditer(text))
+    matches = list(BLOCK_SPLIT.finditer(masked))
     for n, m in enumerate(matches):
         start = m.start()
         end = matches[n + 1].start() if n + 1 < len(matches) else len(text)
-        body = text[start:end]
+        body, shown = text[start:end], masked[start:end]
         fields = {}
-        for line in body.splitlines():
+        for line in shown.splitlines():
             row = re.match(r'^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|$', line)
             if row and row.group(1) not in ("Field", "---"):
                 fields[row.group(1)] = row.group(2).replace('\\|', '|')
-        fence = re.search(r'^~~~~[a-z]*\n(.*?)^~~~~\s*$', body, re.S | re.M)
+        fence = next((f for f in fences if start <= f[1] < end and _TEXT_FENCE.match(f[0])), None)
         blocks.append({
             'block_id': m.group(1), 'start': start, 'end': end, 'body': body, 'fields': fields,
-            'text': fence.group(1) if fence else None,
-            'approve': bool(re.search(r'^- \[[xX]\] approve', body, re.M)),
-            'reject': bool(re.search(r'^- \[[xX]\] reject', body, re.M)),
-            'resolved': bool(re.search(r'^(Applied|Rejected) \d{4}-\d{2}-\d{2}', body, re.M)),
+            'text': text[fence[2]:fence[3]] if fence else None,
+            'approve': bool(re.search(r'^- \[[xX]\] approve', shown, re.M)),
+            'reject': bool(re.search(r'^- \[[xX]\] reject', shown, re.M)),
+            'resolved': bool(re.search(r'^(Applied|Rejected) \d{4}-\d{2}-\d{2}', shown, re.M)),
         })
     return blocks
 
@@ -2257,6 +2359,37 @@ def _open_proposal_files() -> list[Path]:
     return out
 
 
+def _same_file(a, b) -> bool:
+    return bool(a) and bool(b) and os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(
+        os.path.realpath(str(b)))
+
+
+def _provenance_problem(ledger: dict, block: dict, path: Path) -> str:
+    """'' when the engine proposed this block in this file and wrote it unticked, else why not.
+
+    Only a block the ledger recorded as proposed for this very file is acted on, approve or reject:
+    anything else in the file was not written by the engine. A block recorded since the rendered hash
+    existed must also have been written with its approve box empty. A block proposed before then has
+    no hash; it is acted on when the ledger recorded it as proposed for this file, which is the
+    strongest evidence that ledger holds."""
+    bid = block['block_id']
+    entry = ledger.get(bid)
+    where = f"{path.name}: block {bid}"
+    if not isinstance(entry, dict) or entry.get('status') != 'proposed':
+        state = entry.get('status') if isinstance(entry, dict) else None
+        return (f"{where} skipped: the promotion ledger has no open proposal for it"
+                f"{f' (it is recorded as {state})' if state else ''}, so the engine did not write it. "
+                f"Fix: delete that block from the file; candidates come only from `instinct-cli.py propose`.")
+    if not _same_file(entry.get('file'), path):
+        return (f"{where} skipped: the ledger proposed it in {entry.get('file') or 'no file'}, not in this file. "
+                f"Fix: tick it in the file the ledger names, or delete this copy.")
+    if entry.get('ticked_at_propose') or (
+            block['approve'] and entry.get('rendered_sha256') == _rendered_hash(block['body'])):
+        return (f"{where} refused: its approve box was ticked when the engine wrote it, so no human ticked it. "
+                f"Fix: tick reject, then run `instinct-cli.py propose` to file it again for review.")
+    return ''
+
+
 def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
     _preflight_state()
     ledger = _load_ledger()
@@ -2271,7 +2404,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
         parsed_ids = {b['block_id'] for b in parsed}
         # A marker still in the file but not parsed is a block someone reformatted (a blank line
         # after the heading, a ### heading). It is still pending: report it, never reject it.
-        malformed = sorted(set(BLOCK_MARKER.findall(text)) - parsed_ids)
+        malformed = sorted(set(_block_markers(text)) - parsed_ids)
         for bid in malformed:
             if only_ids is not None and bid not in only_ids:
                 continue
@@ -2294,6 +2427,11 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                 continue
             bid = block['block_id']
             if only_ids is not None and bid not in only_ids:
+                continue
+            refusal = _provenance_problem(ledger, block, path)
+            if refusal:
+                print(refusal, file=sys.stderr)
+                failed += 1
                 continue
             if block['approve'] and block['reject']:
                 msg = f"block {bid}: both approve and reject are ticked. Fix: untick one."
