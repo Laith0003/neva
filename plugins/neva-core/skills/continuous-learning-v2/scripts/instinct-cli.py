@@ -1365,7 +1365,11 @@ def _find_cross_project_instincts() -> dict:
             if iid and iid not in seen:
                 seen.add(iid)
                 cross[iid].append((pid, registry.get(pid, {}).get('name', inst.get('project_name', pid)), inst))
-    return {iid: entries for iid, entries in cross.items() if len({e[0] for e in entries}) >= PROMOTE_MIN_PROJECTS}
+    # Projects are counted by their real root, not their bucket id: a repo gets a new id when an origin
+    # remote is added later, and must still count once.
+    def roots(entries):
+        return {os.path.normcase(os.path.realpath((registry.get(e[0]) or {}).get('root') or e[0])) for e in entries}
+    return {iid: entries for iid, entries in cross.items() if len(roots(entries)) >= PROMOTE_MIN_PROJECTS}
 
 
 def _global_ids() -> set:
