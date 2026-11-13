@@ -1580,6 +1580,8 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
 #   lines       title and trigger are one line; the action is one paragraph of lines
 #   length      RULE_MAX_LINE_CHARS per line, RULE_MAX_TEXT_CHARS for the whole rule
 #   comments    '<!--' or '-->' anywhere is refused: the reading view hides a comment
+#   entities    an HTML character reference (&#8203; &#x200B; &zwj;) anywhere is refused: the reading
+#               view renders it as a character the file does not hold. A bare '&' passes.
 #   tags        a '<' that opens something HTML-looking is escaped as '\<', not refused: real
 #               instincts carry placeholders such as <absolute path>, which the reading view swallows
 #   structure   each action line is left-trimmed, and a line starting with a markdown metacharacter
@@ -1593,6 +1595,7 @@ RULE_MAX_TEXT_CHARS = 1500
 _RULE_INVISIBLE = {0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x034F, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D,
                    0x180E, 0x180F}
 _RULE_COMMENT = re.compile(r'<!--|-->')
+_RULE_ENTITY = re.compile(r'&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]+);')
 _RULE_TAG = re.compile(r'(?<!\\)<(?=[A-Za-z/!?])')
 _RULE_LEAD = re.compile(r'^([#>\-*+=_|\[`~]|\d+[.)])')
 _RULE_TAIL = re.compile(r'^Trigger: (.*)\. Source: instinct `([A-Za-z0-9._-]+)` \(confidence (\d\.\d\d), (\d+) '
@@ -1644,6 +1647,10 @@ def _rule_text(title: str, action: str, trigger: str, iid: str, confidence: floa
         m = _RULE_COMMENT.search(value)
         if m:
             return "", f"its {name} holds an HTML comment marker ('{m.group(0)}'), which the reading view hides"
+        m = _RULE_ENTITY.search(value)
+        if m:
+            return "", (f"its {name} holds an HTML character reference ('{m.group(0)}'), which the reading view "
+                        f"shows as a character the file does not hold")
     lines = [ln for ln in action.split("\n")]
     if not title.strip() or not action.strip() or any(not ln.strip() for ln in lines):
         return "", "its title or action is empty, or its action is more than one paragraph"

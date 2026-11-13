@@ -210,6 +210,21 @@ class RuleConstructionCase(unittest.TestCase):
         units = [label for label, _ in quality_gate.load_corpus([rules])]
         self.assertGreaterEqual(len(units), 4, units)
 
+    def test_html_character_references_are_refused_and_bare_ampersands_pass(self):
+        for ref in ("&#8203;", "&#x200B;", "&zwj;"):
+            for field in ("title", "action", "trigger"):
+                kwargs = {"title": "Explicit Errors", "action": "Return a typed error.", "trigger": "when handling"}
+                kwargs[field] = kwargs[field] + " " + ref
+                text, problem = self.cli._rule_text(kwargs["title"], kwargs["action"], kwargs["trigger"],
+                                                    "explicit-errors", 0.95, 3)
+                self.assertEqual(text, "", f"{field} with {ref} passed")
+                self.assertIn(field, problem)
+                self.assertIn("character reference", problem)
+        for action in ("Ask R&D before changing the schema.", "Chain the checks with a && b in the script."):
+            text, problem = self._text(action)
+            self.assertEqual(problem, "")
+            self.assertIn(action, text)
+
 
 def _module(sb):
     import importlib.util
