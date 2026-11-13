@@ -2,9 +2,14 @@
 """SessionStart: bounded context for a fresh session.
 
 Injects, in priority order (the tail is what the char cap cuts first):
-  1. strong instincts (confidence >= NEVA_INSTINCT_MIN_CONFIDENCE, default 0.7, top
-     NEVA_INSTINCT_MAX, default 6) from the continuous-learning-v2 layout:
-     <vault>/06 Memory/instincts/project/<project-id>/*.md, then global/*.md
+  1. instincts matched to this session (confidence >= NEVA_INSTINCT_MIN_CONFIDENCE, default 0.7,
+     at most NEVA_INSTINCT_MAX, default 3) from the continuous-learning-v2 layout:
+     <vault>/06 Memory/instincts/project/<project-id>/*.md, then global/*.md. The query is the cwd
+     path parts, project name, git branch and project note name, minus the login and home
+     folder names; instinct_match.py scores it against each trigger, with rarity judged over the
+     whole instinct corpus. Only matches are injected: no match, no block. Shown ids go to a
+     per-session state file the first-prompt module (instinct_prompt) reads, and one line to
+     <state>/instinct-injections.jsonl.
   2. today's journal head, the inbox's `## Open actions`, open instinct proposal files and
      unsorted captures (skipped on resume)
   3. the last session summary for this worktree or repository (startup only), wrapped in a
@@ -60,25 +65,86 @@ def prune():
             _prune(d, ".jsonl", 30)
 
 
+# Path parts that say nothing about the work: system folders, checkout plumbing, default branches.
+PATH_NOISE = frozenset("users home private var folders tmp temp volumes code src repo repos main master head "
+                       "claude worktree worktrees wt scratchpad".split())
+
+
+def _identity_names():
+    """The login name and the home folder name: a query made of them would match on who the
+    owner is, not on what the session is about."""
+    names = {os.path.basename(os.path.realpath(c.home()).rstrip(os.sep))}
+    for k in ("USER", "LOGNAME"):
+        names.add(c.env(k))
+    try:
+        import getpass
+        names.add(getpass.getuser())
+    except Exception:
+        pass
+    return {n for n in names if n}
+
+
+def _project_note_name(vault, cwd):
+    """Name of the project note whose `code:` path holds cwd (the note prompt_context injects)."""
+    if not vault:
+        return ""
+    from .prompt_context import _code_paths, _project_notes
+    cwd = os.path.realpath(cwd)
+    best = ("", "")
+    for name, p in _project_notes(vault):
+        meta, _ = c.frontmatter(c.read_text(p, c.HEAD_BYTES))
+        for root in _code_paths(meta):
+            if (cwd == root or cwd.startswith(root + os.sep)) and len(root) > len(best[0]):
+                best = (root, name)
+    return best[1]
+
+
+def session_query(ctx, m):
+    """Stems describing where this session is: cwd path parts (below HOME), project name, git
+    branch and the matching project note name. Stems of the login and home folder names are
+    dropped; a home or scratch cwd with nothing else left yields an empty query."""
+    cwd = os.path.realpath(ctx.cwd)
+    home = os.path.realpath(c.home())
+    rel = cwd[len(home):] if cwd == home or cwd.startswith(home + os.sep) else cwd
+    branch = c.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd) or ""
+    note = _project_note_name(ctx.vault, cwd)
+    text = " ".join([rel.replace(os.sep, " "), ctx.project.get("name", ""), branch, note])
+    noise = m.STOP_WORDS | PATH_NOISE
+    for name in _identity_names():
+        noise = noise | set(m.tokens(name)) | {name.lower()}
+    return m.tokens(text, stop=noise)
+
+
+def select_start(ctx, m, items, limit, idf):
+    """Up to `limit` instincts that pass the match bar, best first: [(instinct, Match)]. Nothing
+    fills an empty slot: an instinct that does not match the session is not shown."""
+    if limit <= 0 or not items:
+        return []
+    query = session_query(ctx, m)
+    return m.rank(query, items, limit, idf=idf) if query else []
+
+
 def instinct_block(ctx):
-    root = c.instincts_root(ctx.vault)
-    if not root:
+    """Instincts matched to where the session is. Any error is logged and yields no block."""
+    try:
+        limit = c.env_int("NEVA_INSTINCT_MAX", 3, 0, 50)
+        if not limit:
+            return ""
+        m = c.instinct_match()
+        items, idf = c.recall_inputs(ctx.vault, ctx.project["id"], m)
+        if not items:
+            return ""
+        picked = select_start(ctx, m, items, limit, idf)
+        if not picked:
+            return ""
+        # Lines first: a note that cannot be rendered fails here, before anything is recorded.
+        lines = [c.instinct_line(i) for i, _ in picked]
+        c.mark_instincts_shown(ctx, [i["id"] for i, _ in picked])
+        c.log_injection(ctx, "session_start", picked)
+        return c.INSTINCT_HEADER.format(what="matched to this session") + "\n" + "\n".join(lines)
+    except Exception:
+        c.log_exception("[session_start] instinct_block")
         return ""
-    threshold = float(c.env("NEVA_INSTINCT_MIN_CONFIDENCE", "0.7") or 0.7)
-    limit = c.env_int("NEVA_INSTINCT_MAX", 6, 0, 50)
-    best = {}
-    for i in c.load_instincts(root, ctx.project["id"]):
-        if i["confidence"] < threshold or not i.get("action"):
-            continue
-        prev = best.get(i["id"])
-        if not prev or (prev["_scope"] != "project" and i["_scope"] == "project"):
-            best[i["id"]] = i
-    ranked = sorted(best.values(), key=lambda i: (-i["confidence"], 0 if i["_scope"] == "project" else 1, i["id"]))
-    ranked = ranked[:limit]
-    if not ranked:
-        return ""
-    lines = [f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {c.one_line(i['action'], 200)}" for i in ranked]
-    return "Active instincts (learned from past sessions; apply when relevant):\n" + "\n".join(lines)
 
 
 def journal_block(ctx):

@@ -31,6 +31,9 @@ import dispatch  # noqa: E402
 from neva_hooks import common  # noqa: E402
 
 
+NEVA_ORIGINAL = "Written for Neva; not adapted from ECC."
+
+
 def today_utc():
     return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
 
@@ -205,11 +208,12 @@ class HookTest(unittest.TestCase):
 class TestSessionStart(HookTest):
     def seed(self):
         s = self.s
-        s.instinct("global/tests-first.md", "tests-first", 0.9, "Run the tests before committing")
+        s.instinct("global/alpha-tests-first.md", "alpha-tests-first", 0.9, "Run the tests before committing")
         s.instinct("global/weak-one.md", "weak-one", 0.5, "WEAK-ACTION-SHOULD-NOT-SHOW")
         for n in range(7):
             s.instinct(f"global/filler-{n}.md", f"filler-{n}", 0.75, f"filler action {n}")
-        s.instinct(f"project/{s.pid}/proj-rule.md", "proj-rule", 0.8, "Use the repository script for migrations")
+        s.instinct(f"project/{s.pid}/alpha-proj-rule.md", "alpha-proj-rule", 0.8,
+                   "Use the repository script for migrations")
         s.instinct("project/otherproject1/foreign.md", "foreign", 0.95, "FOREIGN-PROJECT-ACTION")
         sd = os.path.join(s.data, "sessions")
         os.makedirs(sd)
@@ -234,7 +238,10 @@ class TestSessionStart(HookTest):
         self.assertIn("[project 80%] Use the repository script", ctx)
         self.assertNotIn("WEAK-ACTION-SHOULD-NOT-SHOW", ctx)
         self.assertNotIn("FOREIGN-PROJECT-ACTION", ctx)
-        self.assertEqual(ctx.count("] filler action") + ctx.count("] Run the tests") + ctx.count("] Use the repo"), 6)
+        # Recall by relevance: both shown instincts share two stems with the session (the Alpha
+        # project note, the proj folder, the sandbox path); unmatched global fillers never show.
+        self.assertNotIn("] filler action", ctx)
+        self.assertEqual(ctx.count("] Run the tests") + ctx.count("] Use the repo"), 2)
         self.assertIn("JOURNAL-LINE-MARK", ctx)
         self.assertIn("Call the plumber about the leak", ctx)
         self.assertNotIn("learn the cello", ctx)
@@ -935,7 +942,9 @@ class TestConfigFiles(unittest.TestCase):
                     self.assertNotIn(needle, text, f"{what} in {p}")
                 self.assertFalse(any(ord(ch) >= 0x1F300 or 0x2600 <= ord(ch) <= 0x27BF for ch in text),
                                  f"emoji in {p}")
-                if n.endswith((".py", ".json")) and n != "__init__.py":
+                # Files adapted from ECC carry its attribution. A file written for Neva says so
+                # in its header instead, so it never claims an origin it does not have.
+                if n.endswith((".py", ".json")) and n != "__init__.py" and NEVA_ORIGINAL not in text[:400]:
                     self.assertIn("affaan-m/ECC (MIT), commit d3b8a3e", text, f"attribution missing in {p}")
                 if n.endswith(".py"):
                     self.assertNotIn("../../" + "lib", text)
@@ -1453,7 +1462,10 @@ class TestInstinctRoundTrip(HookTest):
         self.assertEqual(len(os.listdir(arch)), 1)
 
         r = self.s.dispatch("SessionStart", self.base(source="startup", session_id="next-session"), **env)
-        self.assertIn("[project 85%] Read the whole file before editing it.", r.context)
+        # No match at start, no instinct there; a matching first prompt brings it.
+        p = self.s.dispatch("UserPromptSubmit", self.base(prompt="I am changing a file in app.py",
+                                                          session_id="next-session"), **env)
+        self.assertIn("[project 85%] Read the whole file before editing it.", p.context)
 
         prop = self.proposal(proposals_dir)
         self.assertTrue(os.path.exists(prop), out)
@@ -1482,8 +1494,11 @@ class TestInstinctRoundTrip(HookTest):
         self.assertIn(f"- [x] Review instinct proposals: {link}", self.s.read(inbox_note))
 
         r = self.s.dispatch("SessionStart", self.base(source="startup", session_id="third-session"), **env)
-        self.assertIn("[global 85%] Read the whole file before editing it.", r.context)
         self.assertNotIn("Instinct proposals awaiting", r.context)
+        # A global instinct reaches a session when it matches: here, through the first prompt.
+        r = self.s.dispatch("UserPromptSubmit", self.base(prompt="I am changing a file in app.py",
+                                                          session_id="third-session"), **env)
+        self.assertIn("[global 85%] Read the whole file before editing it.", r.context)
 
     def test_round_trip_template_inbox(self):
         inbox_dir = os.path.join(self.s.vault, "00 Inbox")
