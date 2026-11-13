@@ -27,8 +27,8 @@ The vault comes from `NEVA_VAULT`, else `VAULT_PATH` in `~/.config/neva/identity
 ## What happens
 
 1. Candidates, when no id is given:
-   - the same instinct id active in 2 or more projects with average confidence 0.8 or more, or
-   - one project instinct with `scope_hint: global` at confidence 0.7 or more,
+   - the same instinct id active in 2 or more git projects with average confidence 0.8 or more
+     (a folder outside git, and the `unscoped` bucket, never count; `scope_hint` promotes nothing),
    - and not already global.
 2. Each becomes a `promote-global` block in `Instinct promotions YYYY-MM-DD.md` in the proposals folder, with a pointer under `## Open actions` in the inbox note. The block names the destination `vault:06 Memory/instincts/global/<id>.md`, the source notes, and the exact text.
 3. Nothing global is written yet.

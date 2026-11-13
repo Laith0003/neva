@@ -206,7 +206,6 @@ INACTIVE_STATUSES = {"archived", "promoted"}
 # Thresholds (from the upstream skill; see SKILL.md for the table)
 PROMOTE_CONFIDENCE_THRESHOLD = 0.8     # project -> global: average across projects
 PROMOTE_MIN_PROJECTS = 2               # project -> global: distinct projects
-SCOPE_HINT_GLOBAL_THRESHOLD = 0.7      # analyzer flagged universal, single project
 RULE_CONFIDENCE_THRESHOLD = 0.9        # global instinct -> rule ("near-certain, core behavior")
 RETIRE_CONFIDENCE_THRESHOLD = 0.3      # below "tentative" after decay
 DECAY_PER_WEEK = 0.02
@@ -470,7 +469,9 @@ def detect_project() -> dict:
     if os.environ.get("NEVA_NO_PROJECT") != "1":
         env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
         if env_dir and os.path.isdir(env_dir):
-            project_root = _git_repo_root(env_dir) or os.path.realpath(env_dir)
+            # A project is a git work tree. A folder outside git is never one, even when it is
+            # the session's project dir (the home folder, a scratch or temp folder).
+            project_root = _git_repo_root(env_dir)
         if not project_root:
             project_root = _git_repo_root()
     if project_root:
@@ -1266,12 +1267,33 @@ def _all_project_dirs() -> list[Path]:
     return [d for d in sorted(PROJECT_INSTINCTS_DIR.iterdir()) if d.is_dir()]
 
 
+_GIT_PROJECT_CACHE: dict = {}
+
+
+def _is_git_project(pid: str, registry: Optional[dict] = None) -> bool:
+    """True when bucket `pid` is a project: its registered root is the top of a git work tree today.
+    The unscoped bucket, a bucket the registry does not know, and a bucket whose root is a plain
+    folder (home, scratch, temp, downloads) are not projects and never count toward promotion."""
+    if pid == UNSCOPED_ID:
+        return False
+    if pid in _GIT_PROJECT_CACHE:
+        return _GIT_PROJECT_CACHE[pid]
+    root = ((registry if registry is not None else load_registry()).get(pid) or {}).get('root') or ''
+    top = _git_repo_root(root) if root and os.path.isdir(root) else None
+    ok = bool(top) and os.path.realpath(top) == os.path.realpath(root)
+    _GIT_PROJECT_CACHE[pid] = ok
+    return ok
+
+
 def _find_cross_project_instincts() -> dict:
-    """Instinct id -> [(project_id, project_name, instinct)] for ids in 2+ projects."""
+    """Instinct id -> [(project_id, project_name, instinct)] for ids in 2+ git projects. Computed
+    here from the buckets the notes live in; nothing the analyzer wrote can widen it."""
     registry = load_registry()
     cross = defaultdict(list)
     for pdir in _all_project_dirs():
         pid = pdir.name
+        if not _is_git_project(pid, registry):
+            continue
         seen = set()
         for inst in _load_instincts_from_dir(pdir, "project"):
             iid = inst.get('id')
@@ -1296,20 +1318,8 @@ def _promotion_candidates() -> list[dict]:
             candidates.append({'id': iid, 'entries': entries, 'avg_confidence': avg_conf,
                                'why': f"seen in {len(entries)} projects, average confidence "
                                       f"{avg_conf:.2f} >= {PROMOTE_CONFIDENCE_THRESHOLD:.2f}"})
-    seen = {c['id'] for c in candidates}
-    registry = load_registry()
-    for pdir in _all_project_dirs():
-        for inst in _load_instincts_from_dir(pdir, "project"):
-            iid = inst.get('id')
-            if (iid in seen or iid in global_ids or inst.get('scope_hint') != 'global'
-                    or inst.get('confidence', 0) < SCOPE_HINT_GLOBAL_THRESHOLD):
-                continue
-            seen.add(iid)
-            name = registry.get(pdir.name, {}).get('name', inst.get('project_name', pdir.name))
-            candidates.append({'id': iid, 'entries': [(pdir.name, name, inst)],
-                               'avg_confidence': inst.get('confidence', 0.5),
-                               'why': f"analyzer flagged it universal (scope_hint: global), confidence "
-                                      f"{inst.get('confidence', 0.5):.2f} >= {SCOPE_HINT_GLOBAL_THRESHOLD:.2f}"})
+    # The analyzer's `scope_hint: global` is the model's opinion about one project. It no longer
+    # promotes anything on its own: global needs the same lesson in two git projects.
     return candidates
 
 
@@ -1956,6 +1966,10 @@ def cmd_promote(args) -> int:
     """Propose project -> global promotion. Writes proposal blocks, never the global note."""
     project = detect_project()
     if args.instinct_id:
+        if project['id'] == UNSCOPED_ID:
+            print("This session is outside any git work tree, so it has no project to promote from. Fix: run "
+                  "`promote <id>` from inside the repo the instinct was learned in.", file=sys.stderr)
+            return 1
         if not _validate_instinct_id(args.instinct_id):
             print(f"Invalid instinct ID: '{args.instinct_id}'.", file=sys.stderr)
             return 1
@@ -1973,8 +1987,8 @@ def cmd_promote(args) -> int:
         candidates = _promotion_candidates()
         if not candidates:
             print("No instincts qualify for promotion.")
-            print(f"  Criteria: {PROMOTE_MIN_PROJECTS}+ projects with average confidence >= "
-                  f"{PROMOTE_CONFIDENCE_THRESHOLD:.0%}, or scope_hint: global at >= {SCOPE_HINT_GLOBAL_THRESHOLD:.0%}")
+            print(f"  Criteria: the same instinct in {PROMOTE_MIN_PROJECTS}+ git projects with average "
+                  f"confidence >= {PROMOTE_CONFIDENCE_THRESHOLD:.0%}")
             return 0
         blocks = [_promote_block(c) for c in candidates]
     rc = _emit_blocks(blocks, dry_run=args.dry_run, repropose=bool(args.instinct_id))
@@ -1990,7 +2004,16 @@ def cmd_propose(args) -> int:
     blocks = [_promote_block(c) for c in _promotion_candidates()]
     if _evolve_allowed():
         # Evolve per project bucket plus global, so clusters stay inside one scope.
+        registry = load_registry()
         for pdir in _all_project_dirs():
+            if pdir.name != UNSCOPED_ID and pdir.name not in registry:
+                print(f"Warning: project {pdir.name} skipped: it has no root in the project registry at "
+                      f"{REGISTRY_FILE}, so its destination is unknown. Fix: open a session in that project once "
+                      f"so the hooks register it, or point NEVA_DATA_DIR at the data folder the hooks use.",
+                      file=sys.stderr)
+                continue
+            if not _is_git_project(pdir.name, registry):
+                continue
             pinfo = {'id': pdir.name, 'instincts_dir': pdir}
             instincts = _load_instincts_from_dir(pdir, "project")
             if len(instincts) >= 3:
