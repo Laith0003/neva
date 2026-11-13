@@ -2154,6 +2154,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         bid = block['block_id']
         _ledger_record(ledger, bid, status='proposed', file=str(path), date=_today(),
                        rendered_sha256=_rendered_hash(as_written[bid]['body']),
+                       destination=dict(block['fields']).get('Proposed destination'),
                        ticked_at_propose=bool(as_written[bid]['approve']), **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
@@ -2423,17 +2424,58 @@ def _same_file(a, b) -> bool:
         os.path.realpath(str(b)))
 
 
-def _provenance_problem(ledger: dict, block: dict, path: Path) -> str:
-    """'' when the engine proposed this block in this file and wrote it unticked, else why not.
+LEGACY_TOKEN_COVERAGE = 0.8
+
+
+def _legacy_problem(entry: dict, block: dict) -> str:
+    """'' when a block proposed before rendered hashes existed still says what the ledger recorded,
+    else why it cannot be trusted. The ledger never recorded the text itself, so the check is: the
+    content key the ledger holds matches the instincts the block names, those instincts' words are in
+    its fence, and its destination is the one recorded or, when none was, the one its kind implies."""
+    if not entry.get('content_key'):
+        return "the ledger recorded no content for it"
+    fields, text = block['fields'], block['text'] or ""
+    if _content_from_fields(fields, text).get('content_key') != entry['content_key']:
+        return "the instincts it names are not the ones the ledger recorded"
+    kind = block['block_id'].partition(':')[0]
+    if kind == 'retire':
+        if not re.fullmatch(r'status: archived\narchived_reason: "[^"\n]*"\n?', text):
+            return "its text is not the archive marker a retire block writes"
+    else:
+        recorded = set(entry.get('content_tokens') or ())
+        found = set(_content_tokens(text))
+        if not recorded or len(recorded & found) < LEGACY_TOKEN_COVERAGE * len(recorded):
+            return "its text no longer carries the lesson the ledger recorded"
+    dest = fields.get('Proposed destination', '').strip().strip('`').strip()
+    if entry.get('destination'):
+        if dest != str(entry['destination']).strip().strip('`').strip():
+            return "its destination is not the one the ledger recorded"
+    elif kind == 'promote-global':
+        try:
+            ok = _same_file(_resolve_ref(dest), GLOBAL_DIR / f"{block['block_id'].partition(':')[2]}{INSTINCT_EXT}")
+        except ValueError:
+            ok = False
+        if not ok:
+            return "its destination is not the global note its id implies"
+    return ""
+
+
+def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) -> str:
+    """'' when the engine proposed this block in this file and it still says what was written, else why not.
 
     Only a block the ledger recorded as proposed for this very file is acted on, approve or reject:
-    anything else in the file was not written by the engine. A block recorded since the rendered hash
-    existed must also have been written with its approve box empty. A block proposed before then has
-    no hash; it is acted on when the ledger recorded it as proposed for this file, which is the
-    strongest evidence that ledger holds."""
+    anything else in the file was not written by the engine. An id that appears more than once
+    outside fences is refused in every copy. Text the renderer would refuse is refused here too. A
+    block recorded since the rendered hash existed must have been written with its approve box
+    empty. A block proposed before then is acted on only when it still matches what the ledger
+    recorded (_legacy_problem); otherwise it is withdrawn and filed again by the next propose."""
     bid = block['block_id']
     entry = ledger.get(bid)
     where = f"{path.name}: block {bid}"
+    if copies > 1:
+        return (f"{where} refused: its block id appears {copies} times outside fences in this file, so it "
+                f"cannot be told which copy the engine wrote. Neither copy is applied. Fix: delete every copy "
+                f"you did not expect, then run apply-promotions again.")
     if not isinstance(entry, dict) or entry.get('status') != 'proposed':
         state = entry.get('status') if isinstance(entry, dict) else None
         return (f"{where} skipped: the promotion ledger has no open proposal for it"
@@ -2442,6 +2484,10 @@ def _provenance_problem(ledger: dict, block: dict, path: Path) -> str:
     if not _same_file(entry.get('file'), path):
         return (f"{where} skipped: the ledger proposed it in {entry.get('file') or 'no file'}, not in this file. "
                 f"Fix: tick it in the file the ledger names, or delete this copy.")
+    unsafe = _unsafe_reason({'block_id': bid, 'kind': bid.partition(':')[0], 'slug': bid.partition(':')[2],
+                             'fields': list(block['fields'].items()), 'text': block['text'] or ""})
+    if unsafe:
+        return f"{where} refused: {unsafe}. Fix: remove that text from the block, or tick reject."
     if entry.get('ticked_at_propose') or (
             block['approve'] and entry.get('rendered_sha256') == _rendered_hash(block['body'])):
         return (f"{where} refused: its approve box was ticked when the engine wrote it, so no human ticked it. "
@@ -2463,7 +2509,10 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
         parsed_ids = {b['block_id'] for b in parsed}
         # A marker still in the file but not parsed is a block someone reformatted (a blank line
         # after the heading, a ### heading). It is still pending: report it, never reject it.
-        malformed = sorted(set(_block_markers(text)) - parsed_ids)
+        marker_counts = defaultdict(int)
+        for bid in _block_markers(text):
+            marker_counts[bid] += 1
+        malformed = sorted(set(marker_counts) - parsed_ids)
         for bid in malformed:
             if only_ids is not None and bid not in only_ids:
                 continue
@@ -2487,9 +2536,25 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             bid = block['block_id']
             if only_ids is not None and bid not in only_ids:
                 continue
-            refusal = _provenance_problem(ledger, block, path)
+            refusal = _provenance_problem(ledger, block, path, copies=marker_counts[bid])
             if refusal:
                 print(refusal, file=sys.stderr)
+                failed += 1
+                continue
+            entry = ledger[bid]
+            legacy = '' if entry.get('rendered_sha256') else _legacy_problem(entry, block)
+            if legacy and (block['approve'] or block['reject'] or mode in ("all", "ids")):
+                msg = (f"{path.name}: block {bid} was proposed before the engine recorded what it wrote, and "
+                       f"{legacy}. It is withdrawn and must be re-proposed: the next `instinct-cli.py propose` "
+                       f"files it again if it still qualifies, and you tick it there.")
+                print(msg, file=sys.stderr)
+                # The marker is renamed, so the withdrawn copy is no longer a block: neither open nor
+                # decided, and the id can be filed again, in this file too, without a duplicate.
+                body = block['body'].replace(f"<!-- block_id: {bid} -->", f"<!-- withdrawn_block_id: {bid} -->", 1)
+                body = body.replace("- [ ] reject\n", f"- [ ] reject\n\nWithdrawn {_today()}: {legacy}; "
+                                    f"it must be re-proposed.\n", 1)
+                text = text.replace(block['body'], body, 1)
+                _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy)
                 failed += 1
                 continue
             if block['approve'] and block['reject']:
