@@ -2353,6 +2353,10 @@ def _load_parked() -> dict:
     return learning_io.read_json_object(PARKED_FILE) if PARKED_FILE.exists() else {}
 
 
+# Kinds that may carry no instincts: a retire block removes, it does not add, and is not gated.
+NO_MEMBER_KINDS = ("retire",)
+
+
 def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     """Blocks that pass the gate. Failing ones go to the parked list with every reason and the
     date; a parked entry is updated on each run and kept when it later passes (marked cleared).
@@ -2371,8 +2375,20 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     passed, parked_now = [], 0
     for block in blocks:
         bid = block['block_id']
-        if block['kind'] == 'retire' or not block.get('members'):
-            passed.append(block)
+        if not block.get('members'):
+            if block['kind'] in NO_MEMBER_KINDS:
+                passed.append(block)
+                continue
+            # Nothing to check is not a pass: a block of any other kind with no instincts behind it
+            # fails closed, so the gate never reports success while checking nothing.
+            reasons = [f"it carries no instincts to check, and only {', '.join(NO_MEMBER_KINDS)} blocks may"]
+            entry = dict(parked.get(bid) or {})
+            entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today()})
+            entry.setdefault('first_parked', _today())
+            entry.pop('cleared', None)
+            parked[bid] = entry
+            parked_now += 1
+            print(f"Parked {bid}: {'; '.join(reasons)}.")
             continue
         if corpus is None:
             corpus = _gate_corpus()
