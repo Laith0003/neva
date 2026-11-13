@@ -931,9 +931,36 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def _cmd_restate(args, project: dict) -> int:
+    iid = args.restate
+    if not _validate_instinct_id(iid):
+        print(f"Invalid --restate '{iid}'. Fix: pass the id of an existing note.", file=sys.stderr)
+        return 1
+    target_dir = GLOBAL_DIR if args.scope == "global" else project["instincts_dir"]
+    target = target_dir / f"{iid}{INSTINCT_EXT}"
+    if not target.is_file():
+        print(f"{_vault_ref(target)} does not exist. Fix: run from the project the note belongs to, or pass "
+              f"--scope global for a global note.", file=sys.stderr)
+        return 1
+    parsed = parse_instinct_file(target.read_text(encoding="utf-8"))
+    if not parsed:
+        print(f"{_vault_ref(target)} is not an instinct note. Fix: restore its frontmatter.", file=sys.stderr)
+        return 1
+    _record_user_stated(target, _note_hash(parsed[0]))
+    print(f"Restated {iid}: {_vault_ref(target)} is recorded as your own words as it reads now.")
+    return 0
+
+
 def cmd_add(args) -> int:
     """Record a user-stated instinct. The human invoking this is the approval."""
     project = detect_project()
+    if args.restate:
+        return _cmd_restate(args, project)
+    missing = [f"--{k}" for k in ("id", "trigger", "action") if not getattr(args, k)]
+    if missing:
+        print(f"add needs {', '.join(missing)}. Fix: pass them, or use --restate <id> to re-vouch an existing "
+              f"note.", file=sys.stderr)
+        return 1
     if not _validate_instinct_id(args.id):
         print(f"Invalid --id '{args.id}'. Fix: use kebab-case letters, digits, '.', '_' or '-'.", file=sys.stderr)
         return 1
@@ -946,7 +973,8 @@ def cmd_add(args) -> int:
     target_dir = GLOBAL_DIR if args.scope == "global" else project["instincts_dir"]
     target = target_dir / f"{args.id}{INSTINCT_EXT}"
     if target.exists():
-        print(f"{_vault_ref(target)} already exists. Fix: pick another --id or edit that note.", file=sys.stderr)
+        print(f"{_vault_ref(target)} already exists. Fix: pick another --id, or edit that note and run "
+              f"`add --restate {args.id}` to record your edit as your own words.", file=sys.stderr)
         return 1
     inst = {
         'id': args.id, 'trigger': args.trigger, 'confidence': round(conf, 2),
@@ -1735,6 +1763,74 @@ def _rule_blocks() -> list[dict]:
     return blocks
 
 
+CONFIRM_STATED_ID = "confirm-stated:notes"
+_CONFIRM_LINE = re.compile(r'^- \[([ xX])\] confirm `(vault:[^`\n]+)`$', re.M)
+
+
+def _confirm_stated_block() -> list[dict]:
+    """Once, after the upgrade: one block listing every note that claims `source: user-stated` but has
+    no add-ledger record. That field is model-writable, so it is never trusted on its own; he ticks the
+    line of each note he wrote, and only those are recorded as his. Never filed a second time."""
+    ledger = _load_ledger()
+    # Only an install that ran before the add ledger existed has notes to confirm; a fresh ledger has
+    # no history to carry over, and its notes were written by add, which records them.
+    if CONFIRM_STATED_ID in ledger or not ledger:
+        return []
+    stated = _load_user_stated()
+    notes = []
+    for directory, label in [(GLOBAL_DIR, "global")] + [(d, "project") for d in _all_project_dirs()]:
+        for inst in _load_instincts_from_dir(directory, label):
+            path = Path(inst['_source_file'])
+            if str(inst.get('source', '')) != 'user-stated' or _stated_now(stated, inst):
+                continue
+            if not _validate_instinct_id(path.stem):
+                continue
+            notes.append((_vault_ref(path), inst))
+    if not notes:
+        return []
+    lines, hashes = [], {}
+    body = []
+    for ref, inst in notes:
+        lines.append(f"- [ ] confirm `{ref}`")
+        hashes[ref] = _note_hash(inst)
+        body.append(f"{ref}\n  trigger: {inst.get('trigger', '')}\n  action: {_action_of(inst)}")
+    block = _block("confirm-stated", "notes", [
+        ("Kind", "confirm-stated"),
+        ("Why", "these notes say source: user-stated, a field the analyzer can write, and have no record that you "
+                "wrote them; tick the confirm line of each one that is yours, then tick approve"),
+        ("Notes", str(len(notes))),
+    ], "\n\n".join(body), text_lang="text")
+    block['extra_lines'] = ["Tick the confirm line of each note you wrote yourself:", ""] + lines + [""]
+    block['source_hashes'] = hashes
+    print(f"Filed {CONFIRM_STATED_ID} once: {len(notes)} note(s) claim to be your own words; tick the ones that are.")
+    return [block]
+
+
+def _confirm_stated_apply(block: dict, entry: dict) -> str:
+    hashes = (entry or {}).get('source_hashes') or {}
+    masked = _fence_scan(block['body'])[0]
+    stated = _load_user_stated()
+    recorded = 0
+    for tick, ref in _CONFIRM_LINE.findall(masked):
+        if tick == ' ' or ref not in hashes:
+            continue
+        try:
+            path = _resolve_ref(ref)
+        except ValueError:
+            continue
+        parsed = parse_instinct_file(path.read_text(encoding="utf-8")) if path.is_file() else []
+        if parsed and _note_hash(parsed[0]) == hashes[ref]:
+            stated[ref] = {"date": _today(), "sha": hashes[ref], "confirmed": True}
+            recorded += 1
+        else:
+            print(f"block {CONFIRM_STATED_ID}: {ref} changed since it was listed, so it was not recorded. Fix: "
+                  f"run `add --restate <id>` from its project if the note is yours as it reads now.", file=sys.stderr)
+    if recorded:
+        _save_state_json(USER_STATED_FILE, stated)
+    print(f"Recorded {recorded} note(s) as your own words.")
+    return ''
+
+
 def _retire_blocks() -> list[dict]:
     blocks = []
     dirs = [(GLOBAL_DIR, "global")] + [(d, "project") for d in _all_project_dirs()]
@@ -1781,6 +1877,9 @@ def _unsafe_reason(block: dict) -> str:
             return f"its '{key}' field holds control characters ({', '.join(bad)}), which would end the table row"
         if _MARKER_TEXT.search(value):
             return f"its '{key}' field holds a '<!-- block_id' marker"
+    for line in block.get('extra_lines') or []:
+        if line and not _CONFIRM_LINE.fullmatch(line) and line != "Tick the confirm line of each note you wrote yourself:":
+            return f"its line {line[:60]!r} is not a confirm line"
     text = block['text']
     bad = _control_chars(text, "\n\t")
     if bad:
@@ -1807,7 +1906,9 @@ def _render_block(block: dict) -> str:
     for key, value in block['fields']:
         cell = str(value).replace('|', '\\|')
         out.append(f"| {key} | {cell} |")
-    out += ["", "Text to write:", "", f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
+    out += [""] + list(block.get('extra_lines') or [])
+    out += ["Text to write:" if block['kind'] != 'confirm-stated' else "What each note says:", "",
+            f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
     return "\n".join(out)
 
 
@@ -2313,6 +2414,37 @@ def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
         _save_state_json(USER_STATED_FILE, stated)
 
 
+def _approved_now(promoted: dict, inst: dict) -> bool:
+    """True for a global note an apply created after the human ticked it, while it still says the same."""
+    row = promoted.get(_vault_ref(Path(inst.get('_source_file', ''))))
+    return isinstance(row, dict) and bool(row.get('approved')) and row.get('sha') == _note_hash(inst)
+
+
+def _backfill_promoted_notes(ledger: dict, write: bool) -> dict:
+    """Record, once, the global notes the engine's own ledger says were applied before promoted-notes.json
+    existed. The ledger and the global folder are engine-written (the analyzer's grant does not reach
+    either), so the record is trusted: the note is his approved lesson as it reads now."""
+    promoted = _load_promoted_notes()
+    changed = False
+    for bid, entry in ledger.items():
+        if not (isinstance(entry, dict) and entry.get('status') == 'applied' and bid.startswith('promote-global:')):
+            continue
+        note = GLOBAL_DIR / f"{bid.partition(':')[2]}{INSTINCT_EXT}" if GLOBAL_DIR else None
+        if note is None or not note.is_file() or _vault_ref(note) in promoted:
+            continue
+        parsed = parse_instinct_file(note.read_text(encoding="utf-8"))
+        if not parsed:
+            continue
+        pids = [p.strip() for p in str(parsed[0].get('promoted_from') or '').split(',')]
+        promoted[_vault_ref(note)] = {"date": _today(), "sha": _note_hash(parsed[0]), "approved": True,
+                                      "projects": sorted(p for p in pids if _validate_project_id(p)),
+                                      "sources": [], "sessions": {}, "backfilled": True}
+        changed = True
+    if changed and write:
+        _save_state_json(PROMOTED_NOTES_FILE, promoted)
+    return promoted
+
+
 def _note_projects(inst: dict, promoted: dict) -> list:
     """Projects whose observation records may vouch for a note: a project note's own folder, or for
     a global note the projects the engine recorded when it created it, while it still says the same."""
@@ -2353,7 +2485,7 @@ def _load_parked() -> dict:
 
 
 # Kinds that may carry no instincts: a retire block removes, it does not add, and is not gated.
-NO_MEMBER_KINDS = ("retire",)
+NO_MEMBER_KINDS = ("retire", "confirm-stated")
 
 
 def _gate(blocks: list[dict], dry_run: bool, report: Optional[list] = None) -> list[dict]:
@@ -2363,7 +2495,8 @@ def _gate(blocks: list[dict], dry_run: bool, report: Optional[list] = None) -> l
     if not blocks:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
-    user_stated, promoted_notes, note_sessions = _load_user_stated(), _load_promoted_notes(), _load_note_sessions()
+    user_stated, note_sessions = _load_user_stated(), _load_note_sessions()
+    promoted_notes = _backfill_promoted_notes(_load_ledger(), write=not dry_run)
     identity = Path(os.environ.get("NEVA_CONFIG") or Path.home() / ".config" / "neva" / "identity.env").expanduser()
     try:
         thresholds = quality_gate.load_thresholds(identity)
@@ -2397,7 +2530,9 @@ def _gate(blocks: list[dict], dry_run: bool, report: Optional[list] = None) -> l
         pids = sorted({p for m in members if Path(m.get('_source_file', '')).parent.name in
                        projects[m.get('_source_file')] for p in projects[m.get('_source_file')]})
         skip = {f"global instinct {m.get('id')}" for m in members}
-        stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
+        # His own words (add, hash matching) or a global note he approved by a tick (hash matching).
+        stated = {m['_source_file'] for m in members if m.get('_source_file') and (
+            _stated_now(user_stated, m) or _approved_now(promoted_notes, m))}
         observed = {m.get('_source_file'): _engine_sessions(m, note_sessions, promoted_notes) for m in members}
         reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
                                      stated=stated, projects=projects,
@@ -2459,6 +2594,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
     _backfill_content(ledger)
     in_vault = _vault_block_states()
     user_stated = _load_user_stated()
+    promoted_now = _backfill_promoted_notes(ledger, write=not dry_run)
     not_proposed = []  # (block id, reason) for the section the human reads in the proposal file
     fresh = []
     for block in blocks:
@@ -2471,6 +2607,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
                 continue
             if prior.get('status') == 'proposed' and Path(prior.get('file', '')).exists():
                 continue
+        block['returning'] = bool(prior) and prior.get('status') == 'withdrawn'
         unsafe = _unsafe_reason(block)
         if unsafe:
             print(f"Refused {bid}: {unsafe}. It was not proposed. Fix: edit the instinct note so its text holds "
@@ -2481,8 +2618,9 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         block['content'] = _block_content(block)
         # A lesson the human stated, still as he wrote it, is buried only by a rejection of the very
         # same content, never by one that merely means something close.
-        block['stated'] = bool(block.get('members')) and all(_stated_now(user_stated, m) for m in block['members'])
-        if not repropose:
+        block['stated'] = bool(block.get('members')) and all(
+            _stated_now(user_stated, m) or _approved_now(promoted_now, m) for m in block['members'])
+        if not repropose and not block['returning']:
             match = _matching_decision(ledger, block, block['content'], exact_only=block['stated'])
             if match:
                 print(f"Skipped {bid}: says the same as {match[0]}, {match[1].get('status')} "
@@ -2492,7 +2630,10 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
                 continue
         fresh.append(block)
     if not repropose:
-        fresh = _gate(fresh, dry_run, report=not_proposed)
+        # A withdrawn block was proposed once under the old rules and was promised back for a fresh
+        # tick: it returns without the gate, as `promote <id>` does.
+        gated = set(id(b) for b in _gate([b for b in fresh if not b['returning']], dry_run, report=not_proposed))
+        fresh = [b for b in fresh if b['returning'] or id(b) in gated]
     if not fresh:
         print("No new instinct candidates to propose.")
         return 0
@@ -2527,7 +2668,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         _ledger_record(ledger, bid, status='proposed', file=str(path), date=_today(),
                        rendered_sha256=_rendered_hash(as_written[bid]['body']),
                        destination=dict(block['fields']).get('Proposed destination'),
-                       sources=block.get('sources'),
+                       sources=block.get('sources'), source_hashes=block.get('source_hashes'),
                        ticked_at_propose=bool(as_written[bid]['approve']), **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
@@ -2610,6 +2751,7 @@ def cmd_propose(args) -> int:
             blocks += _evolve_blocks(project, *_evolve_candidates(global_instincts), limit=limit)
     blocks += _rule_blocks()
     blocks += _retire_blocks()
+    blocks += _confirm_stated_block()
     return _emit_blocks(blocks, dry_run=args.dry_run)
 
 
@@ -2693,6 +2835,8 @@ def _allowed_destination(path: Path) -> bool:
 
 def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     """Apply one block. Returns '' on success or an error naming the field and the fix."""
+    if block['block_id'] == CONFIRM_STATED_ID:
+        return _confirm_stated_apply(block, entry)
     f = block['fields']
     kind = f.get('Kind', '')
     bid = block['block_id']
@@ -2792,7 +2936,7 @@ def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
         for session, days in (note_sessions.get(ref) or {}).items():
             merged[session] = sorted(set(merged.get(session, [])) | set(days or []))
     promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources,
-                                  "sessions": merged}
+                                  "sessions": merged, "approved": True}
     _save_state_json(PROMOTED_NOTES_FILE, promoted)
     stated = _load_user_stated()
     if len(notes) == len(sources) and all(_stated_now(stated, n) for n in notes) and \
@@ -2865,7 +3009,8 @@ def _same_file(a, b) -> bool:
 
 # The one write mode the engine ever proposes for each kind.
 KIND_WRITE_MODE = {'promote-global': 'create', 'evolve-skill': 'create', 'evolve-command': 'create',
-                   'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter'}
+                   'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter',
+                   'confirm-stated': 'record'}
 
 
 def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1, content_checks: bool = True) -> str:
@@ -2917,7 +3062,7 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1, 
 def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
     _preflight_state()
     ledger = _load_ledger()
-    applied = rejected = failed = 0
+    applied = rejected = failed = withdrawn = 0
     for path in files:
         if not path.exists():
             print(f"{path} does not exist. Fix: pass --file with an existing proposal file.", file=sys.stderr)
@@ -3006,7 +3151,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                                     f"it must be re-proposed.\n", 1)
                 text = text.replace(block['body'], body, 1)
                 _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy)
-                failed += 1
+                withdrawn += 1  # not a failure: it comes back on the next propose
                 continue
             go = block['approve'] or mode in ("all", "ids")
             if not go:
@@ -3030,7 +3175,8 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
         if finished:
             _inbox_pointer(path, done=True)
     _save_ledger(ledger)
-    print(f"Applied {applied}, rejected {rejected}, failed {failed}.")
+    print(f"Applied {applied}, rejected {rejected}, failed {failed}."
+          + (f" Withdrawn {withdrawn}, to be re-proposed for a fresh tick." if withdrawn else ""))
     return 1 if failed else 0
 
 
@@ -3448,9 +3594,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser('stats', help='Summary statistics')
 
     p = sub.add_parser('add', help='Record a user-stated instinct')
-    p.add_argument('--id', required=True, help='kebab-case id, 2-5 words')
-    p.add_argument('--trigger', required=True, help='"when <specific condition>"')
-    p.add_argument('--action', required=True, help='one clear sentence')
+    p.add_argument('--id', help='kebab-case id, 2-5 words')
+    p.add_argument('--trigger', help='"when <specific condition>"')
+    p.add_argument('--action', help='one clear sentence')
+    p.add_argument('--restate', metavar='ID',
+                   help='re-vouch an existing note you stated and then edited yourself: records its current text')
     p.add_argument('--domain', default='workflow')
     p.add_argument('--confidence', type=float, default=0.7, help='0.1-1.0, or 1-10')
     p.add_argument('--scope', choices=['project', 'global'], default='project')

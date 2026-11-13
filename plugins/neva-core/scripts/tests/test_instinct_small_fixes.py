@@ -67,7 +67,7 @@ class NoMembersCase(unittest.TestCase):
         retire = cli._block("retire", "y", [("Kind", "retire")], "status: archived\n")
         passed = cli._gate([bare, retire], dry_run=True)
         self.assertEqual([b['block_id'] for b in passed], ["retire:y"])
-        self.assertEqual(cli.NO_MEMBER_KINDS, ("retire",))
+        self.assertEqual(cli.NO_MEMBER_KINDS, ("retire", "confirm-stated"))
 
 
 class OneRepoCase(unittest.TestCase):
