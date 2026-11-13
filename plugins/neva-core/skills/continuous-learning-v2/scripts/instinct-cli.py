@@ -2844,7 +2844,7 @@ KIND_WRITE_MODE = {'promote-global': 'create', 'evolve-skill': 'create', 'evolve
                    'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter'}
 
 
-def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) -> str:
+def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1, content_checks: bool = True) -> str:
     """'' when the engine proposed this block in this file and it still says what was written, else why not.
 
     Only a block the ledger recorded as proposed for this very file is acted on, approve or reject:
@@ -2868,6 +2868,8 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) 
     if not _same_file(entry.get('file'), path):
         return (f"{where} skipped: the ledger proposed it in {entry.get('file') or 'no file'}, not in this file. "
                 f"Fix: tick it in the file the ledger names, or delete this copy.")
+    if not content_checks:
+        return ''
     kind_row = str(block['fields'].get('Kind', '')).strip()
     if kind_row and kind_row != bid.partition(':')[0]:
         return (f"{where} refused: its Kind row says '{kind_row}' but its id is a {bid.partition(':')[0]} block. "
@@ -2929,6 +2931,27 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             bid = block['block_id']
             if only_ids is not None and bid not in only_ids:
                 continue
+            # Is this the engine's own block, in this file? Only that is needed to honour a reject:
+            # a rejection writes nothing, so it is read before any text check or legacy withdrawal.
+            refusal = _provenance_problem(ledger, block, path, copies=marker_counts[bid], content_checks=False)
+            if refusal:
+                print(refusal, file=sys.stderr)
+                failed += 1
+                continue
+            if block['approve'] and block['reject']:
+                msg = f"block {bid}: both approve and reject are ticked. Fix: untick one."
+                print(msg, file=sys.stderr)
+                text = _mark_block(text, block, f"Failed {_today()}: {msg}", False)
+                failed += 1
+                continue
+            if block['reject']:
+                text = _mark_block(text, block, f"Rejected {_today()}.", False)
+                _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
+                               reason=_block_reason(block) or "ticked reject",
+                               **_recorded_content(ledger.get(bid)))
+                _log_promotion_event("rejected", bid)
+                rejected += 1
+                continue
             refusal = _provenance_problem(ledger, block, path, copies=marker_counts[bid])
             if refusal:
                 print(refusal, file=sys.stderr)
@@ -2960,20 +2983,6 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                 text = text.replace(block['body'], body, 1)
                 _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy)
                 failed += 1
-                continue
-            if block['approve'] and block['reject']:
-                msg = f"block {bid}: both approve and reject are ticked. Fix: untick one."
-                print(msg, file=sys.stderr)
-                text = _mark_block(text, block, f"Failed {_today()}: {msg}", False)
-                failed += 1
-                continue
-            if block['reject']:
-                text = _mark_block(text, block, f"Rejected {_today()}.", False)
-                _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
-                               reason=_block_reason(block) or "ticked reject",
-                               **_recorded_content(ledger.get(bid)))
-                _log_promotion_event("rejected", bid)
-                rejected += 1
                 continue
             go = block['approve'] or mode in ("all", "ids")
             if not go:
