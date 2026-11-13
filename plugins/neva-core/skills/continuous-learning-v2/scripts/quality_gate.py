@@ -17,7 +17,10 @@ never shown as a proposal and never deleted. The four checks:
   dormant       none of its projects had any activity in the last ACTIVE_DAYS days
 
 Restatement is token overlap on instinct_match stems: the overlap coefficient (shared stems over
-the smaller set) must reach OVERLAP_THRESHOLD with at least MIN_SHARED stems in common. Calibrated
+the smaller set) must reach OVERLAP_THRESHOLD with at least MIN_SHARED stems in common. When either
+text has fewer than COEFFICIENT_MIN_STEMS stems, and always between two candidates of the same run,
+Jaccard is used instead, so a short text or a broad candidate cannot score 1.0 by size alone. The
+identity file can set NEVA_GATE_OVERLAP_THRESHOLD and NEVA_GATE_MIN_SHARED (load_thresholds). Calibrated
 on a labelled queue of 110 candidates (54 judged already written down, 33 judged empty, 18 judged
 worth asking about, 5 lessons): at 0.6 with 3 shared stems it flags 18 of the 54 already-written
 items and 6 of the 33 empty ones, and none of the items worth keeping, merging or gating. Lower
@@ -34,6 +37,7 @@ import instinct_match
 
 OVERLAP_THRESHOLD = 0.6
 MIN_SHARED = 3
+COEFFICIENT_MIN_STEMS = 6
 MIN_SESSIONS = 2
 MIN_DAYS = 2
 ACTIVE_DAYS = 30
@@ -142,21 +146,63 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
     return units
 
 
-def restates(stems, corpus, skip_labels=()):
-    """(label, score) of the first corpus unit this lesson restates, else None."""
+def _score(stems, unit):
+    """Overlap coefficient when both texts are long enough to say something on their own, else
+    Jaccard. Below COEFFICIENT_MIN_STEMS the coefficient is 1.0 for any short text whose few stems
+    appear in a long paragraph, which says nothing about whether it is the same lesson."""
+    shared = len(stems & unit)
+    if min(len(stems), len(unit)) >= COEFFICIENT_MIN_STEMS:
+        return shared / min(len(stems), len(unit))
+    return shared / len(stems | unit)
+
+
+def restates(stems, corpus, skip_labels=(), peers=(), thresholds=None):
+    """(label, score) of the first corpus unit or peer this lesson restates, else None. `peers` are the
+    other candidates of this run, compared by Jaccard only, so one broad candidate cannot make every
+    later one look like its restatement."""
     if not stems:
         return None
+    t = thresholds or {"overlap": OVERLAP_THRESHOLD, "min_shared": MIN_SHARED}
     best = None
-    for label, unit in corpus:
+    for label, unit, jaccard_only in [(l, u, False) for l, u in corpus] + [(l, u, True) for l, u in peers]:
         if label in skip_labels:
             continue
-        shared = len(stems & unit)
-        if shared < MIN_SHARED:
+        if len(stems & unit) < t["min_shared"]:
             continue
-        score = shared / min(len(stems), len(unit))
-        if score >= OVERLAP_THRESHOLD and (best is None or score > best[1]):
+        score = instinct_match.jaccard(stems, unit) if jaccard_only else _score(stems, unit)
+        if score >= t["overlap"] and (best is None or score > best[1]):
             best = (label, score)
     return best
+
+
+THRESHOLD_KEYS = {"NEVA_GATE_OVERLAP_THRESHOLD": ("overlap", float), "NEVA_GATE_MIN_SHARED": ("min_shared", int)}
+
+
+def load_thresholds(identity_path):
+    """The restatement thresholds: the module defaults, overridden by KEY="value" lines in the Neva
+    identity file. NEVA_GATE_OVERLAP_THRESHOLD (0 to 1, default OVERLAP_THRESHOLD) and
+    NEVA_GATE_MIN_SHARED (an integer >= 1, default MIN_SHARED). A value that does not parse is an
+    error naming the key, never a silent default."""
+    out = {"overlap": OVERLAP_THRESHOLD, "min_shared": MIN_SHARED}
+    try:
+        with open(identity_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return out
+    for key, (name, cast) in THRESHOLD_KEYS.items():
+        m = re.search(rf'^{key}="([^"]*)"\s*$', text, re.M)
+        if not m:
+            continue
+        try:
+            value = cast(m.group(1))
+        except ValueError:
+            value = None
+        if value is None or (name == "overlap" and not 0 < value <= 1) or (name == "min_shared" and value < 1):
+            raise ValueError(f"{identity_path}: {key}={m.group(1)!r} is not valid. Fix: set it to "
+                             f"{'a number above 0 and at most 1' if name == 'overlap' else 'an integer of 1 or more'}, "
+                             f"or remove the line to use the default.")
+        out[name] = value
+    return out
 
 
 # ------------------------------------------------------------------ the other three checks
@@ -245,15 +291,16 @@ def dormant(project_ids, registry, today=None):
 
 
 def check(members, project_ids, corpus, registry, today=None, skip_labels=(), observed=None, stated=(),
-          projects=None):
+          projects=None, peers=(), thresholds=None):
     """Every failing reason for one candidate, in a fixed order. An empty list means it passes.
     `observed` is {project id: {session id: set of days}} from the observation records; `stated` is
     the set of `_source_file` paths the `add` subcommand wrote and that still say what it wrote;
     `projects` is {`_source_file`: [project ids]} as evidence() describes."""
     reasons = []
-    hit = restates(_stems(" ".join(lesson_text(m) for m in members)), corpus, skip_labels)
+    hit = restates(_stems(" ".join(lesson_text(m) for m in members)), corpus, skip_labels, peers, thresholds)
     if hit:
-        reasons.append(f"restates {hit[0]} (overlap {hit[1]:.2f} >= {OVERLAP_THRESHOLD})")
+        limit = (thresholds or {}).get("overlap", OVERLAP_THRESHOLD)
+        reasons.append(f"restates {hit[0]} (overlap {hit[1]:.2f} >= {limit})")
     for reason in (vague(members, stated), thin(members, observed, stated, projects), dormant(project_ids, registry, today)):
         if reason:
             reasons.append(reason)

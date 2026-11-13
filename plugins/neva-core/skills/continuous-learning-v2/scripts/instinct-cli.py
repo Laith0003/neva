@@ -2312,6 +2312,12 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
     user_stated, promoted_notes, observed_cache = _load_user_stated(), _load_promoted_notes(), {}
+    identity = Path(os.environ.get("NEVA_CONFIG") or Path.home() / ".config" / "neva" / "identity.env").expanduser()
+    try:
+        thresholds = quality_gate.load_thresholds(identity)
+    except ValueError as exc:
+        raise learning_io.LearningDataError(str(exc)) from None
+    peers = []
     _mark_stale_stated(user_stated, [m for b in blocks for m in b.get('members') or []], write=not dry_run)
     passed, parked_now = [], 0
     for block in blocks:
@@ -2330,7 +2336,7 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
         stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
         observed = {pid: _observed_sessions(pid, observed_cache) for ps in projects.values() for pid in ps}
         reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
-                                     stated=stated, projects=projects)
+                                     stated=stated, projects=projects, peers=peers, thresholds=thresholds)
         entry = dict(parked.get(bid) or {})
         if reasons:
             entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
@@ -2345,7 +2351,7 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
             entry.update({'cleared': _today(), 'last_checked': _today()})
             parked[bid] = entry
         passed.append(block)
-        corpus.append((f"candidate {bid}", set(quality_gate.instinct_match.tokens(
+        peers.append((f"candidate {bid}", set(quality_gate.instinct_match.tokens(
             " ".join(quality_gate.lesson_text(m) for m in members)))))
     if not dry_run and parked:
         learning_io.write_text_atomic(STATE_ROOT, PARKED_FILE, json.dumps(parked, indent=2) + "\n")
