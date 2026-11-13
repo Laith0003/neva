@@ -1637,6 +1637,10 @@ _RULE_TAIL = re.compile(r'^Trigger: (.*)\. Source: instinct `([A-Za-z0-9._-]+)` 
                         r'observations\)\.$')
 
 
+def _arabic_letter(c: str) -> bool:
+    return unicodedata.category(c).startswith("L") and unicodedata.name(c, "").startswith("ARABIC")
+
+
 def _text_problem(name: str, value: str, allow: str = "") -> str:
     """The one sanitiser for model-derived text, run on every field and body of every kind of block,
     at render and at apply. '' when `value` may reach a file, else why not, naming `name` and any code
@@ -1646,20 +1650,29 @@ def _text_problem(name: str, value: str, allow: str = "") -> str:
                   invisible letters and marks in _RULE_INVISIBLE are refused
       comments    '<!--' or '-->' anywhere: the reading view hides a comment
       references  an HTML character reference (&#8203; &#x200B; &zwj;): the reading view renders a
-                  character the file does not hold. A bare '&' passes."""
+                  character the file does not hold. A bare '&' passes.
+      obsidian    '%%' anywhere: Obsidian hides what sits between two of them
+      marks       strike-through combining marks U+0334 to U+0338 are refused; ZWNJ (U+200C) passes
+                  only between two Arabic-script letters (Persian needs it); Arabic diacritics pass
+    Fields (table cells) are also refused an HTML-looking tag, in _unsafe_reason."""
     value = str(value)
-    for c in value:
+    for i, c in enumerate(value):
         cp = ord(c)
         cat = unicodedata.category(c)
         if c in allow:
             continue
+        if cp == 0x200C and 0 < i < len(value) - 1 and _arabic_letter(value[i - 1]) and _arabic_letter(value[i + 1]):
+            continue  # ZWNJ inside a Persian or Arabic-script word shapes the letters; it hides nothing
         variation = 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF
-        ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation and cp not in _RULE_INVISIBLE
+        ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation \
+            and cp not in _RULE_INVISIBLE and not 0x334 <= cp <= 0x338
         if not ok:
             return f"its {name} holds U+{cp:04X} ({cat}), a character a reader cannot see or that breaks the line"
     m = _RULE_COMMENT.search(value)
     if m:
         return f"its {name} holds an HTML comment marker ('{m.group(0)}'), which the reading view hides"
+    if "%%" in value:
+        return f"its {name} holds '%%', an Obsidian comment marker the reading view hides"
     m = _RULE_ENTITY.search(value)
     if m:
         return (f"its {name} holds an HTML character reference ('{m.group(0)}'), which the reading view "
@@ -1914,6 +1927,8 @@ def _unsafe_reason(block: dict) -> str:
         problem = _text_problem(f"'{key}' field", str(value))
         if problem:
             return problem
+        if _RULE_TAG.search(str(value)):
+            return f"its '{key}' field holds an HTML-looking tag, which the reading view renders or hides"
     return _text_problem("text", text, "\n\t")
 
 
@@ -2724,7 +2739,7 @@ def cmd_promote(args) -> int:
             print(f"Instinct '{args.instinct_id}' already exists in global scope.")
             return 1
         cand = {'id': args.instinct_id, 'entries': [(project['id'], project['name'], target)],
-                'avg_confidence': target.get('confidence', 0.5), 'why': "requested by the human with `promote <id>`"}
+                'avg_confidence': target.get('confidence', 0.5), 'why': "requested by the human with `promote` for this id"}
         blocks = [_promote_block(cand)]
     else:
         candidates = _promotion_candidates()
