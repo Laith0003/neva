@@ -654,14 +654,14 @@ def _main_worktree_root(project_root):
 
 def _detect_project(cwd):
     """The continuous-learning-v2 algorithm, line for line, so hook and CLI ids agree:
-    CLAUDE_PROJECT_DIR (its git toplevel, else its real path), else the git toplevel of cwd,
-    else the bucket `unscoped`. id = sha256[:12] of the normalized origin remote, else of the
+    the git toplevel of CLAUDE_PROJECT_DIR, else the git toplevel of cwd, else the bucket
+    `unscoped`. A folder outside git is never a project, even when named in CLAUDE_PROJECT_DIR. id = sha256[:12] of the normalized origin remote, else of the
     main worktree root, so linked worktrees and clones on other machines share one id."""
     root = None
     if env("NEVA_NO_PROJECT") != "1":
         env_dir = env("CLAUDE_PROJECT_DIR")
         if env_dir and os.path.isdir(env_dir):
-            root = git(["rev-parse", "--show-toplevel"], env_dir, timeout=5) or os.path.realpath(env_dir)
+            root = git(["rev-parse", "--show-toplevel"], env_dir, timeout=5)
         if not root:
             root = git(["rev-parse", "--show-toplevel"], cwd, timeout=5)
     if root:
