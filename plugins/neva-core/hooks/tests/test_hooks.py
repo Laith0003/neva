@@ -208,11 +208,12 @@ class HookTest(unittest.TestCase):
 class TestSessionStart(HookTest):
     def seed(self):
         s = self.s
-        s.instinct("global/tests-first.md", "tests-first", 0.9, "Run the tests before committing")
+        s.instinct("global/alpha-tests-first.md", "alpha-tests-first", 0.9, "Run the tests before committing")
         s.instinct("global/weak-one.md", "weak-one", 0.5, "WEAK-ACTION-SHOULD-NOT-SHOW")
         for n in range(7):
             s.instinct(f"global/filler-{n}.md", f"filler-{n}", 0.75, f"filler action {n}")
-        s.instinct(f"project/{s.pid}/proj-rule.md", "proj-rule", 0.8, "Use the repository script for migrations")
+        s.instinct(f"project/{s.pid}/alpha-proj-rule.md", "alpha-proj-rule", 0.8,
+                   "Use the repository script for migrations")
         s.instinct("project/otherproject1/foreign.md", "foreign", 0.95, "FOREIGN-PROJECT-ACTION")
         sd = os.path.join(s.data, "sessions")
         os.makedirs(sd)
@@ -237,8 +238,8 @@ class TestSessionStart(HookTest):
         self.assertIn("[project 80%] Use the repository script", ctx)
         self.assertNotIn("WEAK-ACTION-SHOULD-NOT-SHOW", ctx)
         self.assertNotIn("FOREIGN-PROJECT-ACTION", ctx)
-        # Recall by relevance: "tests-first" matches the sandbox path (neva-hooks-test-...), the
-        # project rule fills an empty slot, and unmatched global fillers never show.
+        # Recall by relevance: both shown instincts share two stems with the session (the Alpha
+        # project note, the proj folder, the sandbox path); unmatched global fillers never show.
         self.assertNotIn("] filler action", ctx)
         self.assertEqual(ctx.count("] Run the tests") + ctx.count("] Use the repo"), 2)
         self.assertIn("JOURNAL-LINE-MARK", ctx)
@@ -1461,7 +1462,10 @@ class TestInstinctRoundTrip(HookTest):
         self.assertEqual(len(os.listdir(arch)), 1)
 
         r = self.s.dispatch("SessionStart", self.base(source="startup", session_id="next-session"), **env)
-        self.assertIn("[project 85%] Read the whole file before editing it.", r.context)
+        # No match at start, no instinct there; a matching first prompt brings it.
+        p = self.s.dispatch("UserPromptSubmit", self.base(prompt="I am changing a file in app.py",
+                                                          session_id="next-session"), **env)
+        self.assertIn("[project 85%] Read the whole file before editing it.", p.context)
 
         prop = self.proposal(proposals_dir)
         self.assertTrue(os.path.exists(prop), out)

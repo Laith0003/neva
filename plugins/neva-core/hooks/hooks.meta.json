@@ -20,7 +20,7 @@
         "standard",
         "strict"
       ],
-      "description": "Inject up to NEVA_INSTINCT_MAX (default 3) instincts matched to the cwd, project, branch and project note (global ones only on a match, empty slots to project instincts by last_observed), today's journal head, inbox open actions, open instinct proposals and the last session summary for this worktree or repo (8000 char cap); prune session files older than 30 days."
+      "description": "Inject up to NEVA_INSTINCT_MAX (default 3) instincts matched to the cwd, project, branch and project note (only matches, rarity judged over the whole instinct corpus; no match, no block), today's journal head, inbox open actions, open instinct proposals and the last session summary for this worktree or repo (8000 char cap); prune session files older than 30 days."
     },
     {
       "id": "ck_session_start",

@@ -47,6 +47,20 @@ class RecallTest(HookTest):
         return self.s.dispatch("UserPromptSubmit", self.base(prompt=text, cwd=cwd or self.kestrel,
                                                              session_id=sid), **env)
 
+    def sub(self, *parts):
+        """A folder below kestrel/: its name joins kestrel in the query, a two stem match."""
+        d = os.path.join(self.kestrel, *parts)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def corpus(self, n, pid="otherproject1", trigger="when filler widget {n} turns", start=0):
+        """`n` instincts in another project: part of the corpus, never a candidate here."""
+        for k in range(start, start + n):
+            self.note(f"project/{pid}/c-{k}.md", f"c-{k}", trigger.format(n=k), f"CORPUS-{k}")
+
+    def df_cache(self):
+        return os.path.join(self.s.state, "hooks", "instinct-df.json")
+
     def injections(self):
         p = os.path.join(self.s.state, "instinct-injections.jsonl")
         if not os.path.exists(p):
@@ -78,7 +92,8 @@ class TestMatcher(unittest.TestCase):
         m = load_match()
         common_item = set(m.tokens("when editing a file in the repo"))
         figma_item = set(m.tokens("when about to call use_figma on a board"))
-        idf = m.Idf([common_item, figma_item] + [set(m.tokens("editing a file %d" % n)) for n in range(6)])
+        filler = [set(m.tokens("sorting widget batch")) for _ in range(200)]
+        idf = m.Idf([common_item, figma_item] + [set(m.tokens("editing a file %d" % n)) for n in range(6)] + filler)
         one_common = m.score(m.tokens("editing"), common_item, idf)
         self.assertFalse(one_common.qualifies, "one shared stem found in many instincts is not enough")
         two = m.score(m.tokens("editing the repo"), common_item, idf)
@@ -86,6 +101,14 @@ class TestMatcher(unittest.TestCase):
         rare = m.score(m.tokens("figma"), figma_item, idf)
         self.assertTrue(rare.qualifies, "one rare stem is enough")
         self.assertEqual(m.score(m.tokens("xylophone"), figma_item, idf).score, 0)
+
+    def test_rare_needs_three_or_fewer_and_two_percent(self):
+        m = load_match()
+        small = m.Idf([{"figma"}, {"board"}, {"git"}])
+        self.assertFalse(small.rare("figma"), "1 of 3 is 33 percent of the corpus: not rare")
+        big = m.Idf([{"figma"}] + [{"widget"}] * 99)
+        self.assertTrue(big.rare("figma"))
+        self.assertEqual(m.Idf.from_counts({"figma": 1}, 100).rare("figma"), True)
 
     def test_near_duplicate(self):
         m = load_match()
@@ -107,7 +130,7 @@ class TestSessionStartRecall(RecallTest):
                       f"FILLER-ACTION-{n:02d}")
         self.note("global/zz-kestrel.md", "zz-kestrel", "when editing the kestrel dashboard layout",
                   "KESTREL-ACTION")
-        r = self.start()
+        r = self.start(cwd=self.sub("dashboard"))
         self.assertAllowed(r)
         self.assertIn("KESTREL-ACTION", r.context)
         self.assertNotIn("FILLER-ACTION-00", r.context, "a global instinct with no match must not show")
@@ -146,7 +169,7 @@ class TestSessionStartRecall(RecallTest):
                   last_observed="2026-01-01", evidence_count=50)
         self.note("global/zzz-new.md", "zzz-new", "when the kestrel import fails", "NEW-ACTION",
                   last_observed="2026-11-01", evidence_count=1)
-        r = self.start(NEVA_INSTINCT_MAX=1)
+        r = self.start(cwd=self.sub("import"), NEVA_INSTINCT_MAX=1)
         self.assertIn("NEW-ACTION", r.context, "last_observed breaks the tie, not id")
         self.assertNotIn("OLD-ACTION", r.context)
 
@@ -155,26 +178,34 @@ class TestSessionStartRecall(RecallTest):
                   last_observed="2026-11-01", evidence_count=2)
         self.note("global/zzz-thick.md", "zzz-thick", "when the kestrel import fails", "THICK-ACTION",
                   last_observed="2026-11-01", evidence_count=9)
-        r = self.start(NEVA_INSTINCT_MAX=1)
+        r = self.start(cwd=self.sub("import"), NEVA_INSTINCT_MAX=1)
         self.assertIn("THICK-ACTION", r.context)
 
-    def test_project_fills_empty_slots_by_recency_global_only_on_match(self):
+    def test_no_match_injects_no_instinct_block(self):
         pid = self.s.pid
-        self.note(f"project/{pid}/p-old.md", "p-old", "when grooming the backlog", "PROJ-OLD",
-                  last_observed="2025-01-01")
-        self.note(f"project/{pid}/p-new.md", "p-new", "when grooming the roadmap", "PROJ-NEW",
-                  last_observed="2026-10-01")
-        self.note("global/g-unmatched.md", "g-unmatched", "when grooming the garden", "GLOBAL-UNMATCHED",
-                  conf=0.99)
-        r = self.start(NEVA_INSTINCT_MAX=1)
-        self.assertIn("PROJ-NEW", r.context)
-        self.assertNotIn("PROJ-OLD", r.context)
-        self.assertNotIn("GLOBAL-UNMATCHED", r.context)
+        for n, w in enumerate(["backlog", "roadmap", "garden", "invoice", "harbor"]):
+            self.note(f"project/{pid}/p-{n}.md", f"p-{n}", f"when grooming the {w}", f"PROJ-{n}",
+                      last_observed="2026-11-01", evidence_count=40)
+        r = self.start()
+        self.assertAllowed(r)
+        self.assertEqual(self.instinct_lines(r.context), [], r.context)
+        self.assertNotIn("Active instincts", r.context)
+        self.assertEqual(self.injections(), [])
+
+    def test_home_cwd_never_queries_the_username(self):
+        home = os.path.join(self.s.tmp, "Users", "zorba-dine")
+        os.makedirs(home)
+        self.note("global/zorba.md", "zorba", "when zorba dine edits a file", "USERNAME-ACTION")
+        r = self.s.dispatch("SessionStart", self.base(source="startup", cwd=home, session_id="s-home"),
+                            HOME=home, USER="zorba-dine", LOGNAME="zorba-dine")
+        self.assertAllowed(r)
+        self.assertNotIn("USERNAME-ACTION", r.context)
+        self.assertEqual(self.injections(), [])
 
     def test_injection_log_gets_one_line(self):
         self.note("global/zz-kestrel.md", "zz-kestrel", "when editing the kestrel dashboard layout",
                   "KESTREL-ACTION")
-        self.start()
+        self.start(cwd=self.sub("dashboard"))
         lines = self.injections()
         self.assertEqual(len(lines), 1, lines)
         rec = lines[0]
@@ -189,12 +220,64 @@ class TestSessionStartRecall(RecallTest):
             self.note(f"global/long-{n}.md", f"long-{n}", f"when the kestrel {w} report is long",
                       f"LONG-{n} {w} " + f"{w}word " * 400)
         self.s.write(f"vault/08 Journal/{today_utc()}.md", "---\ndate: x\n---\n\n## Today\n" + "- line\n" * 60)
-        r = self.start()
+        r = self.start(cwd=self.sub("report"))
         self.assertLessEqual(len(r.context), 8000)
         lines = self.instinct_lines(r.context)
         self.assertLessEqual(len(lines), 3)
         for ln in lines:
             self.assertLessEqual(len(ln), 220, ln)
+
+
+# ---------------------------------------------------------------- corpus rarity and cache
+
+class TestCorpusRarity(RecallTest):
+    def seed(self):
+        # 300 instincts corpus-wide; "test" is in 40 of them, but only one is a candidate here.
+        self.corpus(260)
+        self.corpus(39, pid="otherproject2", trigger="when the test {n} suite is slow")
+        self.note("global/flaky.md", "flaky", "when the test harness flakes", "TEST-ACTION")
+        self.note("global/zep.md", "zep", "when a zeppelin config loads", "ZEPPELIN-ACTION")
+        self.note("project/otherproject3/zep2.md", "zep2", "when the zeppelin cache warms", "OTHER-ZEP")
+
+    def test_common_stem_corpus_wide_is_not_rare(self):
+        self.seed()
+        r = self.prompt("run the test again", cwd=self.s.tmp, sid="c-1")
+        self.assertAllowed(r)
+        self.assertNotIn("TEST-ACTION", r.context, "test is in 40 of 300 instincts corpus-wide")
+
+    def test_stem_in_two_instincts_is_rare(self):
+        self.seed()
+        r = self.prompt("zeppelin please", cwd=self.s.tmp, sid="c-2")
+        self.assertIn("ZEPPELIN-ACTION", r.context)
+        self.assertNotIn("OTHER-ZEP", r.context, "another project's instinct is corpus, not a candidate")
+
+    def test_cache_is_used_then_rebuilt_when_a_note_changes(self):
+        self.seed()
+        self.prompt("zeppelin please", cwd=self.s.tmp, sid="c-3")
+        self.assertTrue(os.path.exists(self.df_cache()))
+        with open(self.df_cache(), encoding="utf-8") as fh:
+            cache = json.load(fh)
+        cache["df"]["zeppelin"] = 250  # same key: a hook that reads the cache now sees zeppelin as common
+        with open(self.df_cache(), "w", encoding="utf-8") as fh:
+            json.dump(cache, fh)
+        r = self.prompt("zeppelin please", cwd=self.s.tmp, sid="c-4")
+        self.assertNotIn("ZEPPELIN-ACTION", r.context, "the second call must read the cache")
+        note = os.path.join(self.s.vault, "06 Memory", "instincts", "global", "zep.md")
+        future = os.path.getmtime(note) + 60
+        os.utime(note, (future, future))
+        r = self.prompt("zeppelin please", cwd=self.s.tmp, sid="c-5")
+        self.assertIn("ZEPPELIN-ACTION", r.context, "a changed note rebuilds the cache")
+
+    def test_corrupt_cache_is_rebuilt(self):
+        self.seed()
+        os.makedirs(os.path.dirname(self.df_cache()), exist_ok=True)
+        with open(self.df_cache(), "w") as fh:
+            fh.write("{not json")
+        r = self.prompt("zeppelin please", cwd=self.s.tmp, sid="c-6")
+        self.assertAllowed(r)
+        self.assertIn("ZEPPELIN-ACTION", r.context)
+        with open(self.df_cache(), encoding="utf-8") as fh:
+            self.assertIn("zeppelin", json.load(fh)["df"])
 
 
 # ---------------------------------------------------------------- first prompt
@@ -241,7 +324,7 @@ class TestPromptRecall(RecallTest):
                   "START-FIGMA-ACTION")
         self.note("global/figma-load.md", "figma-load", "when about to call use_figma on a figma board",
                   "PROMPT-FIGMA-ACTION")
-        r = self.start(sid="s-four")
+        r = self.start(cwd=self.sub("figma"), sid="s-four")
         self.assertIn("START-FIGMA-ACTION", r.context)
         r2 = self.prompt("update the figma board", sid="s-four")
         self.assertIn("PROMPT-FIGMA-ACTION", r2.context)

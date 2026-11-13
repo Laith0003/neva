@@ -4,7 +4,8 @@
 Once per session. The first prompt that is not system text (starts with `<`) or a slash command
 (starts with `/`) is scored against each instinct's trigger, id and tags by instinct_match.py.
 Up to NEVA_INSTINCT_PROMPT_MAX (default 3) qualifying instincts are injected, skipping any id the
-session start block already showed and any near-duplicate of one. Nothing qualifies: nothing is
+session start block already showed and any near-duplicate of one. Rarity is judged over the
+whole instinct corpus (common.corpus_idf, cached in the state dir). Nothing qualifies: nothing is
 injected. Later prompts: nothing.
 
 Each injection appends one line to <state>/instinct-injections.jsonl. Any error is logged to
@@ -38,7 +39,7 @@ def run(ctx):
         if not items:
             return None
         shown = set(c.shown_instincts(ctx))
-        idf = m.Idf(m.item_tokens(i) for i in items)
+        idf = c.corpus_idf(ctx.vault, m)
         fresh = [i for i in items if i["id"] not in shown]
         picked = m.rank(prompt, fresh, limit, idf=idf, seen=[i for i in items if i["id"] in shown])
         if not picked:

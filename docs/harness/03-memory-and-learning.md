@@ -53,7 +53,7 @@ Bounds on what SessionStart injects:
 | `NEVA_SESSION_START_CONTEXT` | on | `off` disables injected context |
 | `NEVA_SESSION_RETENTION_DAYS` | 30 | session files older than this are deleted at session start; `off` keeps them |
 | `NEVA_INSTINCT_MIN_CONFIDENCE` | 0.7 | only strong instincts are injected |
-| `NEVA_INSTINCT_MAX` | 6 | at most this many, project instincts first on ties |
+| `NEVA_INSTINCT_MAX` | 3 | at most this many, and only instincts that match the session; project instincts first on ties |
 
 On `startup` everything above is injected. On `clear` and `compact` the prior-session summary is left out (the current work is still in context). On `resume` nothing is injected: the resumed transcript already holds it.
 

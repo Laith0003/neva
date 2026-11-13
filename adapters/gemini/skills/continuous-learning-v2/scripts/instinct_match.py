@@ -7,13 +7,16 @@ embedding scorer can replace the lexical one later without touching the callers.
 
   tokens(text)                 ordered, de-duplicated stems of `text`, stop words removed
   item_tokens(item)            stems of an instinct's trigger, id and tags (what a query matches)
-  Idf(token_sets)              document frequency over the candidate instincts
+  Idf(token_sets)              document frequency over the whole instinct corpus (every active
+                               note in every project and global, not only the candidates)
+  Idf.from_counts(df, n)       the same from cached counts
   score(query, item, idf)      Match(score, shared, qualifies)
   near_duplicate(a, b)         Jaccard on action plus trigger stems, at or above 0.6
   rank(query, items, ...)      qualifying items, best first, near-duplicates collapsed
 
-A match qualifies on MIN_SHARED shared stems, or on one rare stem (found in RARE_DF or fewer
-of the candidates). Lexical and English only: text in another script yields no tokens.
+A match qualifies on MIN_SHARED shared stems, or on one rare stem: found in RARE_DF or fewer
+instincts corpus-wide AND in at most RARE_SHARE of them. A small corpus therefore has no rare
+stems, and only two stem matches count. Lexical and English only: text in another script yields no tokens.
 """
 import math
 import re
@@ -21,6 +24,7 @@ from collections import namedtuple
 
 MIN_SHARED = 2
 RARE_DF = 3
+RARE_SHARE = 0.02
 DUPLICATE_JACCARD = 0.6
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -90,15 +94,22 @@ def item_tokens(item):
 
 
 class Idf:
-    """Document frequency over the candidate token sets."""
+    """Document frequency over the corpus token sets."""
 
-    def __init__(self, token_sets):
+    def __init__(self, token_sets=()):
         self.n = 0
         self.df = {}
         for ts in token_sets:
             self.n += 1
             for t in set(ts):
                 self.df[t] = self.df.get(t, 0) + 1
+
+    @classmethod
+    def from_counts(cls, df, n):
+        idf = cls()
+        idf.df = {str(k): int(v) for k, v in dict(df).items()}
+        idf.n = int(n)
+        return idf
 
     def count(self, stem_):
         return self.df.get(stem_, 0)
@@ -107,7 +118,8 @@ class Idf:
         return math.log(1.0 + (self.n + 1.0) / (self.count(stem_) + 1.0))
 
     def rare(self, stem_):
-        return 0 < self.count(stem_) <= RARE_DF
+        k = self.count(stem_)
+        return 0 < k <= RARE_DF and k <= RARE_SHARE * self.n
 
 
 Match = namedtuple("Match", "score shared qualifies")

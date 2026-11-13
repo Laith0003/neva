@@ -1213,6 +1213,68 @@ def recall_candidates(vault, project_id):
     return list(best.values())
 
 
+def _corpus_dirs(root):
+    dirs = [os.path.join(root, "global")]
+    proj = os.path.join(root, "project")
+    try:
+        dirs += [os.path.join(proj, n) for n in sorted(os.listdir(proj))
+                 if os.path.isdir(os.path.join(proj, n))]
+        dirs.append(proj)
+    except OSError:
+        pass
+    return dirs
+
+
+def corpus_signature(root):
+    """Cache key: note count and the newest mtime over the instinct folders and their notes. A new,
+    edited, removed or renamed note changes it. Stats only; reads no file."""
+    count, newest = 0, 0
+    for d in _corpus_dirs(root):
+        try:
+            newest = max(newest, os.stat(d).st_mtime_ns)
+            with os.scandir(d) as it:
+                for e in it:
+                    if e.name.endswith(".md") and e.is_file():
+                        count += 1
+                        newest = max(newest, e.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return f"{root}|{count}|{newest}"
+
+
+def corpus_idf(vault, m):
+    """Document frequencies over every active instinct, project/*/ and global/, so rarity is
+    judged against the whole corpus and not the handful of candidates. Cached in
+    <state>/hooks/instinct-df.json under corpus_signature; a missing, stale or corrupt cache
+    is rebuilt, never fatal."""
+    root = instincts_root(vault)
+    if not root or not os.path.isdir(root):
+        return m.Idf()
+    key = corpus_signature(root)
+    cache_p = os.path.join(state_dir(), "instinct-df.json")
+    cached = read_json(cache_p, None)
+    if isinstance(cached, dict) and cached.get("key") == key and isinstance(cached.get("df"), dict):
+        try:
+            return m.Idf.from_counts(cached["df"], cached.get("n", 0))
+        except (TypeError, ValueError):
+            pass
+    sets = []
+    proj = os.path.join(root, "project")
+    try:
+        pids = sorted(n for n in os.listdir(proj) if os.path.isdir(os.path.join(proj, n)))
+    except OSError:
+        pids = []
+    for pid in pids:
+        sets += [m.item_tokens(i) for i in load_instincts(root, pid, include_global=False)]
+    sets += [m.item_tokens(i) for i in load_instincts(root, None, include_global=True)]
+    idf = m.Idf(sets)
+    try:
+        write_text(cache_p, json.dumps({"key": key, "n": idf.n, "df": idf.df}, sort_keys=True))
+    except Exception:
+        log_exception("corpus_idf cache write")
+    return idf
+
+
 def instinct_line(i):
     return f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {one_line(i['action'], INSTINCT_LINE_CHARS)}"
 
