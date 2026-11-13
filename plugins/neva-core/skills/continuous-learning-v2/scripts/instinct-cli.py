@@ -1894,6 +1894,20 @@ def _read_vault_id() -> Optional[str]:
     return None
 
 
+def _claim_vault_id(new_id: str) -> str:
+    """Create the vault's .ledger-id with `new_id` only if it does not exist yet (O_EXCL), and return
+    the id it holds afterwards: ours, or the one a concurrent first run wrote a moment earlier."""
+    try:
+        learning_io.write_new(INSTINCTS_ROOT, _vault_binding_file(), (new_id + "\n").encode("utf-8"))
+        return new_id
+    except FileExistsError:
+        winner = _read_vault_id()
+        if not winner:
+            raise StateBindingError(
+                f"{_vault_binding_file()} exists but is empty. Fix: delete it and run again.") from None
+        return winner
+
+
 def _proposal_files() -> list[Path]:
     if INBOX_DIR is None or not INBOX_DIR.is_dir():
         return []
@@ -1984,9 +1998,17 @@ def _check_state_binding(write: bool) -> None:
     if write and not (vault_id and state_id == vault_id):
         new_id = state_id or vault_id or hashlib.sha256(
             f"{vault_real}|{_now_iso()}|{os.getpid()}".encode("utf-8")).hexdigest()[:16]
+        if not vault_id:
+            # Two first runs at once: the vault id is created exclusively and the winner is what the
+            # state folder records, so both runs bind to one id instead of two.
+            winner = _claim_vault_id(new_id)
+            if state_id and winner != state_id:
+                raise StateBindingError(
+                    f"another run bound the vault at {VAULT} to ledger id {winner} while this run held "
+                    f"{state_id}. {_STATE_FIX} Nothing else was written.")
+            new_id = winner
         learning_io.write_text_atomic(STATE_ROOT, STATE_BINDING_FILE,
                                       json.dumps({"ledger_id": new_id, "vault": vault_real}, indent=2) + "\n")
-        learning_io.write_text_atomic(INSTINCTS_ROOT, vault_file, new_id + "\n")
 
 
 def _ledger_covers(ledger: dict, history: list) -> bool:
