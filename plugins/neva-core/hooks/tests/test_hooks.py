@@ -1429,7 +1429,7 @@ open(os.path.join(idir, "read-before-edit.md"), "w").write(
     "project_name: \"proj\"\nevidence_count: " + str(reads) + "\ndate: 2026-01-01\nlast_observed: "
     + __import__("datetime").date.today().isoformat() + "\ndecay_weeks_applied: 0\nstatus: active\n"
     "tags: [instinct, workflow]\n---\n\n# Read before edit\n\n## Action\nRead the whole file before editing it.\n\n"
-    "## Evidence\n- Observed " + str(reads) + " times\n")
+    "## Evidence\n- Observed " + str(reads) + " times in session 11111111-2222-3333-4444-555566667777\n")
 print(json.dumps({{"status": "analysis_complete", "token": lines[-1]["token"]}}, separators=(",", ":")))
 '''
 
@@ -1480,6 +1480,15 @@ class TestInstinctRoundTrip(HookTest):
                      "# Read before edit\n\n## Action\nRead the whole file before editing it.\n\n"
                      "## Evidence\n- Observed 6 times in session aaaaaaaa-1111-2222-3333-444444444444 on 2026-01-01\n"
                      "- Observed 5 times in session bbbbbbbb-1111-2222-3333-444444444444 on 2026-01-02\n")
+        # The quality gate counts sessions from the records the hooks wrote, never from the note, so
+        # the other project's sessions are in its observation records on the days the note names.
+        obs = os.path.join(self.s.data, "observations", pid)
+        os.makedirs(obs, exist_ok=True)
+        with open(os.path.join(obs, "observations.jsonl"), "w") as fh:
+            for sid, day in (("aaaaaaaa-1111-2222-3333-444444444444", "2026-01-01"),
+                             ("bbbbbbbb-1111-2222-3333-444444444444", "2026-01-02")):
+                fh.write(json.dumps({"timestamp": day + "T12:00:00Z", "event": "tool_complete",
+                                     "tool": "Read", "session": sid}) + "\n")
 
     def run_round_trip(self, inbox_note, proposals_dir, **env):
         self.observe_session()
