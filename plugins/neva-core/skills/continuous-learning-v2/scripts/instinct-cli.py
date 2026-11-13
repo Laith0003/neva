@@ -1569,29 +1569,141 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
     return blocks
 
 
-# Rule text lands in a file every future session loads. Limits on what one rule may carry:
-RULE_MAX_LINE_CHARS = 400     # one line of title, action or trigger
-RULE_MAX_TEXT_CHARS = 1500    # the whole rule as written
-_RULE_BAD_LINE = re.compile(r'^\s*(#|<!--|`{3,}|~{3,})')
+# Rule text lands in a file every future session loads, so it is built to be safe by construction.
+# _rule_text is the one function that does it; propose renders with it and apply re-renders the
+# parsed block with it and requires the same bytes back. The rules, all in one place:
+#   characters  every character of title, action and trigger is in a Unicode category starting with
+#               L, N, P or S, or is Zs, or is a combining mark (Mn, Mc); the action may also hold tab.
+#               Refused, never stripped, so what is approved is what was proposed: Cf, Cc, Zl, Zp,
+#               Co, Cn, Cs, variation selectors and the invisible marks and letters in
+#               _RULE_INVISIBLE. Named as U+XXXX, never echoed raw.
+#   lines       title and trigger are one line; the action is one paragraph of lines
+#   length      RULE_MAX_LINE_CHARS per line, RULE_MAX_TEXT_CHARS for the whole rule
+#   comments    '<!--' or '-->' anywhere is refused: the reading view hides a comment
+#   tags        a '<' that opens something HTML-looking is escaped as '\<', not refused: real
+#               instincts carry placeholders such as <absolute path>, which the reading view swallows
+#   structure   each action line is left-trimmed, and a line starting with a markdown metacharacter
+#               (# > - * + = _ | [ ` ~, or digits then '.' or ')') gets a backslash before it, so no
+#               line can become a heading, setext underline, rule, quote, list, table, link
+#               definition or fence
+#   format      '## <title>', blank, the action, blank, 'Trigger: <trigger>. Source: instinct `<id>`
+#               (confidence C, N observations).' as before, so existing rule files read the same
+RULE_MAX_LINE_CHARS = 400
+RULE_MAX_TEXT_CHARS = 1500
+_RULE_INVISIBLE = {0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x034F, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D,
+                   0x180E, 0x180F}
+_RULE_COMMENT = re.compile(r'<!--|-->')
+_RULE_TAG = re.compile(r'(?<!\\)<(?=[A-Za-z/!?])')
+_RULE_LEAD = re.compile(r'^([#>\-*+=_|\[`~]|\d+[.)])')
+_RULE_TAIL = re.compile(r'^Trigger: (.*)\. Source: instinct `([A-Za-z0-9._-]+)` \(confidence (\d\.\d\d), (\d+) '
+                        r'observations\)\.$')
 
 
-def _rule_clean(text: str) -> str:
-    """Drop Unicode format (Cf) and control (Cc) characters, keeping newline and tab: zero-width and
-    bidi characters can hide or reorder what a rule says without the reader seeing it."""
-    return "".join(c for c in str(text) if c in "\n\t" or unicodedata.category(c) not in ("Cf", "Cc"))
-
-
-def _rule_text_problem(parts: dict, text: str) -> str:
-    for name, value in parts.items():
-        for line in value.splitlines():
-            m = _RULE_BAD_LINE.match(line)
-            if m:
-                return f"its {name} has a line starting with '{m.group(1)}', which would change the rules file's structure"
-            if len(line) > RULE_MAX_LINE_CHARS:
-                return f"its {name} has a line of {len(line)} characters; a rule line holds at most {RULE_MAX_LINE_CHARS}"
-    if len(text) > RULE_MAX_TEXT_CHARS:
-        return f"the rule is {len(text)} characters; a rule holds at most {RULE_MAX_TEXT_CHARS}"
+def _rule_char_problem(name: str, value: str, allow: str = "") -> str:
+    for c in value:
+        cp = ord(c)
+        cat = unicodedata.category(c)
+        if c in allow:
+            continue
+        variation = 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF
+        ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation and cp not in _RULE_INVISIBLE
+        if not ok:
+            return f"its {name} holds U+{cp:04X} ({cat}), a character a reader cannot see or that breaks the line"
     return ""
+
+
+def _rule_escape_tags(text: str) -> str:
+    return _RULE_TAG.sub(r"\\<", text)
+
+
+def _rule_escape_line(line: str) -> str:
+    line = _rule_escape_tags(line.lstrip(" \t"))
+    m = _RULE_LEAD.match(line)
+    if not m:
+        return line
+    lead = m.group(1)
+    if lead[0].isdigit():  # "1." -> "1\.": a backslash before a digit is not an escape
+        return lead[:-1] + "\\" + line[len(lead) - 1:]
+    return "\\" + line
+
+
+def _rule_unescape_line(line: str) -> str:
+    if line.startswith("\\") and _RULE_LEAD.match(line[1:]) and not line[1].isdigit():
+        line = line[1:]
+    else:
+        line = re.sub(r'^(\d+)\\([.)])', r'\1\2', line)
+    return line.replace("\\<", "<")
+
+
+def _rule_text(title: str, action: str, trigger: str, iid: str, confidence: float, evidence: int) -> tuple:
+    """(rule text, '') or ('', why it is refused). See the rules above."""
+    for name, value, allow in (("title", title, ""), ("trigger", trigger, ""), ("action", action, "\n\t")):
+        problem = _rule_char_problem(name, value, allow)
+        if problem:
+            return "", problem
+        m = _RULE_COMMENT.search(value)
+        if m:
+            return "", f"its {name} holds an HTML comment marker ('{m.group(0)}'), which the reading view hides"
+    lines = [ln for ln in action.split("\n")]
+    if not title.strip() or not action.strip() or any(not ln.strip() for ln in lines):
+        return "", "its title or action is empty, or its action is more than one paragraph"
+    body = "\n".join(_rule_escape_line(ln) for ln in lines)
+    head, tail = _rule_escape_tags(title.strip()), _rule_escape_tags(trigger.strip())
+    text = (f"## {head}\n\n{body}\n\n"
+            f"Trigger: {tail}. Source: instinct `{iid}` "
+            f"(confidence {confidence:.2f}, {evidence} observations).\n")
+    for line in text.split("\n"):
+        if len(line) > RULE_MAX_LINE_CHARS:
+            return "", f"it has a line of {len(line)} characters; a rule line holds at most {RULE_MAX_LINE_CHARS}"
+    if len(text) > RULE_MAX_TEXT_CHARS:
+        return "", f"the rule is {len(text)} characters; a rule holds at most {RULE_MAX_TEXT_CHARS}"
+    return text, ""
+
+
+def _rule_text_problem(text: str) -> str:
+    """'' when `text` is exactly what _rule_text writes for its own parts, else why not. Apply runs
+    this on the parsed block, so text that arrives by any route is held to the render rules."""
+    parts = text.split("\n\n")
+    if len(parts) != 3 or not parts[0].startswith("## "):
+        return "it is not a '## ' title line, the action, and a 'Trigger: ' line"
+    m = _RULE_TAIL.match(parts[2].rstrip("\n"))
+    if not m:
+        return "its last line is not 'Trigger: ... Source: instinct `<id>` (confidence C, N observations).'"
+    unescape = lambda t: t.replace("\\<", "<")  # noqa: E731  only the tag escape is undone
+    action = "\n".join(_rule_unescape_line(ln) for ln in parts[1].split("\n"))
+    again, problem = _rule_text(unescape(parts[0][3:]), action, unescape(m.group(1)), m.group(2),
+                                float(m.group(3)), int(m.group(4)))
+    if problem:
+        return problem
+    if again != text.rstrip("\n") + "\n":
+        return "it is not in the form the engine writes (an unescaped markdown line or tag)"
+    return ""
+
+
+def _rule_block(inst: dict) -> tuple:
+    """(block, '') for one global instinct, or (None, why it was refused)."""
+    domain = re.sub(r'[^a-z0-9-]+', '-', str(inst.get('domain', 'general')).lower()).strip('-') or 'general'
+    dest = f"{CLAUDE_DIR_REF}/rules/instincts-{domain}.md"
+    title, trigger = _title_of(inst), str(inst.get('trigger', ''))
+    for name, value in (("title", title), ("trigger", trigger)):
+        breaks = [c for c in value if c in "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"]
+        if breaks:
+            return None, f"its {name} must be one line and holds a line break (U+{ord(breaks[0]):04X})"
+    text, problem = _rule_text(title, _action_of(inst), trigger, inst['id'], inst.get('confidence', 0),
+                               _evidence_count(inst))
+    if problem:
+        return None, problem
+    return _block("rule", inst['id'], [
+        ("Kind", "rule"),
+        ("Instinct", f"`{inst['id']}`"),
+        ("Confidence", f"{inst.get('confidence', 0):.2f}"),
+        ("Evidence count", str(_evidence_count(inst))),
+        ("Projects seen in", inst.get('promoted_from', 'global')),
+        ("Why", f"global instinct at confidence >= {RULE_CONFIDENCE_THRESHOLD:.2f} (near-certain, core behavior)"),
+        ("Proposed destination", f"`{dest}`"),
+        ("Write mode", "append"),
+        ("Source notes", f"`{_vault_ref(Path(inst['_source_file']))}`"),
+    ], text, members=[inst]), ""
 
 
 def _rule_blocks() -> list[dict]:
@@ -1599,30 +1711,13 @@ def _rule_blocks() -> list[dict]:
     for inst in _load_instincts_from_dir(GLOBAL_DIR, "global"):
         if inst.get('confidence', 0) < RULE_CONFIDENCE_THRESHOLD:
             continue
-        domain = re.sub(r'[^a-z0-9-]+', '-', str(inst.get('domain', 'general')).lower()).strip('-') or 'general'
-        dest = f"{CLAUDE_DIR_REF}/rules/instincts-{domain}.md"
-        parts = {'title': _rule_clean(_title_of(inst)), 'action': _rule_clean(_action_of(inst)),
-                 'trigger': _rule_clean(inst.get('trigger', ''))}
-        text = (f"## {parts['title']}\n\n{parts['action']}\n\n"
-                f"Trigger: {parts['trigger']}. Source: instinct `{inst['id']}` "
-                f"(confidence {inst.get('confidence', 0):.2f}, {_evidence_count(inst)} observations).\n")
-        problem = _rule_text_problem(parts, text)
+        block, problem = _rule_block(inst)
         if problem:
             print(f"Refused rule:{inst['id']}: {problem}. It was not proposed. Fix: edit "
                   f"{_vault_ref(Path(inst['_source_file']))} and shorten or reword it; it is checked again on "
                   f"the next run.", file=sys.stderr)
             continue
-        blocks.append(_block("rule", inst['id'], [
-            ("Kind", "rule"),
-            ("Instinct", f"`{inst['id']}`"),
-            ("Confidence", f"{inst.get('confidence', 0):.2f}"),
-            ("Evidence count", str(_evidence_count(inst))),
-            ("Projects seen in", inst.get('promoted_from', 'global')),
-            ("Why", f"global instinct at confidence >= {RULE_CONFIDENCE_THRESHOLD:.2f} (near-certain, core behavior)"),
-            ("Proposed destination", f"`{dest}`"),
-            ("Write mode", "append"),
-            ("Source notes", f"`{_vault_ref(Path(inst['_source_file']))}`"),
-        ], text, members=[inst]))
+        blocks.append(block)
     return blocks
 
 
@@ -2528,6 +2623,11 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) 
                              'fields': list(block['fields'].items()), 'text': block['text'] or ""})
     if unsafe:
         return f"{where} refused: {unsafe}. Fix: remove that text from the block, or tick reject."
+    if bid.partition(':')[0] == 'rule':
+        problem = _rule_text_problem(block['text'] or "")
+        if problem:
+            return f"{where} refused: its rule text {problem[3:] if problem.startswith('it ') else problem}. " \
+                   f"Fix: remove that text from the block, or tick reject."
     if entry.get('ticked_at_propose') or (
             block['approve'] and entry.get('rendered_sha256') == _rendered_hash(block['body'])):
         return (f"{where} refused: its approve box was ticked when the engine wrote it, so no human ticked it. "
