@@ -218,6 +218,24 @@ _cfg = _abs_env_path("CLAUDE_CONFIG_DIR")
 CLAUDE_DIR_REF = str(_cfg) if _cfg else "~/.claude"
 
 
+EVOLVE_FLAG = "NEVA_INSTINCT_EVOLVE"
+EVOLVED_KINDS = ("skills", "commands", "agents")
+
+
+def _evolve_allowed() -> bool:
+    """Turning instincts into skills, commands and agents is off unless NEVA_INSTINCT_EVOLVE=1.
+    Left on, every workflow instinct at 0.70 became a slash command and any two instincts sharing
+    two trigger words a skill; most restated a rule or a shell habit. `evolve` without --propose
+    still previews the clusters."""
+    return os.environ.get(EVOLVE_FLAG) == "1"
+
+
+def _is_global_evolved_path(path: Path) -> bool:
+    root = Path(CLAUDE_DIR_REF).expanduser().resolve()
+    resolved = path.expanduser().resolve()
+    return any(resolved == root / k or (root / k) in resolved.parents for k in EVOLVED_KINDS)
+
+
 def _require_vault() -> None:
     if VAULT is None:
         print("NEVA_VAULT is not set (or not absolute) and the identity file has no VAULT_PATH. "
@@ -1225,6 +1243,11 @@ def cmd_evolve(args) -> int:
     _show_promotion_candidates()
 
     if args.propose:
+        if not _evolve_allowed():
+            print(f"evolve --propose is off: automatic evolution into skills, commands and agents needs "
+                  f"{EVOLVE_FLAG}=1. Fix: run `{EVOLVE_FLAG}=1 instinct-cli.py evolve --propose` if you want these "
+                  f"candidates filed; nothing was written.", file=sys.stderr)
+            return 2
         blocks = _evolve_blocks(project, skill_candidates, workflow_instincts, agent_candidates,
                                 limit=max(0, args.limit or 0))
         return _emit_blocks(blocks, dry_run=args.dry_run)
@@ -1964,15 +1987,16 @@ def cmd_propose(args) -> int:
     project = detect_project()
     limit = PROPOSE_DEFAULT_LIMIT if args.limit is None else max(0, args.limit)
     blocks = [_promote_block(c) for c in _promotion_candidates()]
-    # Evolve per project bucket plus global, so clusters stay inside one scope.
-    for pdir in _all_project_dirs():
-        pinfo = {'id': pdir.name, 'instincts_dir': pdir}
-        instincts = _load_instincts_from_dir(pdir, "project")
-        if len(instincts) >= 3:
-            blocks += _evolve_blocks(pinfo, *_evolve_candidates(instincts), limit=limit)
-    global_instincts = _load_instincts_from_dir(GLOBAL_DIR, "global")
-    if len(global_instincts) >= 3:
-        blocks += _evolve_blocks(project, *_evolve_candidates(global_instincts), limit=limit)
+    if _evolve_allowed():
+        # Evolve per project bucket plus global, so clusters stay inside one scope.
+        for pdir in _all_project_dirs():
+            pinfo = {'id': pdir.name, 'instincts_dir': pdir}
+            instincts = _load_instincts_from_dir(pdir, "project")
+            if len(instincts) >= 3:
+                blocks += _evolve_blocks(pinfo, *_evolve_candidates(instincts), limit=limit)
+        global_instincts = _load_instincts_from_dir(GLOBAL_DIR, "global")
+        if len(global_instincts) >= 3:
+            blocks += _evolve_blocks(project, *_evolve_candidates(global_instincts), limit=limit)
     blocks += _rule_blocks()
     blocks += _retire_blocks()
     return _emit_blocks(blocks, dry_run=args.dry_run)
@@ -2032,6 +2056,10 @@ def _apply_block(block: dict) -> str:
     if not _allowed_destination(dest):
         return (f"block {bid}: destination {dest} is outside the vault, ~/.claude, and registered project .claude "
                 f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
+    if _is_global_evolved_path(dest) and not _evolve_allowed():
+        return (f"block {bid}: it writes a skill, command or agent into the global config folder ({dest}), and "
+                f"automatic evolution is off. Fix: tick reject, or set {EVOLVE_FLAG}=1 for this apply if you want "
+                f"it loaded in every project.")
     mode = f.get('Write mode', '')
     text = block['text']
     if mode == 'create':
