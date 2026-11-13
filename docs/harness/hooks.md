@@ -70,7 +70,7 @@ In run order. "Tools: all" means the module sees every tool call of that event a
 | journal (`session_start`, `pre_compact`, `journal_nudge`, `session_audit`) | `NEVA_JOURNAL_PATTERN` (`08 Journal/{date}.md`), `NEVA_JOURNAL_TEMPLATE` (`Templates/Daily Note.md`), `NEVA_JOURNAL_LOG_HEADING` (`## Log`), `NEVA_JOURNAL_NUDGE_MIN_TOOLS` (5) |
 | inbox (`session_start`, instinct proposals) | `NEVA_INBOX` (`00 Inbox/inbox.md`, else a root `inbox.md` when only that exists), `NEVA_INBOX_SECTION` (`Open actions`), `NEVA_PROPOSALS_DIR` (the inbox note's folder) |
 | `session_start` | `NEVA_SESSION_START_CONTEXT` (on), `NEVA_SESSION_START_MAX_CHARS` (8000), `NEVA_SESSION_RETENTION_DAYS` (30, `off` keeps files), `NEVA_INSTINCT_MIN_CONFIDENCE` (0.7), `NEVA_INSTINCT_MAX` (3), `COMPACT_STATE_TTL_DAYS` (14) |
-| `instinct_prompt` | `NEVA_INSTINCT_PROMPT_MAX` (3, `0` turns it off), `NEVA_INSTINCT_MIN_CONFIDENCE` (0.7) |
+| `instinct_prompt` | `NEVA_INSTINCT_PROMPT_MAX` (3, `0` turns it off), `NEVA_INSTINCT_PROMPT_MAX_CHARS` (cap on the block: `NEVA_SESSION_START_MAX_CHARS` when above 0, else 8000; `0` means no cap; lines that do not fit are left out whole), `NEVA_INSTINCT_MIN_CONFIDENCE` (0.7) |
 | `ck_session_start` | `NEVA_CK_HOME` (`~/.local/share/neva/ck`) |
 | `prompt_context` | `NEVA_GOALS_FILE`, `NEVA_PROJECTS_DIR`, `NEVA_STRATEGY_KEYWORDS` |
 | `hookify_*` | rule files in the nearest `.claude/` folder and `CLAUDE_PROJECT_DIR/.claude` |

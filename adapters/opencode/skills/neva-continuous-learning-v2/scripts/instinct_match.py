@@ -174,17 +174,22 @@ def order_key(item, match_score=0.0):
             -_num(item.get("evidence_count")), -_num(item.get("confidence")))
 
 
-def collapse(ordered, seen=()):
-    """Keep the first of each near-duplicate group from an already ordered list. Anything that
-    near-duplicates an item in `seen` (already shown) is dropped as well."""
+def collapse(ordered, seen=(), limit=None):
+    """Keep the first of each near-duplicate group from an already ordered list, stopping once
+    `limit` entries are kept. Anything that near-duplicates an item in `seen` (already shown) is
+    dropped as well. Each note is tokenized once, and each candidate is compared only with what
+    is kept so far plus `seen`, so the cost is O(n * (limit + len(seen))), not O(n^2)."""
     kept = []
-    prior = list(seen)
+    prior = [_dup_tokens(k) for k in seen]
     for entry in ordered:
+        if limit is not None and len(kept) >= limit:
+            break
         it = entry[0] if isinstance(entry, tuple) else entry
-        if any(near_duplicate(it, k) for k in prior):
+        toks = _dup_tokens(it)
+        if any(jaccard(toks, k) >= DUPLICATE_JACCARD for k in prior):
             continue
         kept.append(entry)
-        prior.append(it)
+        prior.append(toks)
     return kept
 
 
@@ -197,4 +202,4 @@ def rank(query, items, limit, idf=None, seen=()):
     scored = [(i, score(q, i, idf)) for i in items]
     scored = [(i, m) for i, m in scored if m.qualifies]
     scored.sort(key=lambda e: order_key(e[0], e[1].score))
-    return collapse(scored, seen)[:limit]
+    return collapse(scored, seen, limit)

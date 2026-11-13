@@ -135,10 +135,11 @@ def instinct_block(ctx):
         picked = select_start(ctx, m, items, limit, c.corpus_idf(ctx.vault, m)) if limit else []
         if not picked:
             return ""
+        # Lines first: a note that cannot be rendered fails here, before anything is recorded.
+        lines = [c.instinct_line(i) for i, _ in picked]
         c.mark_instincts_shown(ctx, [i["id"] for i, _ in picked])
         c.log_injection(ctx, "session_start", picked)
-        lines = [c.instinct_line(i) for i, _ in picked]
-        return "Active instincts (matched to this session; apply when relevant):\n" + "\n".join(lines)
+        return c.INSTINCT_HEADER.format(what="matched to this session") + "\n" + "\n".join(lines)
     except Exception:
         c.log_exception("[session_start] instinct_block")
         return ""

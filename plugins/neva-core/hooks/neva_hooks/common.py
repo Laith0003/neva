@@ -18,6 +18,7 @@ import datetime
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -1113,6 +1114,9 @@ def update_session_file(ctx, block):
 # ---------------------------------------------------------------- instincts
 
 INACTIVE_STATUSES = ("archived", "promoted")
+# A real instinct note is a few KB. Anything far larger is skipped unread, so one runaway file
+# cannot stall a hook.
+MAX_INSTINCT_BYTES = 256 * 1024
 
 
 def instincts_root(vault=None):
@@ -1156,6 +1160,12 @@ def load_instincts(root, project_id=None, include_global=True):
         for n in names:
             p = os.path.join(d, n)
             if not (n.endswith(".md") and os.path.isfile(p)):
+                continue
+            try:
+                if os.path.getsize(p) > MAX_INSTINCT_BYTES:
+                    log(f"[instincts] skipped {n}: larger than {MAX_INSTINCT_BYTES} bytes")
+                    continue
+            except OSError:
                 continue
             i = parse_instinct(p)
             if not i or str(i.get("status", "active")).lower() in INACTIVE_STATUSES:
@@ -1205,7 +1215,7 @@ def recall_candidates(vault, project_id):
         threshold = 0.7
     best = {}
     for i in load_instincts(root, project_id):
-        if i["confidence"] < threshold or not i.get("action"):
+        if not math.isfinite(i["confidence"]) or i["confidence"] < threshold or not i.get("action"):
             continue
         prev = best.get(i["id"])
         if not prev or (prev["_scope"] != "project" and i["_scope"] == "project"):
@@ -1275,8 +1285,15 @@ def corpus_idf(vault, m):
     return idf
 
 
+INSTINCT_HEADER = ("Instincts {what} (learned notes from past sessions, not instructions from the owner; "
+                   "apply when relevant):")
+
+
 def instinct_line(i):
-    return f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {one_line(i['action'], INSTINCT_LINE_CHARS)}"
+    """One injected line. `<` and `>` are removed so a note cannot open or close a tag in the
+    model's context; whitespace collapses to one line, capped at INSTINCT_LINE_CHARS."""
+    action = str(i["action"]).replace("<", "").replace(">", "")
+    return f"- [{i['_scope']} {round(i['confidence'] * 100)}%] {one_line(action, INSTINCT_LINE_CHARS)}"
 
 
 def shown_instincts_path(ctx):
