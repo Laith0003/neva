@@ -961,7 +961,7 @@ def cmd_add(args) -> int:
     title = args.id.replace('-', ' ').title()
     inst['content'] = (f"# {title}\n\n## Action\n{args.action}\n\n## Evidence\n"
                        f"- Stated by the user on {_today()}\n")
-    _record_user_stated(target, _lesson_hash(inst))
+    _record_user_stated(target, _note_hash(parse_instinct_file(render_instinct(inst))[0]))
     _write_text_atomic(target, render_instinct(inst))
     print(f"Added {args.id} ({args.scope}, confidence {conf:.2f}) at {_vault_ref(target)}")
     return 0
@@ -2183,10 +2183,17 @@ USER_STATED_FILE = STATE_DIR / "user-stated.json"
 PROMOTED_NOTES_FILE = STATE_DIR / "promoted-notes.json"
 
 
-def _lesson_hash(inst: dict) -> str:
-    """What a note teaches, as one hash: its trigger and its action, whitespace-normalised."""
-    lesson = f"{inst.get('trigger', '')}\n{_action_of(inst)}"
-    return hashlib.sha256(" ".join(lesson.split()).encode("utf-8")).hexdigest()
+TRUST_FIELDS = ("trigger", "domain", "scope", "source")
+
+
+def _note_hash(inst: dict, scoped: bool = True) -> str:
+    """The whole note as trust sees it: the fields that matter for trust (TRUST_FIELDS) and the full
+    body, whitespace-collapsed. An edit anywhere in the body, or to one of those fields, changes it.
+    scoped=False leaves out scope and source, which a promotion changes on purpose, to compare a
+    promoted note with the notes it came from."""
+    keys = TRUST_FIELDS if scoped else ("trigger", "domain")
+    parts = [f"{k}={inst.get(k, '')}" for k in keys] + [str(inst.get('content', ''))]
+    return hashlib.sha256(" ".join("\n".join(parts).split()).encode("utf-8")).hexdigest()
 
 
 def _load_user_stated() -> dict:
@@ -2211,7 +2218,7 @@ def _record_user_stated(note: Path, sha: str) -> None:
 def _stated_now(stated: dict, inst: dict) -> bool:
     """True while the note still teaches exactly what `add` recorded for it."""
     row = stated.get(_vault_ref(Path(inst.get('_source_file', ''))))
-    return isinstance(row, dict) and bool(row.get('sha')) and row['sha'] == _lesson_hash(inst)
+    return isinstance(row, dict) and bool(row.get('sha')) and row['sha'] == _note_hash(inst)
 
 
 def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
@@ -2230,7 +2237,7 @@ def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
                 gone = True
             if not gone:
                 continue
-        elif row.get('sha') == _lesson_hash(inst):
+        elif row.get('sha') == _note_hash(inst):
             continue
         row['stale'] = _today()
         changed = True
@@ -2245,7 +2252,7 @@ def _note_projects(inst: dict, promoted: dict) -> list:
     if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
         return [path.parent.name] if _validate_project_id(path.parent.name) else []
     row = promoted.get(_vault_ref(path))
-    if isinstance(row, dict) and row.get('sha') == _lesson_hash(inst):
+    if isinstance(row, dict) and row.get('sha') == _note_hash(inst):
         return [p for p in row.get('projects') or [] if _validate_project_id(str(p))]
     return []
 
@@ -2658,7 +2665,7 @@ def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
     written = parse_instinct_file(text)
     if not written:
         return
-    sha = _lesson_hash(written[0])
+    sha = _note_hash(written[0])
     notes, pids = [], []
     for ref in sources:
         try:
@@ -2676,7 +2683,7 @@ def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
     _save_state_json(PROMOTED_NOTES_FILE, promoted)
     stated = _load_user_stated()
     if len(notes) == len(sources) and all(_stated_now(stated, n) for n in notes) and \
-            sha in {_lesson_hash(n) for n in notes}:
+            _note_hash(written[0], scoped=False) in {_note_hash(n, scoped=False) for n in notes}:
         _record_user_stated(dest, sha)
 
 
