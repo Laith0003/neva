@@ -221,7 +221,6 @@ CLAUDE_DIR_REF = str(_cfg) if _cfg else "~/.claude"
 
 
 EVOLVE_FLAG = "NEVA_INSTINCT_EVOLVE"
-EVOLVED_KINDS = ("skills", "commands", "agents")
 
 
 def _evolve_allowed() -> bool:
@@ -232,10 +231,71 @@ def _evolve_allowed() -> bool:
     return os.environ.get(EVOLVE_FLAG) == "1"
 
 
-def _is_global_evolved_path(path: Path) -> bool:
-    root = Path(CLAUDE_DIR_REF).expanduser().resolve()
-    resolved = path.expanduser().resolve()
-    return any(resolved == root / k or (root / k) in resolved.parents for k in EVOLVED_KINDS)
+_NAME = r"[a-z0-9][a-z0-9._-]*"
+# The only shapes the engine ever writes inside a config folder, compared casefolded. Without the
+# evolve opt-in the global folder takes the always-loaded instinct rule files and nothing else.
+GLOBAL_ALLOWED = (re.compile(rf"rules/instincts-{_NAME}\.md"),)
+EVOLVED_ALLOWED = (re.compile(rf"skills/{_NAME}/skill\.md"), re.compile(rf"commands/{_NAME}\.md"),
+                   re.compile(rf"agents/{_NAME}\.md"))
+
+
+def _fold(path: str) -> str:
+    return os.path.normcase(path).casefold()
+
+
+def _rel_under(path: str, root: str) -> Optional[str]:
+    """`path` relative to `root` as a casefolded posix string, or None when it is not below it.
+    Both sides are folded, so a case-insensitive disk cannot route around the comparison."""
+    p, r = _fold(path), _fold(root).rstrip(os.sep)
+    if p == r:
+        return ""
+    if not p.startswith(r + os.sep):
+        return None
+    return p[len(r) + 1:].replace(os.sep, "/")
+
+
+def _config_destination_problem(dest: Path, root: Path, allowed: tuple, label: str) -> Optional[str]:
+    """None when `dest` is not in the config folder `root`; '' when it is and its shape is allowed;
+    else why not. The folder is matched by its spelling and by its real path, and the destination
+    by both too, so neither a symlink nor `..` nor letter case moves a write in or out of it."""
+    literal = os.path.normpath(os.path.abspath(os.path.expanduser(str(dest))))
+    real = os.path.realpath(literal)
+    root_lit = os.path.normpath(os.path.abspath(os.path.expanduser(str(root))))
+    root_real = os.path.realpath(root_lit)
+    rel_lit = _rel_under(literal, root_lit)
+    if rel_lit is None:
+        rel_lit = _rel_under(literal, root_real)
+    rel_real = _rel_under(real, root_real)
+    if rel_lit is None and rel_real is None:
+        return None
+    if rel_lit is not None and rel_real != rel_lit:
+        return (f"{dest} goes through a link out of {label} ({root_lit}), to {real}. Fix: point the "
+                f"'Proposed destination' row at the real file, or tick reject")
+    rel = rel_real if rel_real is not None else rel_lit
+    if any(p.fullmatch(rel) for p in allowed):
+        return ""
+    shapes = ", ".join(p.pattern.replace(_NAME, "<name>").replace("\\", "") for p in allowed)
+    return (f"{dest} is in {label} ({root_lit}), where the engine writes only {shapes}. Fix: tick "
+            f"reject, or edit the 'Proposed destination' row to one of those")
+
+
+def _destination_problem(dest: Path) -> str:
+    """'' when apply may write `dest`, else an error body naming the fix."""
+    evolve = _evolve_allowed()
+    allowed = GLOBAL_ALLOWED + (EVOLVED_ALLOWED if evolve else ())
+    problem = _config_destination_problem(dest, Path(CLAUDE_DIR_REF), allowed, "the global config folder")
+    if problem is None:
+        for info in load_registry().values():
+            if info.get('root'):
+                problem = _config_destination_problem(dest, Path(info['root']) / ".claude", EVOLVED_ALLOWED,
+                                                      "a project's .claude folder")
+                if problem is not None:
+                    break
+    if problem and not evolve and any(p.fullmatch(_rel_under(os.path.realpath(str(dest)), os.path.realpath(
+            os.path.expanduser(CLAUDE_DIR_REF))) or "") for p in EVOLVED_ALLOWED):
+        problem += (f"; it writes a skill, command or agent into the global config folder, and automatic "
+                    f"evolution is off: set {EVOLVE_FLAG}=1 for this apply if you want it loaded in every project")
+    return problem or ""
 
 
 def _require_vault() -> None:
@@ -2261,10 +2321,9 @@ def _apply_block(block: dict) -> str:
     if not _allowed_destination(dest):
         return (f"block {bid}: destination {dest} is outside the vault, ~/.claude, and registered project .claude "
                 f"dirs. Fix: edit the 'Proposed destination' row to one of those.")
-    if _is_global_evolved_path(dest) and not _evolve_allowed():
-        return (f"block {bid}: it writes a skill, command or agent into the global config folder ({dest}), and "
-                f"automatic evolution is off. Fix: tick reject, or set {EVOLVE_FLAG}=1 for this apply if you want "
-                f"it loaded in every project.")
+    problem = _destination_problem(dest)
+    if problem:
+        return f"block {bid}: {problem}."
     mode = f.get('Write mode', '')
     text = block['text']
     if mode == 'create':
