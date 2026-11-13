@@ -96,6 +96,20 @@ class EvidenceCase(unittest.TestCase):
         self.assertNotIn(BID, self._proposed())
         self.assertIn("no observation records", self._parked())
 
+    def test_session_ids_copied_from_the_records_do_not_count(self):
+        # The analyzer can read the observation records and copy two real session ids into its note.
+        # Only the engine's record of the batches that wrote the note counts, and here there is none.
+        self._notes()
+        for pid, _ in self.pids:
+            d = os.path.join(self.sb.tmp, "data", "neva", "observations", pid)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "observations.jsonl"), "w") as fh:
+                for session, day in ((S1, YESTERDAY), (S2, TODAY)):
+                    fh.write(json.dumps({"timestamp": f"{day}T12:00:00Z", "session": session}) + "\n")
+        self._propose()
+        self.assertNotIn(BID, self._proposed())
+        self.assertIn("no observation records", self._parked())
+
     def test_sessions_the_records_do_not_hold_do_not_count(self):
         self._notes()
         self._propose()

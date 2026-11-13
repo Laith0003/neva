@@ -10,9 +10,9 @@ never shown as a proposal and never deleted. The four checks:
   vague         it names a tool or a count of tool use, not a behaviour; a text with no words this
                 check can compare is parked as unreadable instead; a lesson the human stated is exempt
   thin          its evidence does not span two sessions on two different days, counted from the
-                observation records the hooks wrote: a session the note names counts only when the
-                records of one of its projects hold it, and days are the records' own dates. No
-                records means no count, which is thin. A lesson the human stated with `add` (the
+                sessions the engine recorded for the analysis batches that wrote or edited the note
+                (instinct-analyze.py record_note_sessions), with those records' own dates. Session ids
+                in the note are not read. No record means no count, which is thin. A lesson the human stated with `add` (the
                 caller passes those as `stated`) is exempt; the note's `source` field is not trusted
   dormant       none of its projects had any activity in the last ACTIVE_DAYS days
 
@@ -252,21 +252,19 @@ def claimed_sessions(inst):
 
 def evidence(members, observed, stated=(), projects=None):
     """(sessions, days, any_records) across every member the human did not state. `observed` maps a
-    project id to {session id: set of ISO days} read from that project's observation records.
-    `projects` maps a note's `_source_file` to the projects whose records may vouch for it; the
-    caller derives it from the note's folder or an engine record, never from its frontmatter."""
+    note's `_source_file` to {session id: days} that the engine itself recorded for the batches that
+    wrote or edited that note. Session ids written in the note are not read: the model could copy
+    real ones from the records it is shown. `projects` is kept for callers and not used here."""
     sessions, days, any_records = set(), set(), False
     for inst in members:
         if inst.get("_source_file") in stated:
             continue
-        claimed = claimed_sessions(inst)
-        for pid in (projects or {}).get(inst.get("_source_file"), ()):
-            records = (observed or {}).get(pid) or {}
-            if records:
-                any_records = True
-            for session in claimed & set(records):
-                sessions.add(session)
-                days |= set(records[session])
+        records = (observed or {}).get(inst.get("_source_file")) or {}
+        if records:
+            any_records = True
+        for session, seen in records.items():
+            sessions.add(session)
+            days |= set(seen)
     return sessions, days, any_records
 
 
@@ -276,8 +274,8 @@ def thin(members, observed=None, stated=(), projects=None):
         return ""
     sessions, days, any_records = evidence(members, observed, stated, projects)
     if not any_records:
-        return ("its projects have no observation records to count its evidence from (the note's own claims "
-                "are not counted), so it is treated as thin")
+        return ("the engine has no observation records of the batches that wrote it (the session ids in the "
+                "note are not counted), so it is treated as thin")
     if len(sessions) < MIN_SESSIONS or len(days) < MIN_DAYS:
         return (f"its evidence spans {len(sessions)} session(s) on {len(days)} day(s) in the observation records; "
                 f"{MIN_SESSIONS} sessions on {MIN_DAYS} different days are needed")

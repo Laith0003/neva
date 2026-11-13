@@ -1480,8 +1480,17 @@ class TestInstinctRoundTrip(HookTest):
                      "# Read before edit\n\n## Action\nRead the whole file before editing it.\n\n"
                      "## Evidence\n- Observed 6 times in session aaaaaaaa-1111-2222-3333-444444444444 on 2026-01-01\n"
                      "- Observed 5 times in session bbbbbbbb-1111-2222-3333-444444444444 on 2026-01-02\n")
-        # The quality gate counts sessions from the records the hooks wrote, never from the note, so
-        # the other project's sessions are in its observation records on the days the note names.
+        # The quality gate counts only sessions the engine recorded for the batches that wrote a note
+        # (note-sessions.json, written by instinct-analyze.py). This note stands for one an earlier
+        # nightly run wrote, so its record is written here as that run would have.
+        ns_path = os.path.join(self.s.state, "instincts", "note-sessions.json")
+        os.makedirs(os.path.dirname(ns_path), exist_ok=True)
+        ns = json.loads(self.s.read(ns_path)) if os.path.exists(ns_path) else {}
+        ns[f"vault:06 Memory/instincts/project/{pid}/read-before-edit.md"] = {
+            "aaaaaaaa-1111-2222-3333-444444444444": ["2026-01-01"],
+            "bbbbbbbb-1111-2222-3333-444444444444": ["2026-01-02"]}
+        with open(ns_path, "w") as fh:
+            json.dump(ns, fh)
         obs = os.path.join(self.s.data, "observations", pid)
         os.makedirs(obs, exist_ok=True)
         with open(os.path.join(obs, "observations.jsonl"), "w") as fh:
@@ -1503,6 +1512,10 @@ class TestInstinctRoundTrip(HookTest):
         note = os.path.join(self.root, "project", self.s.pid, "read-before-edit.md")
         self.assertTrue(os.path.exists(note), out)
         self.assertEqual(self.s.obs_lines(), [], "analyzed observations move to the archive")
+        recorded = json.loads(self.s.read(os.path.join(self.s.state, "instincts", "note-sessions.json")))
+        ref = f"vault:06 Memory/instincts/project/{self.s.pid}/read-before-edit.md"
+        self.assertIn("11111111-2222-3333-4444-555566667777", recorded.get(ref, {}),
+                      "the engine records the batch's sessions against the note the batch wrote")
         arch = os.path.join(os.path.dirname(self.s.obs_file()), "observations.archive")
         self.assertEqual(len(os.listdir(arch)), 1)
 

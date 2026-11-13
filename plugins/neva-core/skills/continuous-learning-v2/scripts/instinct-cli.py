@@ -1863,6 +1863,7 @@ def _preflight_state() -> None:
         learning_io.check(STATE_ROOT, PARKED_FILE)
         learning_io.check(STATE_ROOT, USER_STATED_FILE)
         learning_io.check(STATE_ROOT, PROMOTED_NOTES_FILE)
+        learning_io.check(STATE_ROOT, NOTE_SESSIONS_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
@@ -2230,6 +2231,24 @@ USER_STATED_FILE = STATE_DIR / "user-stated.json"
 # the lesson hash written. The only source for a global note's projects; `promoted_from` in its
 # frontmatter is model-writable and is not read for evidence.
 PROMOTED_NOTES_FILE = STATE_DIR / "promoted-notes.json"
+# Written by instinct-analyze.py after each successful batch: for every note the batch created or
+# changed, the sessions and days of that batch's own observation lines.
+NOTE_SESSIONS_FILE = STATE_DIR / "note-sessions.json"
+
+
+def _load_note_sessions() -> dict:
+    return learning_io.read_json_object(NOTE_SESSIONS_FILE) if NOTE_SESSIONS_FILE.exists() else {}
+
+
+def _engine_sessions(inst: dict, note_sessions: dict, promoted: dict) -> dict:
+    """{session: days} the engine recorded for the batches that wrote this note. A global note uses
+    the sessions recorded when apply created it, while it still says the same."""
+    ref = _vault_ref(Path(inst.get('_source_file', '')))
+    row = note_sessions.get(ref)
+    if row is None:
+        prom = promoted.get(ref)
+        row = prom.get('sessions') if isinstance(prom, dict) and prom.get('sha') == _note_hash(inst) else None
+    return {s: list(d) for s, d in row.items() if isinstance(d, list)} if isinstance(row, dict) else {}
 
 
 TRUST_FIELDS = ("trigger", "domain", "scope", "source")
@@ -2306,39 +2325,6 @@ def _note_projects(inst: dict, promoted: dict) -> list:
     return []
 
 
-def _observed_sessions(pid: str, cache: dict) -> dict:
-    """{session id: set of ISO days} from every observation file of one project bucket: live,
-    rotated, archived and quarantined. Lines that are not JSON records with a session are skipped."""
-    if pid in cache:
-        return cache[pid]
-    out = defaultdict(set)
-    if _validate_project_id(pid):
-        obs = OBS_ROOT / pid
-        files = [obs / "observations.jsonl"]
-        for sub in ("observations.pending", "observations.archive", "observations.quarantine"):
-            if (obs / sub).is_dir():
-                files += sorted((obs / sub).glob("*.jsonl"))
-        for path in files:
-            try:
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    for line in fh:
-                        if '"session"' not in line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except ValueError:
-                            continue
-                        session, stamp = rec.get("session") if isinstance(rec, dict) else None, None
-                        if isinstance(rec, dict):
-                            stamp = str(rec.get("timestamp") or "")[:10]
-                        if isinstance(session, str) and session and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamp or ""):
-                            out[session.lower()].add(stamp)
-            except OSError:
-                continue
-    cache[pid] = dict(out)
-    return cache[pid]
-
-
 def _env_dirs(name: str) -> list:
     return [p for p in (os.environ.get(name) or "").split(os.pathsep) if p and os.path.isabs(p)]
 
@@ -2377,7 +2363,7 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     if not blocks:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
-    user_stated, promoted_notes, observed_cache = _load_user_stated(), _load_promoted_notes(), {}
+    user_stated, promoted_notes, note_sessions = _load_user_stated(), _load_promoted_notes(), _load_note_sessions()
     identity = Path(os.environ.get("NEVA_CONFIG") or Path.home() / ".config" / "neva" / "identity.env").expanduser()
     try:
         thresholds = quality_gate.load_thresholds(identity)
@@ -2412,7 +2398,7 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
                        projects[m.get('_source_file')] for p in projects[m.get('_source_file')]})
         skip = {f"global instinct {m.get('id')}" for m in members}
         stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
-        observed = {pid: _observed_sessions(pid, observed_cache) for ps in projects.values() for pid in ps}
+        observed = {m.get('_source_file'): _engine_sessions(m, note_sessions, promoted_notes) for m in members}
         reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
                                      stated=stated, projects=projects, peers=peers, thresholds=thresholds)
         entry = dict(parked.get(bid) or {})
@@ -2768,7 +2754,13 @@ def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
         if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
             pids.append(path.parent.name)
     promoted = _load_promoted_notes()
-    promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources}
+    note_sessions = _load_note_sessions()
+    merged = {}
+    for ref in sources:
+        for session, days in (note_sessions.get(ref) or {}).items():
+            merged[session] = sorted(set(merged.get(session, [])) | set(days or []))
+    promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources,
+                                  "sessions": merged}
     _save_state_json(PROMOTED_NOTES_FILE, promoted)
     stated = _load_user_stated()
     if len(notes) == len(sources) and all(_stated_now(stated, n) for n in notes) and \

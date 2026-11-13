@@ -69,6 +69,7 @@ class InstinctSandbox:
                          XDG_DATA_HOME=os.path.join(self.tmp, "data"),
                          XDG_STATE_HOME=os.path.join(self.tmp, "state"),
                          PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
+        self._observed = {}
         self.repos = {}
         for name in ("repoA", "repoB"):
             repo = os.path.join(self.tmp, name)
@@ -88,7 +89,27 @@ class InstinctSandbox:
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         return path
 
+    def _record_engine_sessions(self):
+        if not self._observed:
+            return
+        path = os.path.join(self.tmp, "state", "neva", "instincts", "note-sessions.json")
+        data = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        for pid, records in self._observed.items():
+            folder = os.path.join(self.vault, "06 Memory", "instincts", "project", pid)
+            if not os.path.isdir(folder):
+                continue
+            for name in os.listdir(folder):
+                if not name.endswith(".md"):
+                    continue
+                row = data.setdefault(f"vault:06 Memory/instincts/project/{pid}/{name}", {})
+                for session, day in records:
+                    row[session] = sorted(set(row.get(session, [])) | {str(day)})
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
     def run(self, *args, cwd="repoA", check=True, env=None):
+        self._record_engine_sessions()
         e = dict(self.env)
         e.update(env or {})
         result = subprocess.run([PY, CLI, *args], cwd=self.repos.get(cwd, cwd), env=e,
@@ -132,7 +153,10 @@ class InstinctSandbox:
 
     def observe(self, pid, records):
         """Write observation records (session id, ISO day) for one project bucket, the shape the
-        observe hook writes. The quality gate counts sessions and days from these, not from notes."""
+        observe hook writes, and stand in for the analysis batches that read them: before each run,
+        every note in that bucket is recorded as written by those sessions (note-sessions.json, what
+        instinct-analyze.py records). The quality gate counts only that record, never the note."""
+        self._observed.setdefault(pid, []).extend(records)
         d = os.path.join(self.tmp, "data", "neva", "observations", pid)
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "observations.jsonl"), "a", encoding="utf-8") as fh:

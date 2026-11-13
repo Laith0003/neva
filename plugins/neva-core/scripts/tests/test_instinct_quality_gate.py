@@ -88,8 +88,10 @@ class QualityGateCase(unittest.TestCase):
             self._register(pid, repo, self.sb.repos[repo], stamp)
             # The gate counts sessions and days from the records the hooks wrote, so the sessions the
             # evidence names are recorded on the days it names.
-            self.sb.observe(pid, [("aaaaaaaa-1111-2222-3333-444444444444", str(YESTERDAY)),
-                                  ("bbbbbbbb-1111-2222-3333-444444444444", str(TODAY))])
+            records = [("aaaaaaaa-1111-2222-3333-444444444444", str(YESTERDAY))]
+            if evidence != ONE_SESSION:
+                records.append(("bbbbbbbb-1111-2222-3333-444444444444", str(TODAY)))
+            self.sb.observe(pid, records)
             self._file(os.path.join(self.sb.vault, "06 Memory", "instincts", "project", pid, f"{iid}.md"),
                        NOTE.format(iid=iid, trigger=trigger, action=action, pid=pid, name=repo,
                                    first=YESTERDAY, last=TODAY, evidence=evidence))
