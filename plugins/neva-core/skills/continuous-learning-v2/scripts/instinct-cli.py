@@ -2086,7 +2086,13 @@ def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
     if not texts and fence_text:
         parsed = parse_instinct_file(fence_text) if fence_text.lstrip().startswith("---") else []
         texts = [_instinct_text(i) for i in parsed if i.get('trigger')] or [fence_text]
-    tokens = _content_tokens(" ".join(texts))
+    raw = " ".join(texts)
+    tokens = _content_tokens(raw)
+    if not tokens:
+        # No words to compare (emoji, punctuation): keyed on the normalised text so two such lessons
+        # never share a key, and _matching_decision never matches an empty token list.
+        norm = " ".join(instinct_match.normalize(raw).split())
+        return {'content_key': "raw-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16], 'content_tokens': []}
     return {'content_key': _content_key(tokens), 'content_tokens': tokens}
 
 
@@ -2127,6 +2133,8 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
     same family, or an application of the same kind, whose content key is equal or whose tokens are a
     near duplicate (instinct_match.DUPLICATE_JACCARD, the threshold recall uses)."""
     family, toks = _content_family(block['kind']), set(content['content_tokens'])
+    if not toks:
+        return None  # a lesson with no words matches nothing
     for bid, entry in ledger.items():
         if not isinstance(entry, dict) or bid == block['block_id']:
             continue
@@ -2137,8 +2145,11 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
             pass
         else:
             continue
+        theirs = set(entry.get('content_tokens') or ())
+        if not theirs:
+            continue
         if entry.get('content_key') == content['content_key'] or (
-                toks and instinct_match.jaccard(toks, set(entry.get('content_tokens') or ()))
+                instinct_match.jaccard(toks, theirs)
                 >= instinct_match.DUPLICATE_JACCARD):
             return bid, entry
     return None
