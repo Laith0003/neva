@@ -33,8 +33,11 @@ HOOKS_DIR = os.path.join(REPO, "plugins", "neva-core", "hooks")
 PY = sys.executable
 
 FAKE_CLAUDE = """#!__PY__
-import sys
-sys.stdout.write('{"status":"analysis_complete"}\\n')
+import json, re, sys
+prompt = sys.argv[sys.argv.index("-p") + 1]
+path = re.search(r"(\\S+\\.analyze-tmp/analysis\\.\\S+?\\.jsonl)", prompt).group(1)
+last = json.loads([x for x in open(path) if x.strip()][-1])
+sys.stdout.write(json.dumps({"status": "analysis_complete", "token": last["token"]}, separators=(",", ":")) + "\\n")
 sys.exit(0)
 """
 
@@ -832,21 +835,24 @@ log_dir = os.environ["FAKE_LOG_DIR"]
 calls = os.path.join(log_dir, "calls.jsonl")
 n = sum(1 for _ in open(calls)) + 1 if os.path.exists(calls) else 1
 with open(path) as fh:
-    lines = [json.loads(x)["n"] for x in fh if x.strip()]
+    records = [json.loads(x) for x in fh if x.strip()]
+lines = [r["n"] for r in records if "n" in r]
+token = records[-1]["token"]
 env = {k: os.environ.get(k) for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")}
 with open(calls, "a") as fh:
     fh.write(json.dumps({"call": n, "lines": lines, "env": env}) + "\\n")
-if os.environ.get("FAKE_FAIL_ON_CALL") == str(n):
+if str(n) in os.environ.get("FAKE_FAIL_ON_CALL", "").split(","):
     sys.stderr.write("simulated model failure\\n")
     sys.exit(1)
-sys.stdout.write('{"status":"analysis_complete"}\\n')
+sys.stdout.write(json.dumps({"status": "analysis_complete", "token": token}, separators=(",", ":")) + "\\n")
 """
 
 
 class AnalyzeBatchCase(unittest.TestCase):
     """instinct-analyze.py must never archive an observation it did not send to the model. It
-    analyses a bucket oldest first in batches of at most max_analysis_lines, archives each batch
-    only after that batch succeeds, and leaves anything it did not reach in place."""
+    analyses a bucket newest file first, each file head first, in batches of at most
+    max_analysis_lines, archives each batch only after that batch succeeds, and leaves anything
+    it did not reach in place. Order, view and retry details: test_analyze_order.py."""
 
     PID = "p1"
 
@@ -918,19 +924,20 @@ class AnalyzeBatchCase(unittest.TestCase):
         self.assertEqual(self.archived(), list(range(20)))
         self.assertEqual(self.pending_files(), [], "a fully analysed rotated file is gone from pending")
 
-    def test_rotated_files_go_first_and_the_cap_leaves_the_rest(self):
+    def test_live_file_goes_first_and_the_cap_leaves_the_rest(self):
         self.write_pending("observations-20261001-000000-1.jsonl", range(0, 10))
         self.write_obs(10, start=10)
         self.analyze(NEVA_INSTINCT_MAX_BATCHES="1")
         calls = self.calls()
         self.assertEqual(len(calls), 1)
-        self.assertEqual(sorted(calls[0]["lines"]), list(range(10)), "oldest (rotated) first")
-        self.assertEqual(self.pending(), list(range(10, 20)), "live file untouched, nothing lost")
+        self.assertEqual(sorted(calls[0]["lines"]), list(range(10, 20)), "newest (live) first")
+        self.assertEqual(self.pending_files(), ["observations-20261001-000000-1.jsonl"],
+                         "rotated file untouched, nothing lost")
 
     def test_negative_control_a_failed_batch_keeps_the_rotated_file(self):
         self.write_pending("observations-20261001-000000-1.jsonl", range(0, 10))
-        self.analyze(FAKE_FAIL_ON_CALL="1")
-        self.assertEqual(self.archived(), [], "nothing archived when the model call failed")
+        self.analyze(FAKE_FAIL_ON_CALL="1,2")
+        self.assertEqual(self.archived(), [], "nothing archived when the model call and its retry failed")
         self.assertEqual(self.pending_files(), ["observations-20261001-000000-1.jsonl"])
 
     def test_every_archived_observation_was_analysed(self):
@@ -1028,12 +1035,14 @@ class AnalyzeBatchCase(unittest.TestCase):
 
     def test_recovered_pending_leftover_keeps_its_place_in_the_order(self):
         # the crashed run (stamp 2026-10-05) was archiving the oldest pending file (2026-10-01);
-        # a newer one (2026-10-02) waits behind it and must still come second
+        # a newer one (2026-10-02) is read first, newest first, and the recovered file must still
+        # sort as 2026-10-01, not as the crash time
         old = "observations-20261001-000000-1.jsonl"
         self.write_pending(".observations.analyzing-20261005-000000-000000-999--" + old, range(0, 10))
         self.write_pending("observations-20261002-000000-1.jsonl", range(10, 20))
         self.analyze(NEVA_INSTINCT_MAX_BATCHES="1")
-        self.assertEqual(sorted(self.calls()[0]["lines"]), list(range(10)), "the recovered file jumped the queue")
+        self.assertEqual(sorted(self.calls()[0]["lines"]), list(range(10, 20)), "the recovered file jumped the queue")
+        self.assertIn(old, self.pending_files())
 
     def test_interrupted_pending_leftover_is_recovered(self):
         pend = os.path.join(self.bucket, "observations.pending")

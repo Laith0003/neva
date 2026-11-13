@@ -67,7 +67,8 @@ class LearningJsonCase(unittest.TestCase):
     def test_valid_config_accepts_boundary_values(self):
         config = Path(self.sb.tmp) / "config.json"
         values = dict(min_observations_to_analyze=1, max_analysis_lines=1,
-                      timeout_seconds=1, max_batches_per_run=1, max_turns=0, model="haiku")
+                      timeout_seconds=1, max_batches_per_run=1, max_turns=0, model="haiku",
+                      max_view_bytes=1, min_batch_lines=1, quarantine_after_failures=1)
         config.write_text(json.dumps({"analyze": values}))
         with mock.patch.object(self.analyzer, "CONFIG_FILE", config), \
              mock.patch.dict(os.environ, self.sb.env, clear=True):

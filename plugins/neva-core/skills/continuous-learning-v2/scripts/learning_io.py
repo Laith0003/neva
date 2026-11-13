@@ -84,12 +84,14 @@ def ensure_dir(root, path) -> Path:
     return path
 
 
-def observation_sources(obs_dir) -> list:
-    """The files the analyzer reads for one project bucket, oldest first: those the observe hook
-    rotated into observations.pending/ (by name, which starts with the rotation time), then the
-    live observations.jsonl. Hidden files are a run's in-flight state, never a source; the
-    analyzer recovers any an interrupted run left behind before it discovers. The same-day
-    trigger counts exactly these, so it fires only on data the analyzer will actually read."""
+def observation_sources(obs_dir, newest_first: bool = False) -> list:
+    """The files the analyzer reads for one project bucket: those the observe hook rotated into
+    observations.pending/ (by name, which starts with the rotation time) and the live
+    observations.jsonl. Default order is oldest first; newest_first=True puts the live file
+    first, then the rotated files newest to oldest, which is the order the analyzer reads in.
+    Both orders hold exactly the same files. Hidden files are a run's in-flight state, never a
+    source; the analyzer recovers any an interrupted run left behind before it discovers. The
+    same-day trigger counts exactly these, so it fires only on data the analyzer will read."""
     obs_dir = Path(obs_dir)
     pending_dir = obs_dir / "observations.pending"
     sources = sorted(p for p in pending_dir.glob("*.jsonl") if not p.name.startswith(".")) \
@@ -97,7 +99,7 @@ def observation_sources(obs_dir) -> list:
     live = obs_dir / "observations.jsonl"
     if live.exists() or live.is_symlink():
         sources.append(live)
-    return sources
+    return sources[::-1] if newest_first else sources
 
 
 def _open_leaf(root, path, flags: int, mode: int = 0o600) -> int:
@@ -174,8 +176,9 @@ def read_json_object(path):
 
 def load_analyzer_config(config_file) -> dict:
     """Validate file and environment settings identically for analysis and its trigger."""
-    defaults = {"min_observations_to_analyze": 20, "max_analysis_lines": 500, "model": "haiku",
-                "timeout_seconds": 120, "max_turns": 0, "max_batches_per_run": 4}
+    defaults = {"min_observations_to_analyze": 20, "max_analysis_lines": 1600, "model": "haiku",
+                "timeout_seconds": 120, "max_turns": 0, "max_batches_per_run": 4,
+                "max_view_bytes": 90_000, "min_batch_lines": 50, "quarantine_after_failures": 3}
     data = read_json_object(config_file).get("analyze", {})
     if not isinstance(data, dict):
         raise LearningDataError(
@@ -199,7 +202,10 @@ def load_analyzer_config(config_file) -> dict:
                "NEVA_INSTINCT_MODEL": ("model", str),
                "NEVA_INSTINCT_TIMEOUT_SECONDS": ("timeout_seconds", int),
                "NEVA_INSTINCT_MAX_TURNS": ("max_turns", int),
-               "NEVA_INSTINCT_MAX_BATCHES": ("max_batches_per_run", int)}
+               "NEVA_INSTINCT_MAX_BATCHES": ("max_batches_per_run", int),
+               "NEVA_INSTINCT_MAX_VIEW_BYTES": ("max_view_bytes", int),
+               "NEVA_INSTINCT_MIN_BATCH_LINES": ("min_batch_lines", int),
+               "NEVA_INSTINCT_QUARANTINE_AFTER": ("quarantine_after_failures", int)}
     for env, (key, cast) in env_map.items():
         if env in os.environ:
             try:

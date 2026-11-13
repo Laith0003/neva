@@ -102,7 +102,7 @@ Properties: atomic, confidence-weighted, domain-tagged, evidence-backed, scope-a
 ### Pipeline
 
 1. The `observe` hook appends each tool call and outcome to the project's observations file. Secrets are scrubbed, inputs and outputs cut to 5000 characters, file tools carry a `path`.
-2. A nightly job (`instinct-analyze`, 03:30, launchd or systemd timer rendered by `install.sh`, not a daemon) takes every project with at least 20 new observations and, oldest first, sends them to a small model in batches of at most 500 lines (up to 4 batches per project per run) to write project-scoped instinct notes. New observations are the live file plus any file the hook rotated unread into `observations.pending/` at 10 MB; pending files go first and are never pruned, only archived once analysed. Each batch is one model call, so a run makes at most 4 calls per qualifying project. A batch counts only when the model prints the exact completion record; then exactly that batch moves to the archive. On any failure that batch and everything after it stay for the next run, and anything a run did not reach stays in place. Nothing is archived unread.
+2. A nightly job (`instinct-analyze`, 03:30, launchd or systemd timer rendered by `install.sh`, not a daemon) takes every project with at least 20 new observations and, newest first, sends them to a small model in batches of at most 1600 lines (up to 4 model calls per project per run) to write project-scoped instinct notes. New observations are the live file plus any file the hook rotated unread into `observations.pending/` at 10 MB; the live file goes first, then pending files newest to oldest, and pending files are never pruned, only archived once analysed. The model reads a compact view of each batch, capped at 90 KB with no line over 1,800 characters; the archive gets the raw lines. The view ends with a random token new for each batch, and a batch counts only when the model's last line is the completion record carrying that token, which proves it read to the end; then exactly that batch moves to the archive. A failed batch is retried once at half size; a file that still fails waits for the next run while later files go ahead. A batch that keeps failing at 50 lines on 3 runs, each time followed by a successful call later in the same run, moves to `observations.quarantine/`, kept and never pruned; a failure with no later success looks like an outage and counts nothing. Buckets take turns going first. Nothing is archived unread.
 3. The same job decays confidence by 0.02 per week without observation, prunes pending instincts older than 30 days, and files proposals: promote to global, evolve into a skill, command or agent, become a rule, or retire.
 4. Nothing leaves project scope and nothing becomes a skill, command, agent or rule until you tick `approve` in the proposal file or say "apply instinct promotions".
 
@@ -111,7 +111,7 @@ Properties: atomic, confidence-weighted, domain-tagged, evidence-backed, scope-a
 | schedule | nightly, 03:30 (not enabled until you enable it) |
 | same-day run | off (`NEVA_INSTINCT_SAMEDAY=1` turns it on, see below) |
 | minimum new observations before analysis | 20 (`NEVA_INSTINCT_MIN_OBSERVATIONS`) |
-| lines per batch | 500 (`NEVA_INSTINCT_MAX_ANALYSIS_LINES`) |
+| lines per batch | 1600, view capped at 90 KB (`NEVA_INSTINCT_MAX_ANALYSIS_LINES`, `NEVA_INSTINCT_MAX_VIEW_BYTES`) |
 | batches per project per run | 4 (`NEVA_INSTINCT_MAX_BATCHES`) |
 | model | haiku (`NEVA_INSTINCT_MODEL`) |
 | timeout per batch | 120 s |

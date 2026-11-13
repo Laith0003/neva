@@ -1411,7 +1411,7 @@ open(os.path.join(idir, "read-before-edit.md"), "w").write(
     + __import__("datetime").date.today().isoformat() + "\ndecay_weeks_applied: 0\nstatus: active\n"
     "tags: [instinct, workflow]\n---\n\n# Read before edit\n\n## Action\nRead the whole file before editing it.\n\n"
     "## Evidence\n- Observed " + str(reads) + " times\n")
-print('{{"status":"analysis_complete"}}')
+print(json.dumps({{"status": "analysis_complete", "token": lines[-1]["token"]}}, separators=(",", ":")))
 '''
 
 
