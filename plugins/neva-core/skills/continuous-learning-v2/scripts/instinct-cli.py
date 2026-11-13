@@ -2190,7 +2190,7 @@ def _backfill_content(ledger: dict) -> None:
                 ledger[bid].update(_content_from_fields({}, parsed[bid]['text']))
 
 
-def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tuple]:
+def _matching_decision(ledger: dict, block: dict, content: dict, exact_only: bool = False) -> Optional[tuple]:
     """(block id, entry) of a decision that already covers this block's content: any rejection in the
     same family, or an application of the same kind, whose content key is equal or whose tokens are a
     near duplicate (instinct_match.DUPLICATE_JACCARD, the threshold recall uses)."""
@@ -2211,7 +2211,7 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
         if not theirs:
             continue
         if entry.get('content_key') == content['content_key'] or (
-                instinct_match.jaccard(toks, theirs)
+                not exact_only and instinct_match.jaccard(toks, theirs)
                 >= instinct_match.DUPLICATE_JACCARD):
             return bid, entry
     return None
@@ -2356,7 +2356,7 @@ def _load_parked() -> dict:
 NO_MEMBER_KINDS = ("retire",)
 
 
-def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
+def _gate(blocks: list[dict], dry_run: bool, report: Optional[list] = None) -> list[dict]:
     """Blocks that pass the gate. Failing ones go to the parked list with every reason and the
     date; a parked entry is updated on each run and kept when it later passes (marked cleared).
     A retire block is not gated: it removes, it does not add."""
@@ -2400,7 +2400,10 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
         stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
         observed = {m.get('_source_file'): _engine_sessions(m, note_sessions, promoted_notes) for m in members}
         reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
-                                     stated=stated, projects=projects, peers=peers, thresholds=thresholds)
+                                     stated=stated, projects=projects,
+                                     # A lesson the human stated is not measured against this run's
+                                     # other candidates: a hostile near-copy cannot park it.
+                                     peers=() if block.get('stated') else peers, thresholds=thresholds)
         entry = dict(parked.get(bid) or {})
         if reasons:
             entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
@@ -2410,6 +2413,8 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
             parked[bid] = entry
             parked_now += 1
             print(f"Parked {bid}: {'; '.join(reasons)}.")
+            if report is not None:
+                report.append((bid, f"parked: {'; '.join(reasons)}"))
             continue
         if entry:
             entry.update({'cleared': _today(), 'last_checked': _today()})
@@ -2424,6 +2429,24 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     return passed
 
 
+NOT_PROPOSED_MAX_LINES = 20
+_NOT_PROPOSED_RE = re.compile(r'\n*## Not proposed this run\n.*?\n~~~~\n', re.S)
+
+
+def _not_proposed_section(rows: list) -> str:
+    """The skips of this run, where the human reads: id, reason, and what it matched. Inside a fence,
+    so nothing in it can read as a block; capped, with a count of what did not fit."""
+    if not rows:
+        return ""
+    def clean(text):
+        return "".join(c if unicodedata.category(c)[0] not in "CZ" or c == " " else " " for c in str(text))[:240]
+    lines = [clean(f"{bid}: {reason}") for bid, reason in rows[:NOT_PROPOSED_MAX_LINES]]
+    if len(rows) > NOT_PROPOSED_MAX_LINES:
+        lines.append(f"... and {len(rows) - NOT_PROPOSED_MAX_LINES} more; `instinct-cli.py list --parked` shows parked ones")
+    return ("\n\n## Not proposed this run\n\nThese candidates were checked this run and not filed, with the reason.\n\n"
+            "~~~~text\n" + "\n".join(lines) + "\n~~~~\n")
+
+
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
     if not dry_run:
         _preflight_state()
@@ -2435,6 +2458,8 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
     ledger = _load_ledger()
     _backfill_content(ledger)
     in_vault = _vault_block_states()
+    user_stated = _load_user_stated()
+    not_proposed = []  # (block id, reason) for the section the human reads in the proposal file
     fresh = []
     for block in blocks:
         bid = block['block_id']
@@ -2451,17 +2476,23 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
             print(f"Refused {bid}: {unsafe}. It was not proposed. Fix: edit the instinct note so its text holds "
                   f"no fence line, no block id marker and no control characters; it is checked again on the "
                   f"next run.", file=sys.stderr)
+            not_proposed.append((bid, f"refused: {unsafe}"))
             continue
         block['content'] = _block_content(block)
+        # A lesson the human stated, still as he wrote it, is buried only by a rejection of the very
+        # same content, never by one that merely means something close.
+        block['stated'] = bool(block.get('members')) and all(_stated_now(user_stated, m) for m in block['members'])
         if not repropose:
-            match = _matching_decision(ledger, block, block['content'])
+            match = _matching_decision(ledger, block, block['content'], exact_only=block['stated'])
             if match:
                 print(f"Skipped {bid}: says the same as {match[0]}, {match[1].get('status')} "
                       f"{match[1].get('date', '')} ({match[1].get('reason') or 'no reason recorded'}).")
+                not_proposed.append((bid, f"says the same as {match[0]} ({match[1].get('status')} "
+                                          f"{match[1].get('date', '')})"))
                 continue
         fresh.append(block)
     if not repropose:
-        fresh = _gate(fresh, dry_run)
+        fresh = _gate(fresh, dry_run, report=not_proposed)
     if not fresh:
         print("No new instinct candidates to propose.")
         return 0
@@ -2478,7 +2509,8 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         print(f"Every candidate is already in {_vault_ref(path)}.")
         return 0
     rendered = {b['block_id']: _render_block(b) for b in fresh}
-    content = existing.rstrip("\n") + "\n\n" + "\n".join(rendered.values())
+    existing = _NOT_PROPOSED_RE.sub("", existing)
+    content = existing.rstrip("\n") + "\n\n" + "\n".join(rendered.values()) + _not_proposed_section(not_proposed)
     if path.exists():
         content = re.sub(r'^status: done$', 'status: open', content, count=1, flags=re.M)
     # Read the file back as apply-promotions will: every new block must come out as itself, once.
