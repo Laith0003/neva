@@ -1969,10 +1969,14 @@ def _check_state_binding(write: bool) -> None:
         state_id = None  # adopted below: a lost ledger replaced on purpose, bound to this vault
     elif vault_id and state_id != vault_id:
         found = f"ledger id {state_id}" if state_id else "no ledger id"
+        fresh = "" if state_id else (
+            " On a new machine with a synced vault, where the old state folder is not available, set "
+            "NEVA_INSTINCT_NEW_LEDGER=1 once to start a new ledger bound to this vault; blocks already in "
+            "the vault are still never proposed twice.")
         raise StateBindingError(
             f"the vault at {VAULT} is bound to ledger id {vault_id}, but the state folder {STATE_DIR} holds "
             f"{found}, so this run would ignore every block already applied, rejected or open. "
-            f"{_STATE_FIX} Nothing was written.")
+            f"{_STATE_FIX}{fresh} Nothing was written.")
     if not vault_id and not state_id:
         history = list(_vault_block_states())
         if ledger and history and not _ledger_covers(ledger, history):
