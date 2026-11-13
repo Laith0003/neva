@@ -2,10 +2,13 @@
   "version": "2.1-neva",
   "analyze": {
     "min_observations_to_analyze": 20,
-    "max_analysis_lines": 500,
+    "max_analysis_lines": 1600,
     "model": "haiku",
     "timeout_seconds": 120,
     "max_turns": 0,
-    "max_batches_per_run": 4
+    "max_batches_per_run": 4,
+    "max_view_bytes": 90000,
+    "min_batch_lines": 50,
+    "quarantine_after_failures": 3
   }
 }

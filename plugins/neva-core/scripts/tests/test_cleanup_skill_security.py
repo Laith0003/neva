@@ -83,7 +83,8 @@ print(os.environ.get('FAKE_COMPLETION', 'fake child completed'))
             temporary.mkdir()
             capture = directory / "args.jsonl"
             with mock.patch.dict(os.environ, {"NEVA_CLAUDE_BIN": str(binary), "CAPTURE_ARGS": str(capture),
-                                              "FAKE_COMPLETION": analyzer.COMPLETION_RECORD}):
+                                              "FAKE_COMPLETION": analyzer.completion_record("0123456789ab")}), \
+                 mock.patch.object(analyzer, "new_token", return_value="0123456789ab"):
                 result = analyzer.analyze_batch(temporary, "fixture", "fixture", "fixture", [b'{}\n'], instincts,
                                                {"model": "fake", "max_turns": 4, "timeout_seconds": 5})
             self.assertTrue(result)
