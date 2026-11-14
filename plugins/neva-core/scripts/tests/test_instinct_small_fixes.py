@@ -125,5 +125,42 @@ class SyncedVaultCase(unittest.TestCase):
         self.assertIn("NEVA_INSTINCT_NEW_LEDGER=1", r.stderr)
 
 
+class RevertGuardCase(unittest.TestCase):
+    """Fail if 150e818 (exclusive vault id) or 4bc8bf9 (no-member blocks fail closed) is reverted."""
+
+    def test_a_run_that_loses_the_race_records_the_winner_not_its_own_id(self):
+        from unittest import mock
+        sb = InstinctSandbox()
+        self.addCleanup(sb.close)
+        sb.add("repoA", "seed", 0.9)
+        cli = _module(sb)
+        vault_file = os.path.join(sb.vault, "06 Memory", "instincts", ".ledger-id")
+        with open(vault_file, "w") as fh:
+            fh.write("winner0000000001\n")
+        real = cli._read_vault_id
+        calls = []
+
+        def first_read_misses():
+            calls.append(1)
+            return None if len(calls) == 1 else real()  # the other run wrote it just after our read
+        with mock.patch.dict(os.environ, sb.env, clear=True), mock.patch.object(cli, "_read_vault_id", first_read_misses):
+            cli._check_state_binding(write=True)
+        self.assertEqual(open(vault_file).read().strip(), "winner0000000001", "the winner's id was overwritten")
+        state = json.load(open(os.path.join(sb.tmp, "state", "neva", "instincts", "vault-binding.json")))
+        self.assertEqual(state["ledger_id"], "winner0000000001")
+
+    def test_an_evolve_block_with_no_members_is_parked_with_its_reason(self):
+        sb = InstinctSandbox()
+        self.addCleanup(sb.close)
+        cli = _module(sb)
+        from unittest import mock
+        bare = cli._block("evolve-command", "x", [("Kind", "evolve-command")], "text")
+        with mock.patch.dict(os.environ, sb.env, clear=True):
+            passed = cli._gate([bare], dry_run=False)
+        self.assertEqual(passed, [])
+        parked = json.load(open(os.path.join(sb.tmp, "state", "neva", "instincts", "parked.json")))
+        self.assertIn("no instincts to check", " ".join(parked["evolve-command:x"]["reasons"]))
+
+
 if __name__ == "__main__":
     unittest.main()
