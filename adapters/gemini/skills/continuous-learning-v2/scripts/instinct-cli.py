@@ -282,6 +282,24 @@ def _config_destination_problem(dest: Path, root: Path, allowed: tuple, label: s
             f"reject, or edit the 'Proposed destination' row to one of those")
 
 
+def _linked_component(dest: Path, base: Path) -> Optional[str]:
+    """The first symlink among `base` and the folders between it and `dest`, when `dest` is spelled
+    under `base`; else None. A repository can commit `.claude` (or a folder in it) as a link into
+    another tool's global folder."""
+    literal = os.path.abspath(os.path.expanduser(str(dest)))
+    base_lit = os.path.abspath(os.path.expanduser(str(base)))
+    rel = _rel_under(literal, base_lit)
+    if rel is None:
+        return None
+    cur = base_lit
+    parts = [""] + list(Path(literal).relative_to(base_lit).parts[:-1]) if rel else [""]
+    for part in parts:
+        cur = os.path.join(cur, part) if part else cur
+        if os.path.islink(cur):
+            return cur
+    return None
+
+
 def _destination_problem(dest: Path) -> str:
     """'' when apply may write `dest`, else an error body naming the fix."""
     evolve = _evolve_allowed()
@@ -290,6 +308,10 @@ def _destination_problem(dest: Path) -> str:
     if problem is None:
         for info in load_registry().values():
             if info.get('root'):
+                linked = _linked_component(dest, Path(info['root']) / ".claude")
+                if linked:
+                    return (f"{dest} is under the project folder {info['root']}, whose {linked} is a link (to "
+                            f"{os.path.realpath(linked)}); a repo can commit that link. Fix: tick reject")
                 problem = _config_destination_problem(dest, Path(info['root']) / ".claude", EVOLVED_ALLOWED,
                                                       "a project's .claude folder")
                 if problem is not None:
@@ -932,12 +954,46 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def _cmd_restate(args, project: dict) -> int:
+    iid = args.restate
+    if not _validate_instinct_id(iid):
+        print(f"Invalid --restate '{iid}'. Fix: pass the id of an existing note.", file=sys.stderr)
+        return 1
+    target_dir = GLOBAL_DIR if args.scope == "global" else project["instincts_dir"]
+    target = target_dir / f"{iid}{INSTINCT_EXT}"
+    if not target.is_file():
+        print(f"{_vault_ref(target)} does not exist. Fix: run from the project the note belongs to, or pass "
+              f"--scope global for a global note.", file=sys.stderr)
+        return 1
+    parsed = parse_instinct_file(target.read_text(encoding="utf-8"))
+    if not parsed:
+        print(f"{_vault_ref(target)} is not an instinct note. Fix: restore its frontmatter.", file=sys.stderr)
+        return 1
+    _record_user_stated(target, _note_hash(parsed[0]))
+    print(f"Restated {iid}: {_vault_ref(target)} is recorded as your own words as it reads now.")
+    return 0
+
+
 def cmd_add(args) -> int:
     """Record a user-stated instinct. The human invoking this is the approval."""
     project = detect_project()
+    if args.restate:
+        return _cmd_restate(args, project)
+    missing = [f"--{k}" for k in ("id", "trigger", "action") if not getattr(args, k)]
+    if missing:
+        print(f"add needs {', '.join(missing)}. Fix: pass them, or use --restate <id> to re-vouch an existing "
+              f"note.", file=sys.stderr)
+        return 1
     if not _validate_instinct_id(args.id):
         print(f"Invalid --id '{args.id}'. Fix: use kebab-case letters, digits, '.', '_' or '-'.", file=sys.stderr)
         return 1
+    # His own typing in a right-to-left language often carries invisible direction marks. Here, and only
+    # here, they are removed rather than refused; everywhere else the sanitiser refuses them.
+    marks = sum(str(v).count(c) for v in (args.trigger, args.action) for c in "\u200e\u200f")
+    if marks:
+        args.trigger = args.trigger.replace("\u200e", "").replace("\u200f", "")
+        args.action = args.action.replace("\u200e", "").replace("\u200f", "")
+        print(f"Removed {marks} invisible direction mark(s) (U+200E, U+200F) from your text before storing it.")
     conf = args.confidence
     if conf > 1:
         conf = conf / 10.0  # accept the 1-10 scale
@@ -947,7 +1003,8 @@ def cmd_add(args) -> int:
     target_dir = GLOBAL_DIR if args.scope == "global" else project["instincts_dir"]
     target = target_dir / f"{args.id}{INSTINCT_EXT}"
     if target.exists():
-        print(f"{_vault_ref(target)} already exists. Fix: pick another --id or edit that note.", file=sys.stderr)
+        print(f"{_vault_ref(target)} already exists. Fix: pick another --id, or edit that note and run "
+              f"`add --restate {args.id}` to record your edit as your own words.", file=sys.stderr)
         return 1
     inst = {
         'id': args.id, 'trigger': args.trigger, 'confidence': round(conf, 2),
@@ -1610,17 +1667,50 @@ _RULE_TAIL = re.compile(r'^Trigger: (.*)\. Source: instinct `([A-Za-z0-9._-]+)` 
                         r'observations\)\.$')
 
 
-def _rule_char_problem(name: str, value: str, allow: str = "") -> str:
-    for c in value:
+def _arabic_letter(c: str) -> bool:
+    return unicodedata.category(c).startswith("L") and unicodedata.name(c, "").startswith("ARABIC")
+
+
+def _text_problem(name: str, value: str, allow: str = "") -> str:
+    """The one sanitiser for model-derived text, run on every field and body of every kind of block,
+    at render and at apply. '' when `value` may reach a file, else why not, naming `name` and any code
+    point as U+XXXX (the raw character is never echoed). The rules:
+      characters  every character is in a category starting with L, N, P or S, or is Zs, or is a
+                  combining mark (Mn, Mc) that is not a variation selector, or is in `allow`; the
+                  invisible letters and marks in _RULE_INVISIBLE are refused
+      comments    '<!--' or '-->' anywhere: the reading view hides a comment
+      references  an HTML character reference (&#8203; &#x200B; &zwj;): the reading view renders a
+                  character the file does not hold. A bare '&' passes.
+      obsidian    '%%' anywhere: Obsidian hides what sits between two of them
+      marks       strike-through combining marks U+0334 to U+0338 are refused; ZWNJ (U+200C) passes
+                  only between two Arabic-script letters (Persian needs it); Arabic diacritics pass
+    Fields (table cells) are also refused an HTML-looking tag, in _unsafe_reason."""
+    value = str(value)
+    for i, c in enumerate(value):
         cp = ord(c)
         cat = unicodedata.category(c)
         if c in allow:
             continue
+        if cp == 0x200C and 0 < i < len(value) - 1 and _arabic_letter(value[i - 1]) and _arabic_letter(value[i + 1]):
+            continue  # ZWNJ inside a Persian or Arabic-script word shapes the letters; it hides nothing
         variation = 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF
-        ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation and cp not in _RULE_INVISIBLE
+        ok = (cat[0] in "LNPS" or cat == "Zs" or cat in ("Mn", "Mc")) and not variation \
+            and cp not in _RULE_INVISIBLE and not 0x334 <= cp <= 0x338
         if not ok:
             return f"its {name} holds U+{cp:04X} ({cat}), a character a reader cannot see or that breaks the line"
+    m = _RULE_COMMENT.search(value)
+    if m:
+        return f"its {name} holds an HTML comment marker ('{m.group(0)}'), which the reading view hides"
+    if "%%" in value:
+        return f"its {name} holds '%%', an Obsidian comment marker the reading view hides"
+    m = _RULE_ENTITY.search(value)
+    if m:
+        return (f"its {name} holds an HTML character reference ('{m.group(0)}'), which the reading view "
+                f"shows as a character the file does not hold")
     return ""
+
+
+_rule_char_problem = _text_problem
 
 
 def _rule_escape_tags(text: str) -> str:
@@ -1736,6 +1826,96 @@ def _rule_blocks() -> list[dict]:
     return blocks
 
 
+CONFIRM_STATED_ID = "confirm-stated:notes"
+CONFIRM_AGAIN_ID = "confirm-stated:again"
+_CONFIRM_LINE = re.compile(r'^- \[([ xX])\] confirm `(vault:[^`\n]+)`$', re.M)
+
+
+def _confirm_display(inst: dict) -> str:
+    """Exactly what the vouch covers (_note_hash): the trust fields and the whole body, in order."""
+    return "\n".join(f"{k}: {inst.get(k, '')}" for k in TRUST_FIELDS) + "\n\n" + str(inst.get('content', '')).strip()
+
+
+def _confirm_stated_block(slug: str = "notes", only: Optional[set] = None) -> list[dict]:
+    """One block listing notes that claim `source: user-stated` but have no add-ledger record. That
+    field is model-writable, so it is never trusted on its own: each note is shown whole (every field
+    the vouch covers and the full body) and he ticks the line of each one he wrote. A note that cannot
+    be shown safely is listed without a confirm line. `confirm-stated:notes` is filed once, after the
+    upgrade; `confirm-stated:again` once more, for notes that changed between the block and his tick."""
+    ledger = _load_ledger()
+    bid = f"confirm-stated:{slug}"
+    # Only an install that ran before the add ledger existed has notes to confirm; a fresh ledger has
+    # no history to carry over, and its notes were written by add, which records them.
+    if bid in ledger or not ledger:
+        return []
+    stated = _load_user_stated()
+    lines, hashes, shown, unsafe = [], {}, [], []
+    for directory, label in [(GLOBAL_DIR, "global")] + [(d, "project") for d in _all_project_dirs()]:
+        for inst in _load_instincts_from_dir(directory, label):
+            path = Path(inst['_source_file'])
+            ref = _vault_ref(path)
+            if only is not None and ref not in only:
+                continue
+            if str(inst.get('source', '')) != 'user-stated' or _stated_now(stated, inst):
+                continue
+            if not _validate_instinct_id(path.stem):
+                continue
+            display = _confirm_display(inst)
+            problem = _text_problem("note", display, "\n\t") or (
+                "it holds a fence line" if _FENCE_LINE.search(display) else "") or (
+                "it holds a block id marker" if _MARKER_TEXT.search(display) else "")
+            if problem:
+                unsafe.append(f"{ref}: cannot be shown safely, not offered ({problem})")
+                continue
+            lines.append(f"- [ ] confirm `{ref}`")
+            hashes[ref] = hashlib.sha256(display.encode("utf-8")).hexdigest()
+            shown.append(f"=== {ref}\n{display}")
+    if not lines and not unsafe:
+        return []
+    text = "\n\n".join(shown + unsafe) or "nothing could be shown safely"
+    block = _block("confirm-stated", slug, [
+        ("Kind", "confirm-stated"),
+        ("Why", "these notes say source: user-stated, a field the analyzer can write, and have no record that you "
+                "wrote them; each is shown whole below; tick the confirm line of each one that is yours, then "
+                "tick approve"),
+        ("Notes", str(len(lines))),
+    ], text, text_lang="text")
+    block['extra_lines'] = ["Tick the confirm line of each note you wrote yourself:", ""] + lines + [""]
+    block['source_hashes'] = hashes
+    print(f"Filed {bid} once: {len(lines)} note(s) claim to be your own words; tick the ones that are.")
+    return [block]
+
+
+def _confirm_stated_apply(block: dict, entry: dict) -> str:
+    """Record each ticked note whose displayed content, recomputed from the note now, still equals what
+    the block showed. A note changed since is not vouched; it is offered once more."""
+    hashes = (entry or {}).get('source_hashes') or {}
+    masked = _fence_scan(block['body'])[0]
+    stated = _load_user_stated()
+    recorded, changed = 0, []
+    for tick, ref in _CONFIRM_LINE.findall(masked):
+        if tick == ' ' or ref not in hashes:
+            continue
+        try:
+            path = _resolve_ref(ref)
+        except ValueError:
+            continue
+        parsed = parse_instinct_file(path.read_text(encoding="utf-8")) if path.is_file() else []
+        if parsed and hashlib.sha256(_confirm_display(parsed[0]).encode("utf-8")).hexdigest() == hashes[ref]:
+            stated[ref] = {"date": _today(), "sha": _note_hash(parsed[0]), "confirmed": True}
+            recorded += 1
+        else:
+            changed.append(ref)
+            print(f"block {block['block_id']}: {ref} changed after the block showed it, so it was not recorded. "
+                  f"It is offered once more on the next propose.", file=sys.stderr)
+    if recorded:
+        _save_state_json(USER_STATED_FILE, stated)
+    if changed and block['block_id'] == CONFIRM_STATED_ID:
+        _save_state_json(CONFIRM_AGAIN_FILE, {"refs": changed, "date": _today()})
+    print(f"Recorded {recorded} note(s) as your own words.")
+    return ''
+
+
 def _retire_blocks() -> list[dict]:
     blocks = []
     dirs = [(GLOBAL_DIR, "global")] + [(d, "project") for d in _all_project_dirs()]
@@ -1782,6 +1962,9 @@ def _unsafe_reason(block: dict) -> str:
             return f"its '{key}' field holds control characters ({', '.join(bad)}), which would end the table row"
         if _MARKER_TEXT.search(value):
             return f"its '{key}' field holds a '<!-- block_id' marker"
+    for line in block.get('extra_lines') or []:
+        if line and not _CONFIRM_LINE.fullmatch(line) and line != "Tick the confirm line of each note you wrote yourself:":
+            return f"its line {line[:60]!r} is not a confirm line"
     text = block['text']
     bad = _control_chars(text, "\n\t")
     if bad:
@@ -1791,7 +1974,14 @@ def _unsafe_reason(block: dict) -> str:
         return f"its text holds a fence line ('{m.group(1)}'), which would close the block's fence"
     if _MARKER_TEXT.search(text):
         return "its text holds a '<!-- block_id' marker"
-    return ""
+    # The one sanitiser, on every field and the body, whatever the kind.
+    for key, value in block['fields']:
+        problem = _text_problem(f"'{key}' field", str(value))
+        if problem:
+            return problem
+        if _RULE_TAG.search(str(value)):
+            return f"its '{key}' field holds an HTML-looking tag, which the reading view renders or hides"
+    return _text_problem("text", text, "\n\t")
 
 
 class UnsafeBlock(ValueError):
@@ -1808,7 +1998,9 @@ def _render_block(block: dict) -> str:
     for key, value in block['fields']:
         cell = str(value).replace('|', '\\|')
         out.append(f"| {key} | {cell} |")
-    out += ["", "Text to write:", "", f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
+    out += [""] + list(block.get('extra_lines') or [])
+    out += ["Text to write:" if block['kind'] != 'confirm-stated' else "Each note, whole, as the vouch covers it:", "",
+            f"~~~~{block['lang']}", block['text'].rstrip("\n"), "~~~~", ""]
     return "\n".join(out)
 
 
@@ -1848,6 +2040,54 @@ def _save_ledger(ledger: dict) -> None:
     _write_text_atomic(PROMOTIONS_LEDGER, json.dumps(ledger, indent=2) + "\n")
 
 
+LEDGER_LOCK_FILE = STATE_DIR / "promotions.lock"
+LEDGER_LOCK_TIMEOUT_SECONDS = 30
+_LOCK_DEPTH = 0
+
+
+@contextmanager
+def _ledger_lock():
+    """One exclusive lock around every read-modify-write of the ledger and the proposal files
+    (propose, apply, reject, park), so a run never rewrites a file from text another run has since
+    changed. Re-entrant within a process. Waits at most LEDGER_LOCK_TIMEOUT_SECONDS (or
+    NEVA_INSTINCT_LOCK_TIMEOUT), then fails naming the lock."""
+    global _LOCK_DEPTH
+    if _LOCK_DEPTH or not _HAS_FCNTL:
+        _LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH -= 1
+        return
+    try:
+        timeout = max(0, int(os.environ.get("NEVA_INSTINCT_LOCK_TIMEOUT") or LEDGER_LOCK_TIMEOUT_SECONDS))
+    except ValueError:
+        timeout = LEDGER_LOCK_TIMEOUT_SECONDS
+    _preflight_state()  # refuses a linked state folder with the relocation hint, before any write
+    fh = learning_io.open_lock(STATE_ROOT, LEDGER_LOCK_FILE)
+    try:
+        deadline = datetime.now().timestamp() + timeout
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if datetime.now().timestamp() >= deadline:
+                    raise learning_io.LearningDataError(
+                        f"another instinct-cli run has held {LEDGER_LOCK_FILE} for over {timeout}s. Fix: let it "
+                        f"finish and run again; nothing was written.") from None
+                import time
+                time.sleep(0.1)
+        _LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH -= 1
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
 PROMOTION_EVENTS_FILE = STATE_DIR / "promotion-events.jsonl"
 PROMOTION_EVENT_KINDS = ("made", "approved", "rejected", "withdrawn")
 
@@ -1864,6 +2104,7 @@ def _preflight_state() -> None:
         learning_io.check(STATE_ROOT, PARKED_FILE)
         learning_io.check(STATE_ROOT, USER_STATED_FILE)
         learning_io.check(STATE_ROOT, PROMOTED_NOTES_FILE)
+        learning_io.check(STATE_ROOT, NOTE_SESSIONS_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
@@ -2115,6 +2356,21 @@ def _instinct_text(inst: dict) -> str:
     return f"{inst.get('trigger', '')} {_action_of(inst)}"
 
 
+_NOTE_INDEX: dict = {}
+
+
+def _note_index(directory) -> dict:
+    """id -> note for one instincts folder, read once per run (each command is one process). Looking an
+    id up used to re-read the whole folder per block, which made propose quadratic."""
+    key = str(directory)
+    if key not in _NOTE_INDEX:
+        index = {}
+        for inst in _load_instincts_from_dir(directory, "any", include_inactive=True):
+            index.setdefault(inst.get('id'), inst)
+        _NOTE_INDEX[key] = index
+    return _NOTE_INDEX[key]
+
+
 def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
     """The lesson a block carries: the trigger and action of every instinct it names, looked up in
     the vault (project buckets named in the block, then global, inactive notes included). Falls back
@@ -2129,13 +2385,10 @@ def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
         if not _validate_instinct_id(iid):
             continue
         for d in dirs:
-            for inst in _load_instincts_from_dir(d, "any", include_inactive=True):
-                if inst.get('id') == iid:
-                    texts.append(_instinct_text(inst))
-                    break
-            else:
-                continue
-            break
+            inst = _note_index(d).get(iid)
+            if inst is not None:
+                texts.append(_instinct_text(inst))
+                break
     if not texts and fence_text:
         parsed = parse_instinct_file(fence_text) if fence_text.lstrip().startswith("---") else []
         texts = [_instinct_text(i) for i in parsed if i.get('trigger')] or [fence_text]
@@ -2147,6 +2400,13 @@ def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
         norm = " ".join(instinct_match.normalize(raw).split())
         return {'content_key': "raw-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16], 'content_tokens': []}
     return {'content_key': _content_key(tokens), 'content_tokens': tokens}
+
+
+def _recorded_content(entry) -> dict:
+    """The content key and tokens the ledger took when the block was proposed. A decision records
+    these, never a recomputation from the notes, which the analyzer can rewrite after propose."""
+    entry = entry if isinstance(entry, dict) else {}
+    return {k: entry[k] for k in ('content_key', 'content_tokens') if k in entry}
 
 
 def _block_content(block: dict) -> dict:
@@ -2178,10 +2438,12 @@ def _backfill_content(ledger: dict) -> None:
             continue
         for bid in bids:
             if bid in parsed:
-                ledger[bid].update(_content_from_fields(parsed[bid]['fields'], parsed[bid]['text']))
+                # From the fence the human decided on, never from the notes as they read today: the
+                # analyzer can rewrite its notes, and a decision must keep meaning what was shown.
+                ledger[bid].update(_content_from_fields({}, parsed[bid]['text']))
 
 
-def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tuple]:
+def _matching_decision(ledger: dict, block: dict, content: dict, exact_only: bool = False) -> Optional[tuple]:
     """(block id, entry) of a decision that already covers this block's content: any rejection in the
     same family, or an application of the same kind, whose content key is equal or whose tokens are a
     near duplicate (instinct_match.DUPLICATE_JACCARD, the threshold recall uses)."""
@@ -2202,7 +2464,7 @@ def _matching_decision(ledger: dict, block: dict, content: dict) -> Optional[tup
         if not theirs:
             continue
         if entry.get('content_key') == content['content_key'] or (
-                instinct_match.jaccard(toks, theirs)
+                not exact_only and instinct_match.jaccard(toks, theirs)
                 >= instinct_match.DUPLICATE_JACCARD):
             return bid, entry
     return None
@@ -2222,6 +2484,26 @@ USER_STATED_FILE = STATE_DIR / "user-stated.json"
 # the lesson hash written. The only source for a global note's projects; `promoted_from` in its
 # frontmatter is model-writable and is not read for evidence.
 PROMOTED_NOTES_FILE = STATE_DIR / "promoted-notes.json"
+# Written by instinct-analyze.py after each successful batch: for every note the batch created or
+# changed, the sessions and days of that batch's own observation lines.
+NOTE_SESSIONS_FILE = STATE_DIR / "note-sessions.json"
+# Notes a confirm-stated block showed that changed before he ticked them: offered once more.
+CONFIRM_AGAIN_FILE = STATE_DIR / "confirm-again.json"
+
+
+def _load_note_sessions() -> dict:
+    return learning_io.read_json_object(NOTE_SESSIONS_FILE) if NOTE_SESSIONS_FILE.exists() else {}
+
+
+def _engine_sessions(inst: dict, note_sessions: dict, promoted: dict) -> dict:
+    """{session: days} the engine recorded for the batches that wrote this note. A global note uses
+    the sessions recorded when apply created it, while it still says the same."""
+    ref = _vault_ref(Path(inst.get('_source_file', '')))
+    row = note_sessions.get(ref)
+    if row is None:
+        prom = promoted.get(ref)
+        row = prom.get('sessions') if isinstance(prom, dict) and prom.get('sha') == _note_hash(inst) else None
+    return {s: list(d) for s, d in row.items() if isinstance(d, list)} if isinstance(row, dict) else {}
 
 
 TRUST_FIELDS = ("trigger", "domain", "scope", "source")
@@ -2286,6 +2568,37 @@ def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
         _save_state_json(USER_STATED_FILE, stated)
 
 
+def _approved_now(promoted: dict, inst: dict) -> bool:
+    """True for a global note an apply created after the human ticked it, while it still says the same."""
+    row = promoted.get(_vault_ref(Path(inst.get('_source_file', ''))))
+    return isinstance(row, dict) and bool(row.get('approved')) and row.get('sha') == _note_hash(inst)
+
+
+def _backfill_promoted_notes(ledger: dict, write: bool) -> dict:
+    """Record, once, the global notes the engine's own ledger says were applied before promoted-notes.json
+    existed. The ledger and the global folder are engine-written (the analyzer's grant does not reach
+    either), so the record is trusted: the note is his approved lesson as it reads now."""
+    promoted = _load_promoted_notes()
+    changed = False
+    for bid, entry in ledger.items():
+        if not (isinstance(entry, dict) and entry.get('status') == 'applied' and bid.startswith('promote-global:')):
+            continue
+        note = GLOBAL_DIR / f"{bid.partition(':')[2]}{INSTINCT_EXT}" if GLOBAL_DIR else None
+        if note is None or not note.is_file() or _vault_ref(note) in promoted:
+            continue
+        parsed = parse_instinct_file(note.read_text(encoding="utf-8"))
+        if not parsed:
+            continue
+        pids = [p.strip() for p in str(parsed[0].get('promoted_from') or '').split(',')]
+        promoted[_vault_ref(note)] = {"date": _today(), "sha": _note_hash(parsed[0]), "approved": True,
+                                      "projects": sorted(p for p in pids if _validate_project_id(p)),
+                                      "sources": [], "sessions": {}, "backfilled": True}
+        changed = True
+    if changed and write:
+        _save_state_json(PROMOTED_NOTES_FILE, promoted)
+    return promoted
+
+
 def _note_projects(inst: dict, promoted: dict) -> list:
     """Projects whose observation records may vouch for a note: a project note's own folder, or for
     a global note the projects the engine recorded when it created it, while it still says the same."""
@@ -2296,39 +2609,6 @@ def _note_projects(inst: dict, promoted: dict) -> list:
     if isinstance(row, dict) and row.get('sha') == _note_hash(inst):
         return [p for p in row.get('projects') or [] if _validate_project_id(str(p))]
     return []
-
-
-def _observed_sessions(pid: str, cache: dict) -> dict:
-    """{session id: set of ISO days} from every observation file of one project bucket: live,
-    rotated, archived and quarantined. Lines that are not JSON records with a session are skipped."""
-    if pid in cache:
-        return cache[pid]
-    out = defaultdict(set)
-    if _validate_project_id(pid):
-        obs = OBS_ROOT / pid
-        files = [obs / "observations.jsonl"]
-        for sub in ("observations.pending", "observations.archive", "observations.quarantine"):
-            if (obs / sub).is_dir():
-                files += sorted((obs / sub).glob("*.jsonl"))
-        for path in files:
-            try:
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    for line in fh:
-                        if '"session"' not in line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except ValueError:
-                            continue
-                        session, stamp = rec.get("session") if isinstance(rec, dict) else None, None
-                        if isinstance(rec, dict):
-                            stamp = str(rec.get("timestamp") or "")[:10]
-                        if isinstance(session, str) and session and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamp or ""):
-                            out[session.lower()].add(stamp)
-            except OSError:
-                continue
-    cache[pid] = dict(out)
-    return cache[pid]
 
 
 def _env_dirs(name: str) -> list:
@@ -2359,17 +2639,18 @@ def _load_parked() -> dict:
 
 
 # Kinds that may carry no instincts: a retire block removes, it does not add, and is not gated.
-NO_MEMBER_KINDS = ("retire",)
+NO_MEMBER_KINDS = ("retire", "confirm-stated")
 
 
-def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
+def _gate(blocks: list[dict], dry_run: bool, report: Optional[list] = None) -> list[dict]:
     """Blocks that pass the gate. Failing ones go to the parked list with every reason and the
     date; a parked entry is updated on each run and kept when it later passes (marked cleared).
     A retire block is not gated: it removes, it does not add."""
     if not blocks:
         return blocks
     corpus, registry, parked = None, load_registry(), _load_parked()
-    user_stated, promoted_notes, observed_cache = _load_user_stated(), _load_promoted_notes(), {}
+    user_stated, note_sessions = _load_user_stated(), _load_note_sessions()
+    promoted_notes = _backfill_promoted_notes(_load_ledger(), write=not dry_run)
     identity = Path(os.environ.get("NEVA_CONFIG") or Path.home() / ".config" / "neva" / "identity.env").expanduser()
     try:
         thresholds = quality_gate.load_thresholds(identity)
@@ -2403,10 +2684,15 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
         pids = sorted({p for m in members if Path(m.get('_source_file', '')).parent.name in
                        projects[m.get('_source_file')] for p in projects[m.get('_source_file')]})
         skip = {f"global instinct {m.get('id')}" for m in members}
-        stated = {m['_source_file'] for m in members if m.get('_source_file') and _stated_now(user_stated, m)}
-        observed = {pid: _observed_sessions(pid, observed_cache) for ps in projects.values() for pid in ps}
+        # His own words (add, hash matching) or a global note he approved by a tick (hash matching).
+        stated = {m['_source_file'] for m in members if m.get('_source_file') and (
+            _stated_now(user_stated, m) or _approved_now(promoted_notes, m))}
+        observed = {m.get('_source_file'): _engine_sessions(m, note_sessions, promoted_notes) for m in members}
         reasons = quality_gate.check(members, pids, corpus, registry, skip_labels=skip, observed=observed,
-                                     stated=stated, projects=projects, peers=peers, thresholds=thresholds)
+                                     stated=stated, projects=projects,
+                                     # A lesson the human stated is not measured against this run's
+                                     # other candidates: a hostile near-copy cannot park it.
+                                     peers=() if block.get('stated') else peers, thresholds=thresholds)
         entry = dict(parked.get(bid) or {})
         if reasons:
             entry.update({'kind': block['kind'], 'reasons': reasons, 'last_checked': _today(),
@@ -2416,6 +2702,8 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
             parked[bid] = entry
             parked_now += 1
             print(f"Parked {bid}: {'; '.join(reasons)}.")
+            if report is not None:
+                report.append((bid, f"parked: {'; '.join(reasons)}"))
             continue
         if entry:
             entry.update({'cleared': _today(), 'last_checked': _today()})
@@ -2430,7 +2718,32 @@ def _gate(blocks: list[dict], dry_run: bool) -> list[dict]:
     return passed
 
 
+NOT_PROPOSED_MAX_LINES = 20
+_NOT_PROPOSED_RE = re.compile(r'\n*## Not proposed this run\n.*?\n~~~~\n', re.S)
+
+
+def _not_proposed_section(rows: list) -> str:
+    """The skips of this run, where the human reads: id, reason, and what it matched. Inside a fence,
+    so nothing in it can read as a block; capped, with a count of what did not fit."""
+    if not rows:
+        return ""
+    def clean(text):
+        return "".join(c if unicodedata.category(c)[0] not in "CZ" or c == " " else " " for c in str(text))[:240]
+    lines = [clean(f"{bid}: {reason}") for bid, reason in rows[:NOT_PROPOSED_MAX_LINES]]
+    if len(rows) > NOT_PROPOSED_MAX_LINES:
+        lines.append(f"... and {len(rows) - NOT_PROPOSED_MAX_LINES} more; `instinct-cli.py list --parked` shows parked ones")
+    return ("\n\n## Not proposed this run\n\nThese candidates were checked this run and not filed, with the reason.\n\n"
+            "~~~~text\n" + "\n".join(lines) + "\n~~~~\n")
+
+
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
+    if dry_run:
+        return _emit_blocks_unlocked(blocks, dry_run=dry_run, repropose=repropose)  # writes nothing
+    with _ledger_lock():
+        return _emit_blocks_unlocked(blocks, dry_run=dry_run, repropose=repropose)
+
+
+def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
     if not dry_run:
         _preflight_state()
     try:
@@ -2441,6 +2754,9 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
     ledger = _load_ledger()
     _backfill_content(ledger)
     in_vault = _vault_block_states()
+    user_stated = _load_user_stated()
+    promoted_now = _backfill_promoted_notes(ledger, write=not dry_run)
+    not_proposed = []  # (block id, reason) for the section the human reads in the proposal file
     fresh = []
     for block in blocks:
         bid = block['block_id']
@@ -2452,22 +2768,33 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
                 continue
             if prior.get('status') == 'proposed' and Path(prior.get('file', '')).exists():
                 continue
+        block['returning'] = bool(prior) and prior.get('status') == 'withdrawn'
         unsafe = _unsafe_reason(block)
         if unsafe:
             print(f"Refused {bid}: {unsafe}. It was not proposed. Fix: edit the instinct note so its text holds "
                   f"no fence line, no block id marker and no control characters; it is checked again on the "
                   f"next run.", file=sys.stderr)
+            not_proposed.append((bid, f"refused: {unsafe}"))
             continue
         block['content'] = _block_content(block)
-        if not repropose:
-            match = _matching_decision(ledger, block, block['content'])
+        # A lesson the human stated, still as he wrote it, is buried only by a rejection of the very
+        # same content, never by one that merely means something close.
+        block['stated'] = bool(block.get('members')) and all(
+            _stated_now(user_stated, m) or _approved_now(promoted_now, m) for m in block['members'])
+        if not repropose and not block['returning'] and block['kind'] != 'confirm-stated':
+            match = _matching_decision(ledger, block, block['content'], exact_only=block['stated'])
             if match:
                 print(f"Skipped {bid}: says the same as {match[0]}, {match[1].get('status')} "
                       f"{match[1].get('date', '')} ({match[1].get('reason') or 'no reason recorded'}).")
+                not_proposed.append((bid, f"says the same as {match[0]} ({match[1].get('status')} "
+                                          f"{match[1].get('date', '')})"))
                 continue
         fresh.append(block)
     if not repropose:
-        fresh = _gate(fresh, dry_run)
+        # A withdrawn block was proposed once under the old rules and was promised back for a fresh
+        # tick: it returns without the gate, as `promote <id>` does.
+        gated = set(id(b) for b in _gate([b for b in fresh if not b['returning']], dry_run, report=not_proposed))
+        fresh = [b for b in fresh if b['returning'] or id(b) in gated]
     if not fresh:
         print("No new instinct candidates to propose.")
         return 0
@@ -2484,7 +2811,8 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         print(f"Every candidate is already in {_vault_ref(path)}.")
         return 0
     rendered = {b['block_id']: _render_block(b) for b in fresh}
-    content = existing.rstrip("\n") + "\n\n" + "\n".join(rendered.values())
+    existing = _NOT_PROPOSED_RE.sub("", existing)
+    content = existing.rstrip("\n") + "\n\n" + "\n".join(rendered.values()) + _not_proposed_section(not_proposed)
     if path.exists():
         content = re.sub(r'^status: done$', 'status: open', content, count=1, flags=re.M)
     # Read the file back as apply-promotions will: every new block must come out as itself, once.
@@ -2501,7 +2829,7 @@ def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = Fa
         _ledger_record(ledger, bid, status='proposed', file=str(path), date=_today(),
                        rendered_sha256=_rendered_hash(as_written[bid]['body']),
                        destination=dict(block['fields']).get('Proposed destination'),
-                       sources=block.get('sources'),
+                       sources=block.get('sources'), source_hashes=block.get('source_hashes'),
                        ticked_at_propose=bool(as_written[bid]['approve']), **block['content'])
         _log_promotion_event("made", block['block_id'])
     _save_ledger(ledger)
@@ -2532,7 +2860,7 @@ def cmd_promote(args) -> int:
             print(f"Instinct '{args.instinct_id}' already exists in global scope.")
             return 1
         cand = {'id': args.instinct_id, 'entries': [(project['id'], project['name'], target)],
-                'avg_confidence': target.get('confidence', 0.5), 'why': "requested by the human with `promote <id>`"}
+                'avg_confidence': target.get('confidence', 0.5), 'why': "requested by the human with `promote` for this id"}
         blocks = [_promote_block(cand)]
     else:
         candidates = _promotion_candidates()
@@ -2584,6 +2912,10 @@ def cmd_propose(args) -> int:
             blocks += _evolve_blocks(project, *_evolve_candidates(global_instincts), limit=limit)
     blocks += _rule_blocks()
     blocks += _retire_blocks()
+    blocks += _confirm_stated_block()
+    again = learning_io.read_json_object(CONFIRM_AGAIN_FILE) if CONFIRM_AGAIN_FILE.exists() else {}
+    if again.get('refs'):
+        blocks += _confirm_stated_block("again", set(again['refs']))
     return _emit_blocks(blocks, dry_run=args.dry_run)
 
 
@@ -2665,8 +2997,14 @@ def _allowed_destination(path: Path) -> bool:
     return any(resolved == r or r in resolved.parents for r in roots)
 
 
+# Returned by _apply_block when the destination already holds the text: nothing was written.
+ALREADY_PRESENT = "\x00already present"
+
+
 def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     """Apply one block. Returns '' on success or an error naming the field and the fix."""
+    if block['block_id'] in (CONFIRM_STATED_ID, CONFIRM_AGAIN_ID):
+        return _confirm_stated_apply(block, entry)
     f = block['fields']
     kind = f.get('Kind', '')
     bid = block['block_id']
@@ -2701,7 +3039,7 @@ def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     if mode == 'create':
         if dest.exists():
             if dest.read_text(encoding="utf-8") == text:
-                return ''
+                return ALREADY_PRESENT
             return f"block {bid}: destination exists: {dest}. Fix: rename or remove it, or edit the 'Proposed destination' row."
         _write_text_atomic(dest, text)
         created = True
@@ -2709,7 +3047,7 @@ def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
         dest.parent.mkdir(parents=True, exist_ok=True)
         existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
         if text.strip() in existing:
-            return ''
+            return ALREADY_PRESENT
         _write_text_atomic(dest, existing.rstrip("\n") + ("\n\n" if existing else "") + text)
     elif mode == 'set-frontmatter':
         if not dest.exists():
@@ -2760,7 +3098,13 @@ def _record_promoted_note(dest: Path, text: str, sources: list) -> None:
         if PROJECT_INSTINCTS_DIR is not None and _same_file(path.parent.parent, PROJECT_INSTINCTS_DIR):
             pids.append(path.parent.name)
     promoted = _load_promoted_notes()
-    promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources}
+    note_sessions = _load_note_sessions()
+    merged = {}
+    for ref in sources:
+        for session, days in (note_sessions.get(ref) or {}).items():
+            merged[session] = sorted(set(merged.get(session, [])) | set(days or []))
+    promoted[_vault_ref(dest)] = {"date": _today(), "sha": sha, "projects": sorted(set(pids)), "sources": sources,
+                                  "sessions": merged, "approved": True}
     _save_state_json(PROMOTED_NOTES_FILE, promoted)
     stated = _load_user_stated()
     if len(notes) == len(sources) and all(_stated_now(stated, n) for n in notes) and \
@@ -2833,10 +3177,11 @@ def _same_file(a, b) -> bool:
 
 # The one write mode the engine ever proposes for each kind.
 KIND_WRITE_MODE = {'promote-global': 'create', 'evolve-skill': 'create', 'evolve-command': 'create',
-                   'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter'}
+                   'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter',
+                   'confirm-stated': 'record'}
 
 
-def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) -> str:
+def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1, content_checks: bool = True) -> str:
     """'' when the engine proposed this block in this file and it still says what was written, else why not.
 
     Only a block the ledger recorded as proposed for this very file is acted on, approve or reject:
@@ -2860,6 +3205,8 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) 
     if not _same_file(entry.get('file'), path):
         return (f"{where} skipped: the ledger proposed it in {entry.get('file') or 'no file'}, not in this file. "
                 f"Fix: tick it in the file the ledger names, or delete this copy.")
+    if not content_checks:
+        return ''
     kind_row = str(block['fields'].get('Kind', '')).strip()
     if kind_row and kind_row != bid.partition(':')[0]:
         return (f"{where} refused: its Kind row says '{kind_row}' but its id is a {bid.partition(':')[0]} block. "
@@ -2881,9 +3228,14 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1) 
 
 
 def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
+    with _ledger_lock():
+        return _apply_files_unlocked(files, mode=mode, only_ids=only_ids)
+
+
+def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
     _preflight_state()
     ledger = _load_ledger()
-    applied = rejected = failed = 0
+    applied = rejected = failed = withdrawn = present = 0
     for path in files:
         if not path.exists():
             print(f"{path} does not exist. Fix: pass --file with an existing proposal file.", file=sys.stderr)
@@ -2921,6 +3273,27 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             bid = block['block_id']
             if only_ids is not None and bid not in only_ids:
                 continue
+            # Is this the engine's own block, in this file? Only that is needed to honour a reject:
+            # a rejection writes nothing, so it is read before any text check or legacy withdrawal.
+            refusal = _provenance_problem(ledger, block, path, copies=marker_counts[bid], content_checks=False)
+            if refusal:
+                print(refusal, file=sys.stderr)
+                failed += 1
+                continue
+            if block['approve'] and block['reject']:
+                msg = f"block {bid}: both approve and reject are ticked. Fix: untick one."
+                print(msg, file=sys.stderr)
+                text = _mark_block(text, block, f"Failed {_today()}: {msg}", False)
+                failed += 1
+                continue
+            if block['reject']:
+                text = _mark_block(text, block, f"Rejected {_today()}.", False)
+                _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
+                               reason=_block_reason(block) or "ticked reject",
+                               **_recorded_content(ledger.get(bid)))
+                _log_promotion_event("rejected", bid)
+                rejected += 1
+                continue
             refusal = _provenance_problem(ledger, block, path, copies=marker_counts[bid])
             if refusal:
                 print(refusal, file=sys.stderr)
@@ -2951,26 +3324,21 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
                                     f"it must be re-proposed.\n", 1)
                 text = text.replace(block['body'], body, 1)
                 _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy)
-                failed += 1
-                continue
-            if block['approve'] and block['reject']:
-                msg = f"block {bid}: both approve and reject are ticked. Fix: untick one."
-                print(msg, file=sys.stderr)
-                text = _mark_block(text, block, f"Failed {_today()}: {msg}", False)
-                failed += 1
-                continue
-            if block['reject']:
-                text = _mark_block(text, block, f"Rejected {_today()}.", False)
-                _ledger_record(ledger, bid, status='rejected', file=str(path), date=_today(),
-                               reason=_block_reason(block) or "ticked reject",
-                               **_content_from_fields(block['fields'], block['text']))
-                _log_promotion_event("rejected", bid)
-                rejected += 1
+                withdrawn += 1  # not a failure: it comes back on the next propose
                 continue
             go = block['approve'] or mode in ("all", "ids")
             if not go:
                 continue
             err = _apply_block(block, ledger.get(bid))
+            if err == ALREADY_PRESENT:
+                dest = block['fields'].get('Proposed destination', '')
+                text = _mark_block(text, block, f"Applied {_today()}: already present, nothing written ({dest}).",
+                                   not block['approve'])
+                _ledger_record(ledger, bid, status='applied', file=str(path), date=_today(),
+                               **_recorded_content(ledger.get(bid)))
+                print(f"{bid}: already present, nothing written ({dest}).")
+                present += 1
+                continue
             if err:
                 print(err, file=sys.stderr)
                 text = _mark_block(text, block, f"Failed {_today()}: {err}", False)
@@ -2979,7 +3347,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             dest = block['fields'].get('Proposed destination', '')
             text = _mark_block(text, block, f"Applied {_today()} to {dest}.", not block['approve'])
             _ledger_record(ledger, bid, status='applied', file=str(path), date=_today(),
-                           **_content_from_fields(block['fields'], block['text']))
+                           **_recorded_content(ledger.get(bid)))
             _log_promotion_event("approved", bid)
             applied += 1
         finished = not malformed and all(b['resolved'] for b in _parse_blocks(text))
@@ -2989,7 +3357,9 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
         if finished:
             _inbox_pointer(path, done=True)
     _save_ledger(ledger)
-    print(f"Applied {applied}, rejected {rejected}, failed {failed}.")
+    print(f"Applied {applied}, rejected {rejected}, failed {failed}."
+          + (f" Withdrawn {withdrawn}, to be re-proposed for a fresh tick." if withdrawn else "")
+          + (f" Already present {present}, nothing written." if present else ""))
     return 1 if failed else 0
 
 
@@ -3016,6 +3386,11 @@ def _resolve_block_ref(ref: str, ledger: dict) -> list[str]:
 
 
 def cmd_reject(args) -> int:
+    with _ledger_lock():
+        return cmd_reject_unlocked(args)
+
+
+def cmd_reject_unlocked(args) -> int:
     """Record a rejection by block id or slug, with a reason. The block is ticked reject in its
     proposal file when it is still open there, and the ledger keeps the slug, the content key, the
     reason and the date, so the same lesson under another slug is never proposed again."""
@@ -3046,7 +3421,7 @@ def cmd_reject(args) -> int:
         if block is None:
             continue
         where = str(path)
-        content = _content_from_fields(block['fields'], block['text'])
+        content = _recorded_content(ledger.get(bid))
         if not block['resolved']:
             body = block['body'].replace("- [ ] reject", "- [x] reject", 1)
             body = body.replace("- [x] reject\n", f"- [x] reject\n\nRejected {_today()}: {reason}\n", 1)
@@ -3407,9 +3782,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser('stats', help='Summary statistics')
 
     p = sub.add_parser('add', help='Record a user-stated instinct')
-    p.add_argument('--id', required=True, help='kebab-case id, 2-5 words')
-    p.add_argument('--trigger', required=True, help='"when <specific condition>"')
-    p.add_argument('--action', required=True, help='one clear sentence')
+    p.add_argument('--id', help='kebab-case id, 2-5 words')
+    p.add_argument('--trigger', help='"when <specific condition>"')
+    p.add_argument('--action', help='one clear sentence')
+    p.add_argument('--restate', metavar='ID',
+                   help='re-vouch an existing note you stated and then edited yourself: records its current text')
     p.add_argument('--domain', default='workflow')
     p.add_argument('--confidence', type=float, default=0.7, help='0.1-1.0, or 1-10')
     p.add_argument('--scope', choices=['project', 'global'], default='project')

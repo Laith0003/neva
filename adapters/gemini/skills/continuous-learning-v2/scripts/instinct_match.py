@@ -60,6 +60,24 @@ need needs needed want wants wanted make makes made run runs one two first new w
 """.split())
 
 
+_ARABIC_FOLD = str.maketrans({"\u0623": "\u0627", "\u0625": "\u0627", "\u0622": "\u0627", "\u0671": "\u0627",
+                              "\u0629": "\u0647", "\u0649": "\u064a"})
+
+
+def fold_arabic(word):
+    """One spelling for the forms a rewording changes: hamza or madda on alef to bare alef, taa
+    marbuta to haa, alef maqsura to yaa, and a leading article al- dropped when at least three letters
+    remain. Words in other scripts pass unchanged."""
+    w = word.translate(_ARABIC_FOLD)
+    if w.startswith("\u0627\u0644") and len(w) - 2 >= 3:
+        w = w[2:]
+    return w
+
+
+# Stop words in their folded spelling too, so folding never turns one back into a token.
+STOP_WORDS = frozenset(STOP_WORDS | {fold_arabic(w) for w in STOP_WORDS if not w.isascii()})
+
+
 def normalize(text):
     """Casefolded, NFKC, with Arabic diacritics and tatweel removed."""
     return _ARABIC_MARKS.sub("", unicodedata.normalize("NFKC", str(text or "")).casefold())
@@ -91,7 +109,7 @@ def tokens(text, stop=STOP_WORDS):
     for w in _WORD.findall(normalize(text)):
         if len(w) < 2 or w.isdigit() or w in stop:
             continue
-        s = stem(w) if w.isascii() else w
+        s = stem(w) if w.isascii() else fold_arabic(w)
         if s in stop or s in seen:
             continue
         seen.add(s)
