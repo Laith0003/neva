@@ -176,7 +176,7 @@ class ReturningRuleBlockCase(unittest.TestCase):
         with open(os.path.join(self.state, name), "w", encoding="utf-8") as fh:
             json.dump(data, fh)
 
-    def _rewrite_note(self):
+    def _rewrite_note(self, action=OTHER_ACTION, trigger=OTHER_TRIGGER):
         notes = glob.glob(os.path.join(self.sb.vault, "06 Memory", "instincts", "**", "explicit-errors.md"),
                           recursive=True)
         self.assertEqual(len(notes), 1, notes)
@@ -184,7 +184,7 @@ class ReturningRuleBlockCase(unittest.TestCase):
             text = fh.read()
         self.assertIn(RULE_ACTION, text)
         with open(notes[0], "w", encoding="utf-8") as fh:
-            fh.write(text.replace(RULE_ACTION, OTHER_ACTION).replace(RULE_TRIGGER, OTHER_TRIGGER))
+            fh.write(text.replace(RULE_ACTION, action).replace(RULE_TRIGGER, trigger))
 
     def test_an_unchanged_legacy_rule_block_is_keyed_at_withdrawal(self):
         self.sb.run("apply-promotions", check=False, env=self.env)
@@ -206,6 +206,58 @@ class ReturningRuleBlockCase(unittest.TestCase):
         entry = self._ledger()[RULE_BID]
         self.assertEqual(entry["status"], "withdrawn", entry)
         self.assertFalse(entry.get("withdrawn_content_key"), entry)
+
+    def test_a_rule_note_cut_down_before_the_withdrawal_does_not_carry_the_promise(self):
+        # Every word left in the note is still in the rule text the block shows, but the block shows
+        # more: the lesson he was shown is not the lesson the note now holds.
+        self._rewrite_note(action="Return a typed error.", trigger=RULE_TRIGGER)
+        self.sb.run("apply-promotions", check=False, env=self.env)
+        entry = self._ledger()[RULE_BID]
+        self.assertEqual(entry["status"], "withdrawn", entry)
+        self.assertFalse(entry.get("withdrawn_content_key"), entry)
+        self._write("user-stated.json", {})
+        r = self.sb.run("propose", check=False, env=self.env)
+        self.assertNotEqual(self._ledger()[RULE_BID]["status"], "proposed", r.stdout + r.stderr)
+
+    def test_a_rule_note_with_words_added_before_the_withdrawal_does_not_carry_the_promise(self):
+        self._rewrite_note(action=RULE_ACTION + " Log the caller and retry twice.", trigger=RULE_TRIGGER)
+        self.sb.run("apply-promotions", check=False, env=self.env)
+        self.assertFalse(self._ledger()[RULE_BID].get("withdrawn_content_key"), self._ledger()[RULE_BID])
+
+
+class ReturningEvolvedBlockCase(unittest.TestCase):
+    """A skill, command or agent block shows text the engine composed from several notes. Nothing in
+    it can be compared exactly with the notes, so an old entry with no key from propose records none
+    at withdrawal and the block comes back through the same checks as any new candidate."""
+
+    def test_a_legacy_evolved_block_records_no_key_at_withdrawal(self):
+        sb = InstinctSandbox()
+        self.addCleanup(sb.close)
+        env = {"NEVA_INSTINCT_EVOLVE": "1", "CLAUDE_CONFIG_DIR": os.path.join(sb.tmp, "cfg")}
+        os.makedirs(env["CLAUDE_CONFIG_DIR"])
+        sb.run("status", env=env)
+        for n, action in enumerate(("Run the database migration dry run before deploying.",
+                                    "Snapshot the database before deploying any migration.",
+                                    "Announce the deploy window in the release channel before deploying migrations.")):
+            sb.run("add", "--id", f"deploy-step-{n}", "--trigger", "when deploying database migrations to staging",
+                   "--action", action, "--domain", "workflow", "--confidence", "0.9", env=env)
+        sb.run("evolve", "--propose", check=False, env=env)
+        path = os.path.join(sb.tmp, "state", "neva", "instincts", "promotions.json")
+        with open(path, encoding="utf-8") as fh:
+            ledger = json.load(fh)
+        evolved = [b for b, e in ledger.items() if e.get("status") == "proposed" and b.startswith("evolve-")]
+        self.assertTrue(evolved, ledger)
+        for bid in evolved:
+            for key in LEGACY_KEYS:
+                ledger[bid].pop(key, None)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(ledger, fh)
+        sb.run("apply-promotions", check=False, env=env)
+        with open(path, encoding="utf-8") as fh:
+            ledger = json.load(fh)
+        for bid in evolved:
+            self.assertEqual(ledger[bid]["status"], "withdrawn", ledger[bid])
+            self.assertFalse(ledger[bid].get("withdrawn_content_key"), ledger[bid])
 
 
 if __name__ == "__main__":

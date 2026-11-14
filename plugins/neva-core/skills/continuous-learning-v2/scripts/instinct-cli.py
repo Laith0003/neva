@@ -2416,24 +2416,35 @@ def _block_content(block: dict) -> dict:
     return _content_from_fields(dict(block['fields']), block.get('text'))
 
 
-# Share of the notes' words that a rendered fence (a rule, a skill) must hold for the notes to count
-# as still saying what the block shows. The fence adds a title and a source line around them.
-FENCE_HOLDS_NOTES = 0.9
+def _rule_fence_lesson(text: str) -> Optional[str]:
+    """The trigger and action a rule fence was rendered from, or None when the text is not in the
+    form _rule_text writes ('## title', the action, the 'Trigger: ... Source: ...' line)."""
+    parts = text.rstrip("\n").split("\n\n")
+    if len(parts) != 3 or not parts[0].startswith("## "):
+        return None
+    m = _RULE_TAIL.match(parts[2])
+    if not m:
+        return None
+    action = "\n".join(_rule_unescape_line(ln) for ln in parts[1].split("\n"))
+    return f"{m.group(1).replace(chr(92) + '<', '<')} {action}"
 
 
 def _notes_still_say_the_fence(block: dict, now: dict) -> bool:
-    """Whether the notes behind a block (`now`, from _block_content) still say what its own fence
-    shows. A fence that is an instinct note is compared by content key. Any other fence is text the
-    engine rendered from the notes, so it never has the notes' key: the notes' words must be in it."""
+    """Whether the notes behind a block (`now`, from _block_content) say exactly what its own fence
+    shows, by content key. A fence that is an instinct note is keyed as it stands. A rule fence is
+    keyed on the trigger and action it was rendered from. Any other fence (a skill, a command, an
+    agent) is text composed from several notes that cannot be taken apart again, so nothing vouches
+    for it and the answer is no: words cut from or added to a note must never pass."""
     fence = block.get('text') or ""
     if not now.get('content_key') or not fence.strip():
         return False
     if fence.lstrip().startswith("---") and any(i.get('trigger') for i in parse_instinct_file(fence)):
-        return _content_from_fields({}, fence).get('content_key') == now['content_key']
-    words = set(now.get('content_tokens') or ())
-    if not words:
-        return False
-    return len(words & set(_content_tokens(fence))) / len(words) >= FENCE_HOLDS_NOTES
+        shown = fence
+    else:
+        shown = _rule_fence_lesson(fence)
+        if shown is None:
+            return False
+    return _content_from_fields({}, shown).get('content_key') == now['content_key']
 
 
 def _ledger_record(ledger: dict, bid: str, **updates) -> dict:
