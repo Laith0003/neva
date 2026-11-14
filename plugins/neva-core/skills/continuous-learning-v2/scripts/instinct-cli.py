@@ -2348,6 +2348,21 @@ def _instinct_text(inst: dict) -> str:
     return f"{inst.get('trigger', '')} {_action_of(inst)}"
 
 
+_NOTE_INDEX: dict = {}
+
+
+def _note_index(directory) -> dict:
+    """id -> note for one instincts folder, read once per run (each command is one process). Looking an
+    id up used to re-read the whole folder per block, which made propose quadratic."""
+    key = str(directory)
+    if key not in _NOTE_INDEX:
+        index = {}
+        for inst in _load_instincts_from_dir(directory, "any", include_inactive=True):
+            index.setdefault(inst.get('id'), inst)
+        _NOTE_INDEX[key] = index
+    return _NOTE_INDEX[key]
+
+
 def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
     """The lesson a block carries: the trigger and action of every instinct it names, looked up in
     the vault (project buckets named in the block, then global, inactive notes included). Falls back
@@ -2362,13 +2377,10 @@ def _content_from_fields(fields: dict, fence_text: Optional[str]) -> dict:
         if not _validate_instinct_id(iid):
             continue
         for d in dirs:
-            for inst in _load_instincts_from_dir(d, "any", include_inactive=True):
-                if inst.get('id') == iid:
-                    texts.append(_instinct_text(inst))
-                    break
-            else:
-                continue
-            break
+            inst = _note_index(d).get(iid)
+            if inst is not None:
+                texts.append(_instinct_text(inst))
+                break
     if not texts and fence_text:
         parsed = parse_instinct_file(fence_text) if fence_text.lstrip().startswith("---") else []
         texts = [_instinct_text(i) for i in parsed if i.get('trigger')] or [fence_text]
