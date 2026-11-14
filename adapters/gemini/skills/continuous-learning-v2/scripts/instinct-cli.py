@@ -2719,7 +2719,10 @@ def _gate(blocks: list[dict], dry_run: bool, report: Optional[list] = None) -> l
 
 
 NOT_PROPOSED_MAX_LINES = 20
-_NOT_PROPOSED_RE = re.compile(r'\n*## Not proposed this run\n.*?\n~~~~\n', re.S)
+# The section sits between two markers the engine writes; the sanitiser refuses '<!--' in any block's
+# text, so no block can carry them and removal can never reach into a block.
+NOT_PROPOSED_BEGIN, NOT_PROPOSED_END = "<!-- not-proposed:begin -->", "<!-- not-proposed:end -->"
+_NOT_PROPOSED_RE = re.compile(r'\n*' + re.escape(NOT_PROPOSED_BEGIN) + r'.*?' + re.escape(NOT_PROPOSED_END) + r'\n?', re.S)
 
 
 def _not_proposed_section(rows: list) -> str:
@@ -2732,8 +2735,8 @@ def _not_proposed_section(rows: list) -> str:
     lines = [clean(f"{bid}: {reason}") for bid, reason in rows[:NOT_PROPOSED_MAX_LINES]]
     if len(rows) > NOT_PROPOSED_MAX_LINES:
         lines.append(f"... and {len(rows) - NOT_PROPOSED_MAX_LINES} more; `instinct-cli.py list --parked` shows parked ones")
-    return ("\n\n## Not proposed this run\n\nThese candidates were checked this run and not filed, with the reason.\n\n"
-            "~~~~text\n" + "\n".join(lines) + "\n~~~~\n")
+    return ("\n\n" + NOT_PROPOSED_BEGIN + "\n## Not proposed this run\n\nThese candidates were checked this run and "
+            "not filed, with the reason.\n\n~~~~text\n" + "\n".join(lines) + "\n~~~~\n" + NOT_PROPOSED_END + "\n")
 
 
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
