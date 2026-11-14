@@ -10,6 +10,8 @@
 
 Run:  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/scripts/tests
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -65,7 +67,8 @@ class NoMembersCase(unittest.TestCase):
         cli = _module(sb)
         bare = cli._block("rule", "x", [("Kind", "rule")], "text")
         retire = cli._block("retire", "y", [("Kind", "retire")], "status: archived\n")
-        passed = cli._gate([bare, retire], dry_run=True)
+        with contextlib.redirect_stdout(io.StringIO()):  # keep the gate's notes out of the suite summary
+            passed = cli._gate([bare, retire], dry_run=True)
         self.assertEqual([b['block_id'] for b in passed], ["retire:y"])
         self.assertEqual(cli.NO_MEMBER_KINDS, ("retire", "confirm-stated"))
 
@@ -155,7 +158,7 @@ class RevertGuardCase(unittest.TestCase):
         cli = _module(sb)
         from unittest import mock
         bare = cli._block("evolve-command", "x", [("Kind", "evolve-command")], "text")
-        with mock.patch.dict(os.environ, sb.env, clear=True):
+        with mock.patch.dict(os.environ, sb.env, clear=True), contextlib.redirect_stdout(io.StringIO()):
             passed = cli._gate([bare], dry_run=False)
         self.assertEqual(passed, [])
         parked = json.load(open(os.path.join(sb.tmp, "state", "neva", "instincts", "parked.json")))
