@@ -39,5 +39,5 @@ The vault comes from `NEVA_VAULT`, else `VAULT_PATH` in `~/.config/neva/identity
 ## Applying
 
 - The owner ticks `approve` or `reject` in a block. The nightly job applies ticked blocks, or run `instinct-cli.py apply-promotions`.
-- Run `apply-promotions --all` only when the owner says "apply instinct promotions" in this conversation. Never tick a box yourself.
+- An evolved skill, command or agent is written only for a ticked block. `apply-promotions --all` never applies an unticked evolve block: it adds only open retire blocks. Never tick a box yourself.
 - Report afterwards: what was applied, where, and anything that failed with its `Fix:` line.
