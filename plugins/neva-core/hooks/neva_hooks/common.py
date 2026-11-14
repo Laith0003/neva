@@ -1144,12 +1144,13 @@ def parse_instinct(path):
     return meta
 
 
-def load_instincts(root, project_id=None, include_global=True):
+def load_instincts(root, project_id=None, include_global=True, keep_shadowed=False):
     """Canonical layout (continuous-learning-v2):
       global/<id>.md               every project
       project/<project-id>/<id>.md one project
     pending/ subfolders are never loaded, nor notes whose status is archived or promoted.
-    Project instincts win over global ones with the same id."""
+    Project instincts win over global ones with the same id; keep_shadowed=True keeps both, for
+    the approval check, which must not let an unapproved project copy hide an approved global one."""
     found = []
     if not root or not os.path.isdir(root):
         return found
@@ -1180,9 +1181,15 @@ def load_instincts(root, project_id=None, include_global=True):
     if project_id:
         found += scan(os.path.join(root, "project", project_id), "project")
     if include_global:
-        mine = {i["id"] for i in found}
+        mine = set() if keep_shadowed else {i["id"] for i in found}
         found += [i for i in scan(os.path.join(root, "global"), "global") if i["id"] not in mine]
     return found
+
+
+def _shadow(found):
+    """Project copies over global ones with the same id, as load_instincts returns them by default."""
+    mine = {i["id"] for i in found if i.get("_scope") == "project"}
+    return [i for i in found if i.get("_scope") == "project" or i["id"] not in mine]
 
 
 # ---------------------------------------------------------------- instinct recall
@@ -1206,6 +1213,52 @@ def instinct_match():
     return module
 
 
+INSTINCT_TRUST = os.path.join(os.path.dirname(INSTINCT_MATCH), "instinct_trust.py")
+
+
+@functools.lru_cache(maxsize=None)
+def instinct_trust():
+    """The skill's instinct_trust module (the one parser, hash and approval check the CLI uses),
+    loaded by path like instinct_match. Raises when the file is missing; callers catch."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("neva_instinct_trust", INSTINCT_TRUST)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {INSTINCT_TRUST}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def approved_only(vault, found):
+    """The notes among `found` that carry an engine record of approval and still match it
+    (instinct_trust.approved_note): a global note an apply created from a ticked promotion, or a
+    note `add` recorded. Each kept note is rebuilt from the shared parse the hash covers, so what
+    is injected is what was approved. The two state files are read once; a note is read and hashed
+    only when a row names it. Missing or unreadable state: nothing is approved."""
+    t = instinct_trust()
+    stated, promoted = t.load_records()
+    if not stated and not promoted:
+        return []
+    out = []
+    for i in found:
+        path = i.get("_path")
+        ref = t.vault_ref(path, vault)
+        if not t.has_record(ref, stated, promoted):
+            continue
+        inst = t.approved_note(read_text(path), ref, stated, promoted)
+        if inst is None or str(inst.get("status", "active")).lower() in INACTIVE_STATUSES:
+            continue
+        item = {k: v for k, v in inst.items() if k != "content"}
+        try:
+            item["confidence"] = float(inst.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            item["confidence"] = 0.5
+        item["action"] = t.action_text(inst) or str(inst.get("trigger", ""))
+        item.update(_path=path, _scope=i.get("_scope"), _body=inst.get("content", ""))
+        out.append(item)
+    return out
+
+
 def _filter_candidates(found):
     """Injectable instincts out of already-parsed notes: at or above NEVA_INSTINCT_MIN_CONFIDENCE
     (default 0.7), finite confidence, an action, one per id, project copy over global."""
@@ -1227,7 +1280,9 @@ def recall_candidates(vault, project_id):
     """Injectable instincts for this project. recall_inputs is what the hooks call: it returns
     these and the corpus counts without reading any note twice."""
     root = instincts_root(vault)
-    return _filter_candidates(load_instincts(root, project_id)) if root else []
+    if not root:
+        return []
+    return _filter_candidates(approved_only(vault, load_instincts(root, project_id, keep_shadowed=True)))
 
 
 def _corpus_dirs(root):
@@ -1295,8 +1350,10 @@ def recall_inputs(vault, project_id, m):
     root = instincts_root(vault)
     if not root or not os.path.isdir(root):
         return [], m.Idf()
-    found = load_instincts(root, project_id)
-    candidates = _filter_candidates(found)
+    every = load_instincts(root, project_id, keep_shadowed=True)
+    found = _shadow(every)
+    # Only approved notes inject; every note still counts for rarity.
+    candidates = _filter_candidates(approved_only(vault, every))
     key = corpus_signature(root)
     cache_p = os.path.join(state_dir(), "instinct-df.json")
     cached = read_json(cache_p, None)

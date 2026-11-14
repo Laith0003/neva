@@ -1,6 +1,6 @@
 ---
 name: promote
-description: "Propose moving project instincts to global scope; apply only when the owner asked for that promotion"
+description: "Propose moving project instincts to global scope; nothing is applied until the owner ticks the block"
 command: true
 ---
 
@@ -8,7 +8,7 @@ command: true
 
 # Promote Command
 
-Proposal first. `/promote` files promote-global blocks for the owner to approve. It writes a global instinct only when the owner, in this conversation, asked for that exact promotion.
+Proposal first. `/promote` files promote-global blocks for the owner to approve. A global instinct is written only after the owner ticks `approve` on its block in the proposal file. No flag replaces the tick.
 
 ## Implementation
 
@@ -40,7 +40,6 @@ The vault comes from `NEVA_VAULT`, else `VAULT_PATH` in `~/.config/neva/identity
 | The owner | Run |
 |---|---|
 | ticks `approve` in the block | nothing now: the nightly job applies it, or run `instinct-cli.py apply-promotions` |
-| says "promote <id> now" for one named instinct | `promote <id> --apply` |
-| says "apply instinct promotions" | `apply-promotions --all` |
+| says "promote <id> now" for one named instinct | `promote <id> --apply`: it files the block, prints the file to tick it in, and stops. Tell the owner where to tick; apply after the tick |
 
-On apply the global note is created (never overwritten), and each source note gets `status: promoted` and `promoted_to`. Without one of those three, do not pass `--apply` or `--all`, and never tick a box yourself.
+`apply-promotions --all` never applies a promote-global block without its tick (it adds only open retire blocks). On apply the global note is created (never overwritten), recorded with its hash as approved, and each source note gets `status: promoted` and `promoted_to`. Never tick a box yourself.

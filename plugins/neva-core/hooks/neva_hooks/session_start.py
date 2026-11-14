@@ -2,14 +2,16 @@
 """SessionStart: bounded context for a fresh session.
 
 Injects, in priority order (the tail is what the char cap cuts first):
-  1. instincts matched to this session (confidence >= NEVA_INSTINCT_MIN_CONFIDENCE, default 0.7,
-     at most NEVA_INSTINCT_MAX, default 3) from the continuous-learning-v2 layout:
+  1. approved instincts matched to this session (confidence >= NEVA_INSTINCT_MIN_CONFIDENCE,
+     default 0.7, at most NEVA_INSTINCT_MAX, default 3) from the continuous-learning-v2 layout:
      <vault>/06 Memory/instincts/project/<project-id>/*.md, then global/*.md. The query is the cwd
      path parts, project name, git branch and project note name, minus the login and home
      folder names; instinct_match.py scores it against each trigger, with rarity judged over the
      whole instinct corpus. Only matches are injected: no match, no block. Shown ids go to a
      per-session state file the first-prompt module (instinct_prompt) reads, and one line to
-     <state>/instinct-injections.jsonl.
+     <state>/instinct-injections.jsonl. Approved means the engine holds a record that still
+     matches the note (common.approved_only): a global note an apply made from a ticked
+     promotion, or a note `add` recorded. The analyzer's own notes are candidates, never injected.
   2. today's journal head, the inbox's `## Open actions`, open instinct proposal files and
      unsorted captures (skipped on resume)
   3. the last session summary for this worktree or repository (startup only), wrapped in a

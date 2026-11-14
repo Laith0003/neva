@@ -27,12 +27,14 @@ $NEVA_VAULT/06 Memory/instincts/project/<project-id>/<id>.md         one note pe
 <proposals dir>/Instinct promotions YYYY-MM-DD.md                   one block per candidate, with a checkbox
   + one pointer line under `## Open actions` in the inbox note         surfaced at every session start
       |
-      | human ticks approve, or says "apply instinct promotions"
+      | human ticks approve
       v
 global instinct | skill | command | agent | rule | retirement
 ```
 
-**Iron rule:** nothing leaves project scope, and nothing becomes a skill, command, agent, or rule, until a human ticks its block or says "apply instinct promotions". The analyzer writes project-scoped notes only. The proposal step writes proposals only.
+**Iron rule:** nothing leaves project scope, and nothing becomes a skill, command, agent, or rule, until a human ticks its block. No flag replaces the tick: `apply-promotions --all` adds only open retire blocks, and `promote <id> --apply` files the block and stops. The analyzer writes project-scoped notes only. The proposal step writes proposals only.
+
+**What reaches a session:** session start and prompt recall inject only an approved note: a global note an apply created from a block the human ticked (recorded with its hash in `promoted-notes.json`), or a note `add` wrote or `add --restate` vouched for (recorded with its hash in `user-stated.json`), while the note still matches that hash. The analyzer's own notes are candidates for proposals and are never injected. A new install injects nothing until something is added or approved. The hooks and the CLI read both records with one parser and one hash (`scripts/instinct_trust.py`). Notes `add` recorded in a project folder are denied to the analyzer: its run carries one `Edit(//<note>)` deny rule per recorded note.
 
 ## When to Activate
 
@@ -169,7 +171,7 @@ python3 <install prefix>/plugins/neva-core/skills/continuous-learning-v2/scripts
    - read the newest data first: the live `observations.jsonl`, then the files in `observations.pending/` newest to oldest by name. Inside one file, batches run head first, so each batch can be proven to be the file's head before it is archived;
    - each batch is an equal-split share of at most `max_analysis_lines` (1600) complete lines, shrunk until its compact view fits `max_view_bytes` (90 KB, small enough for the model to read whole), never below one line; one bucket gets at most `max_batches_per_run` (4) model calls a run, retries included (`NEVA_INSTINCT_MAX_BATCHES` overrides it, and `--max-batches N` overrides both for one run). Buckets run in name order rotated by one each run (`<state dir>/instinct-analyze-order.json`), so no bucket is always last;
    - the model reads a compact view of the batch through its own temp file, never the raw lines: a `tool_start` and its `tool_complete` or `tool_error` (same `tool_use_id`) become one `tool_call` record with `input` cut to 200 chars, `output` to 120 and `error` to 400; a half whose partner is outside the batch stays on its own, cut the same way; `session`, `project_id`, `project_name` and `harness` are dropped from records and a `{"event":"session"}` line marks each change of session; every other record (`user_prompt` included) passes through; a line that is not JSON becomes `unreadable_line` with its first 400 chars; no view line is longer than 1,800 characters (the longest field is cut and ends in `...[cut N chars]`; a record is cut, never skipped); a record whose own `event` is a reserved name (`end_of_batch`, `oversized_record`) passes through as `observed_<name>`, so nothing but the generated last line can end a batch; the last line is `{"event":"end_of_batch","records":N,"token":"<12 random hex>"}`, new for every batch;
-   - render `analyzer-prompt.md` and run `claude --model haiku --max-turns N --print --allowedTools 'Read,Edit(//<absolute instincts dir>/**)' -p <prompt>` (Claude Code accepts a `Write(...)` rule but never matches it, so it grants nothing; `//` marks an absolute path) with cwd = the project instinct dir, stdin closed, `NEVA_SKIP_OBSERVE=1 NEVA_HEADLESS=1 NEVA_HOOK_PROFILE=minimal`;
+   - render `analyzer-prompt.md` and run `claude --model haiku --max-turns N --print --setting-sources user --strict-mcp-config --allowedTools 'Read,Edit(//<absolute instincts dir>/**)' --disallowedTools '<deny list>' -p <prompt>` (Claude Code accepts a `Write(...)` rule but never matches it, so it grants nothing; `//` marks an absolute path) with stdin closed, `NEVA_SKIP_OBSERVE=1 NEVA_HEADLESS=1 NEVA_HOOK_PROFILE=minimal`. The child cannot steer its own next run: it starts in an empty folder the engine makes under the bucket's `.analyze-tmp/` (outside its Edit grant, removed after the run; a folder that would overlap the grant is refused and the batch waits), loads user settings only and no MCP server, and the deny list covers `.claude/**`, `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json`, `settings.json` and `settings.local.json` anywhere inside the grant, plus one `Edit(//<note>)` rule per note the add ledger records in the bucket. `--bare` is not used: it accepts only API-key auth. The argv and the working directory are tested; that Claude Code honours these flags and that deny rules win over allow rules is its documented behaviour, not something the tests can run;
    - `N` = 1 turn per 10 lines in the batch, floor 20, cap 100 (override `NEVA_INSTINCT_MAX_TURNS`, values below 4 fall back to 20);
    - timeout 120 s, then SIGTERM to the process group, then SIGKILL;
    - **accept only** when the exit code is 0 and the last non-empty output line decodes to exactly `{"status":"analysis_complete","token":"<this batch's token>"}`, with no other key, and only that one line does. The line is decoded as JSON, so spacing and key order do not matter. The token is only in the view's last line, so the record proves the model read to the end. Exit 0 alone, a record without the token, or another batch's token is not success;
@@ -278,7 +280,7 @@ Every block carries: instinct id(s), confidence, evidence count, projects seen i
 | Trigger | What is applied |
 |---|---|
 | Nightly job, or `apply-promotions` | only blocks with `- [x] approve` in every open proposal file |
-| Human says "apply instinct promotions" | run `apply-promotions --all`: every open block not ticked `reject`. Report the counts and destinations afterwards. |
+| `apply-promotions --all` | the ticked blocks, plus every open `retire` block (it archives a note inside the vault and carries no approval). Every other kind (promote-global, rule, evolve-skill, evolve-command, evolve-agent, confirm-stated) waits for its tick and is named in a `not applied ... Fix: tick approve` line. |
 | `- [x] reject` | nothing written; the block id is recorded with its content key and never proposed again, and neither is the same lesson under another slug. A `Reason: ...` line inside the block is stored as the reason |
 | `instinct-cli.py reject <block id or slug> --reason "..."` | the same, from the command line: ticks reject in the proposal file and records slug, content key, reason and date. `list --rejected` shows them |
 | both boxes ticked | error `block <id>: both approve and reject are ticked. Fix: untick one.` |
@@ -289,7 +291,7 @@ Rules the applier enforces:
 - `create` never overwrites: an existing different file fails with `destination exists: <path>. Fix: rename or remove it, or edit the 'Proposed destination' row.` An identical file counts as applied.
 - Each resolved block gets a line `Applied YYYY-MM-DD to <destination>.` or `Rejected YYYY-MM-DD.`; failures get `Failed YYYY-MM-DD: <error>` and stay open for retry.
 - When every block is resolved, the file's `status` becomes `done`. Proposal files are never deleted.
-- Agents never tick boxes and never pass `--all` or `promote --apply` on their own. Only the human's tick, the human's words "apply instinct promotions", or the human explicitly asking for one named promotion in the conversation authorizes a write.
+- Only the human's tick in the proposal file authorizes a write that carries approval or reaches the config folder: a global note, a rule, an evolved skill, command or agent, or a confirm-stated record. The code enforces this; no flag and no request in a conversation bypasses it. Agents never tick boxes.
 
 ## Commands
 
@@ -304,9 +306,9 @@ The CLI is Python 3 (stdlib only): `python3 "${CLAUDE_PLUGIN_ROOT}/skills/contin
 | `import <file\|https-url> [--scope] [--min-confidence] [--pending] [--dry-run] [--force]` | One note per instinct, `source: inherited`; keeps the higher confidence on id clashes; https only, public hosts only, 2 MB cap |
 | `export [--scope] [--domain] [--min-confidence] [--format instincts\|claude-md] [-o file]` | Instinct bundle for sharing, or a `## Project Learnings` section for CLAUDE.md |
 | `evolve [--propose] [--limit N] [--dry-run]` | Print skill, command, agent and promotion candidates; `--propose` files them as blocks, only with `NEVA_INSTINCT_EVOLVE=1` |
-| `promote [id] [--dry-run] [--apply]` | File promote-global blocks (all qualifying, or one id on request). `--apply` only when the human asked for that exact promotion |
+| `promote [id] [--dry-run] [--apply]` | File promote-global blocks (all qualifying, or one id on request). `--apply` files the block and stops: it prints where to tick it, and nothing is applied until the human ticks it |
 | `propose [--limit N] [--dry-run]` | Everything in the proposal table above |
-| `apply-promotions [--file PATH] [--all]` | Apply ticked blocks, or all open blocks |
+| `apply-promotions [--file PATH] [--all]` | Apply ticked blocks; `--all` also applies open retire blocks, nothing else |
 | `reject ID --reason TEXT` | Reject a block by id (`kind:slug`) or slug; stored by content as well as by slug |
 | `list [--rejected] [--parked]` | Open proposal blocks, every rejection with its reason, date and content key, or every candidate the quality gate parked |
 | `decay [--dry-run] [--quiet]` | Weekly confidence decay |

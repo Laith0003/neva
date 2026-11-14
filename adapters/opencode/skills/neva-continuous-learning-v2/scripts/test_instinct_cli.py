@@ -139,13 +139,19 @@ def test_both_boxes_ticked_is_a_named_error(sandbox):
     assert "both approve and reject are ticked. Fix: untick one." in result.stderr
 
 
-def test_apply_all_is_the_spoken_approval(sandbox):
+def test_apply_all_waits_for_the_tick_on_a_promotion(sandbox):
     run = sandbox["run"]
     _add(run, "repoA", "prefer-explicit-errors", 0.9)
     _add(run, "repoB", "prefer-explicit-errors", 0.85)
     run("propose")
-    run("apply-promotions", "--all")
-    assert re.search(r"^status: done$", _proposal(sandbox["vault"]).read_text(), re.M)
+    result = run("apply-promotions", "--all")
+    proposal = _proposal(sandbox["vault"])
+    assert "Fix: tick approve" in result.stderr
+    assert not (sandbox["vault"] / "06 Memory" / "instincts" / "global" / "prefer-explicit-errors.md").exists()
+    assert not re.search(r"^status: done$", proposal.read_text(), re.M)
+    _tick(proposal, "promote-global:prefer-explicit-errors", "approve")
+    run("apply-promotions")
+    assert re.search(r"^status: done$", proposal.read_text(), re.M)
 
 
 def test_destination_outside_allowed_roots_is_refused(sandbox):
@@ -163,7 +169,8 @@ def test_destination_outside_allowed_roots_is_refused(sandbox):
     ledger = json.loads(ledger_path.read_text())
     ledger["promote-global:prefer-explicit-errors"]["destination"] = "`/tmp/elsewhere/x.md`"
     ledger_path.write_text(json.dumps(ledger))
-    result = run("apply-promotions", "--all", check=False)
+    _tick(proposal, "promote-global:prefer-explicit-errors", "approve")
+    result = run("apply-promotions", check=False)
     assert "is outside the vault" in result.stderr
     assert not Path("/tmp/elsewhere/x.md").exists()
 
@@ -196,7 +203,8 @@ def test_proposals_get_a_pointer_in_the_template_inbox(sandbox):
     assert f"- [ ] Review instinct proposals: {link}" in section
     run("propose")
     assert inbox.read_text().count(link) == 1, "a second propose run must not duplicate the pointer"
-    run("apply-promotions", "--all")
+    _tick(_proposal(sandbox["vault"]), "promote-global:prefer-explicit-errors", "approve")
+    run("apply-promotions")
     assert f"- [x] Review instinct proposals: {link}" in inbox.read_text()
 
 

@@ -35,11 +35,14 @@ class RecallTest(HookTest):
         self.kestrel = os.path.join(self.s.work, "kestrel")
         os.makedirs(self.kestrel)
 
-    def note(self, rel, iid, trigger, action, conf=0.9, **meta):
+    def note(self, rel, iid, trigger, action, conf=0.9, approve=True, **meta):
         fm = [f"id: {iid}", f'trigger: "{trigger}"', f"confidence: {conf}", "domain: workflow",
               "status: active"] + [f"{k}: {v}" for k, v in meta.items()]
         body = "---\n" + "\n".join(fm) + f"\n---\n\n# {iid}\n\n## Action\n{action}\n\n## Evidence\n- seen\n"
-        return self.s.write(f"vault/06 Memory/instincts/{rel}", body)
+        path = self.s.write(f"vault/06 Memory/instincts/{rel}", body)
+        if approve:
+            self.s.approve(path)
+        return path
 
     def start(self, cwd=None, sid="s-start-1", **env):
         return self.s.dispatch("SessionStart", self.base(source="startup", cwd=cwd or self.kestrel,

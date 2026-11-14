@@ -54,6 +54,11 @@ class EvolveOptInCase(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             return re.findall(r"<!-- block_id: (\S+) -->", fh.read())
 
+    def _tick_evolve(self):
+        for bid in self._ids():
+            if bid.startswith("evolve-"):
+                self.sb.tick(self.sb.proposal_path(), bid, "approve")
+
     def _config_files(self):
         return sorted(os.path.relpath(os.path.join(d, f), self.config)
                       for d, _, files in os.walk(self.config) for f in files)
@@ -81,7 +86,8 @@ class EvolveOptInCase(unittest.TestCase):
         self._workflow_instincts(scope="global", n=3)
         self.sb.run("propose", "--limit", "0", env=dict(self.env, **{FLAG: "1"}))
         self.assertTrue(any(i.startswith("evolve-") for i in self._ids()), "fixture made no evolve block")
-        r = self.sb.run("apply-promotions", "--all", check=False, env=self.env)
+        self._tick_evolve()
+        r = self.sb.run("apply-promotions", check=False, env=self.env)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(FLAG, r.stderr)
         evolved = [f for f in self._config_files() if f.split(os.sep)[0] in ("skills", "commands", "agents")]
@@ -90,7 +96,8 @@ class EvolveOptInCase(unittest.TestCase):
     def test_apply_writes_into_the_global_config_folder_with_the_opt_in(self):
         self._workflow_instincts(scope="global", n=3)
         self.sb.run("propose", "--limit", "0", env=dict(self.env, **{FLAG: "1"}))
-        self.sb.run("apply-promotions", "--all", env=dict(self.env, **{FLAG: "1"}))
+        self._tick_evolve()
+        self.sb.run("apply-promotions", env=dict(self.env, **{FLAG: "1"}))
         self.assertTrue(any(f.startswith("commands/") for f in self._config_files()), self._config_files())
 
 

@@ -9,6 +9,7 @@ Run:  PYTHONDONTWRITEBYTECODE=1 python3 plugins/neva-core/hooks/tests/test_hooks
 """
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -139,11 +140,32 @@ class Sandbox:
     def journal(self):
         return os.path.join(self.vault, "08 Journal", today_utc() + ".md")
 
-    def instinct(self, rel, iid, conf, action, **meta):
+    def instinct(self, rel, iid, conf, action, approve=True, **meta):
         fm = [f"id: {iid}", f'trigger: "when {iid}"', f"confidence: {conf}", "domain: workflow",
               "source: session-observation"] + [f"{k}: {v}" for k, v in meta.items()]
         body = "---\n" + "\n".join(fm) + f"\n---\n\n# {iid}\n\n## Action\n{action}\n\n## Evidence\n- seen\n"
-        return self.write(f"vault/06 Memory/instincts/{rel}", body)
+        path = self.write(f"vault/06 Memory/instincts/{rel}", body)
+        if approve:
+            self.approve(path)
+        return path
+
+    def approve(self, path):
+        """Record `path` in the add ledger (user-stated.json) as it reads now, the way `add` does: only
+        a note with an engine record of approval is injected. Uses the skill's own parser and hash."""
+        spec = importlib.util.spec_from_file_location(
+            "neva_instinct_trust_sandbox", os.path.join(CL2_SRC, "scripts", "instinct_trust.py"))
+        trust = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(trust)
+        parsed = trust.parse_instinct_file(self.read(path))
+        if not parsed:
+            return
+        p = os.path.join(self.state, "instincts", "user-stated.json")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        data = json.loads(self.read(p)) if os.path.exists(p) else {}
+        ref = "vault:" + os.path.relpath(path, self.vault).replace(os.sep, "/")
+        data[ref] = {"date": "2026-01-01", "sha": trust.note_hash(parsed[0])}
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
 
     def cleanup(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -1520,10 +1542,11 @@ class TestInstinctRoundTrip(HookTest):
         self.assertEqual(len(os.listdir(arch)), 1)
 
         r = self.s.dispatch("SessionStart", self.base(source="startup", session_id="next-session"), **env)
-        # No match at start, no instinct there; a matching first prompt brings it.
+        # The analyzer wrote this note and nobody approved it: it matches the prompt, and it is still
+        # not injected. Only the global note made from the ticked promotion below reaches a session.
         p = self.s.dispatch("UserPromptSubmit", self.base(prompt="I am changing a file in app.py",
                                                           session_id="next-session"), **env)
-        self.assertIn("[project 85%] Read the whole file before editing it.", p.context)
+        self.assertNotIn("Read the whole file before editing it.", p.context)
 
         prop = self.proposal(proposals_dir)
         self.assertTrue(os.path.exists(prop), out)

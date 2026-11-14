@@ -52,7 +52,7 @@ Bounds on what SessionStart injects:
 | `NEVA_SESSION_START_MAX_CHARS` | 8000 | injected context is truncated past this, with a marker saying so; `0` disables injection |
 | `NEVA_SESSION_START_CONTEXT` | on | `off` disables injected context |
 | `NEVA_SESSION_RETENTION_DAYS` | 30 | session files older than this are deleted at session start; `off` keeps them |
-| `NEVA_INSTINCT_MIN_CONFIDENCE` | 0.7 | only strong instincts are injected |
+| `NEVA_INSTINCT_MIN_CONFIDENCE` | 0.7 | only strong approved instincts are injected (approved: see Confidence below) |
 | `NEVA_INSTINCT_MAX` | 3 | at most this many, and only instincts that match the session; project instincts first on ties |
 
 On `startup` everything above is injected. On `clear` and `compact` the prior-session summary is left out (the current work is still in context). On `resume` nothing is injected: the resumed transcript already holds it.
@@ -104,7 +104,7 @@ Properties: atomic, confidence-weighted, domain-tagged, evidence-backed, scope-a
 1. The `observe` hook appends each tool call and outcome to the project's observations file. Secrets are scrubbed, inputs and outputs cut to 5000 characters, file tools carry a `path`.
 2. A nightly job (`instinct-analyze`, 03:30, launchd or systemd timer rendered by `install.sh`, not a daemon) takes every project with at least 20 new observations and, newest first, sends them to a small model in batches of at most 1600 lines (up to 4 model calls per project per run) to write project-scoped instinct notes. New observations are the live file plus any file the hook rotated unread into `observations.pending/` at 10 MB; the live file goes first, then pending files newest to oldest, and pending files are never pruned, only archived once analysed. The model reads a compact view of each batch, capped at 90 KB with no line over 1,800 characters; the archive gets the raw lines. The view ends with a random token new for each batch, and a batch counts only when the model's last line is the completion record carrying that token, which proves it read to the end; then exactly that batch moves to the archive. A failed batch is retried once at half size; a file that still fails waits for the next run while later files go ahead. A batch that keeps failing at 50 lines on 3 runs, each time followed by a successful call later in the same run, moves to `observations.quarantine/`, kept and never pruned; a failure with no later success looks like an outage and counts nothing. Buckets take turns going first. Nothing is archived unread.
 3. The same job decays confidence by 0.02 per week without observation, prunes pending instincts older than 30 days, and files proposals: promote to global, evolve into a skill, command or agent, become a rule, or retire.
-4. Nothing leaves project scope and nothing becomes a skill, command, agent or rule until you tick `approve` in the proposal file or say "apply instinct promotions".
+4. Nothing leaves project scope and nothing becomes a skill, command, agent or rule until you tick `approve` in the proposal file. No flag replaces the tick: `apply-promotions --all` adds only open retire blocks, and `promote <id> --apply` files the block and stops.
 
 | Job setting | Default |
 |------------------|---------|
@@ -166,8 +166,10 @@ exactly what it was before: no `ANTHROPIC_*` override.
 |-------|---------|-----------|
 | 0.3 | tentative | suggested, not enforced |
 | 0.5 | moderate | applied when relevant |
-| 0.7 | strong | injected at session start |
+| 0.7 | strong | injected at session start, when approved |
 | 0.9 | near certain | core behaviour, candidate for a rule |
+
+Confidence alone never injects a note. Session start and prompt recall inject only a note with an engine record of approval that still matches it: a global note an apply created from a promotion the owner ticked (`promoted-notes.json`), or a note recorded by `add` or `add --restate` (`user-stated.json`). The nightly analyzer's own notes are candidates: they feed proposals, never sessions. A fresh install with no state files injects nothing until something is added or approved. The hooks and the CLI check this with one module, `instinct_trust.py`.
 
 Initial confidence by observations: 3 to 5 gives 0.5, 6 to 10 gives 0.7, 11 or more gives 0.85. Goes up 0.05 per confirming observation (cap 0.9), down 0.1 per correction, down 0.02 per week unobserved. Below 0.3 it is proposed for retirement.
 
