@@ -85,5 +85,23 @@ class MarksCase(unittest.TestCase):
         self.assertEqual(self.cli._text_problem("action", "اكْتُبِ الْخَطَأَ"), "")
 
 
+class DirectionMarksAtAddCase(unittest.TestCase):
+    def test_add_strips_lrm_and_rlm_from_his_own_typing_and_says_so(self):
+        sb = InstinctSandbox()
+        self.addCleanup(sb.close)
+        r = sb.run("add", "--id", "rtl-note", "--trigger", "when writing \u200fArabic\u200e text",
+                   "--action", "Keep the \u200eRTL\u200f marks out of stored notes.", "--domain", "workflow")
+        self.assertEqual(r.stdout.count("direction mark"), 1, r.stdout)
+        root = os.path.join(sb.vault, "06 Memory", "instincts", "project")
+        note = open(os.path.join(root, os.listdir(root)[0], "rtl-note.md"), encoding="utf-8").read()
+        self.assertNotIn("\u200e", note)
+        self.assertNotIn("\u200f", note)
+
+    def test_lrm_is_still_refused_everywhere_else(self):
+        sb = InstinctSandbox()
+        self.addCleanup(sb.close)
+        self.assertIn("U+200E", _module(sb)._text_problem("action", "word\u200eword"))
+
+
 if __name__ == "__main__":
     unittest.main()

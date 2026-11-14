@@ -986,6 +986,13 @@ def cmd_add(args) -> int:
     if not _validate_instinct_id(args.id):
         print(f"Invalid --id '{args.id}'. Fix: use kebab-case letters, digits, '.', '_' or '-'.", file=sys.stderr)
         return 1
+    # His own typing in a right-to-left language often carries invisible direction marks. Here, and only
+    # here, they are removed rather than refused; everywhere else the sanitiser refuses them.
+    marks = sum(str(v).count(c) for v in (args.trigger, args.action) for c in "\u200e\u200f")
+    if marks:
+        args.trigger = args.trigger.replace("\u200e", "").replace("\u200f", "")
+        args.action = args.action.replace("\u200e", "").replace("\u200f", "")
+        print(f"Removed {marks} invisible direction mark(s) (U+200E, U+200F) from your text before storing it.")
     conf = args.confidence
     if conf > 1:
         conf = conf / 10.0  # accept the 1-10 scale

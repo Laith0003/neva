@@ -347,3 +347,15 @@ Skills are probabilistic: they fire when the model judges them relevant, roughly
 - `neva-library:rules-distill` (opt-in library): distills rules from skills; `rule` proposals here distill them from near-certain instincts.
 - `neva-library:skill-stocktake`, `neva-library:config-gc` (opt-in library): audit what evolved skills and rules accumulate into.
 - Homunculus, the community project that inspired the instinct architecture (atomic observations, confidence scoring, evolution pipeline).
+
+## Quality gate thresholds
+
+The restatement check keeps its calibrated defaults and can be tuned in the Neva identity file
+(`NEVA_CONFIG`, default `~/.config/neva/identity.env`), one `KEY="value"` line each:
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `NEVA_GATE_OVERLAP_THRESHOLD` | overlap at or above which a candidate restates what is written down (above 0, at most 1) | 0.6 |
+| `NEVA_GATE_MIN_SHARED` | stems a candidate must share with a text before overlap is measured (integer, 1 or more) | 3 |
+
+A value that does not parse stops the run with an error naming the key; it never falls back silently.
