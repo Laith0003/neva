@@ -732,9 +732,24 @@ def stated_denials(instincts_dir, vault) -> list:
     return out
 
 
+# Files Claude Code loads as instructions, settings, hooks or MCP servers. The child may not write
+# any of them inside its grant, at the top of the grant or in any folder below it, so nothing it
+# writes can configure a later run that starts in or below the grant.
+CONFIG_NAMES = (".claude/**", "CLAUDE.md", "CLAUDE.local.md", ".mcp.json", "settings.json", "settings.local.json")
+
+
+def config_denials(instincts_dir) -> list:
+    root = "//" + str(Path(instincts_dir).resolve()).lstrip("/")
+    out = []
+    for name in CONFIG_NAMES:
+        out += [f"Edit({root}/{name})", f"Edit({root}/**/{name})"]
+    return out
+
+
 def disallowed_tools(instincts_dir, vault) -> str:
-    """The child's deny list, comma-separated like its grant."""
-    return ",".join(stated_denials(instincts_dir, vault))
+    """The child's deny list, comma-separated like its grant: config files inside the grant, then
+    every note the add ledger records in this bucket."""
+    return ",".join(config_denials(instincts_dir) + stated_denials(instincts_dir, vault))
 
 
 def analyze_batch(tmp_dir: Path, pid: str, name: str, label: str, batch: list,
@@ -755,19 +770,29 @@ def run_batch(tmp_dir: Path, pid: str, name: str, label: str, batch: list,
     with os.fdopen(fd, "wb") as f:
         f.write(compact_view(batch, token))
     analysis_file = Path(analysis_path)
+    child_cwd = None
     try:
         prompt = render_prompt(analysis_file, pid, name, instincts_dir)
         max_turns = cfg["max_turns"] or min(100, max(20, len(batch) // 10))
         if max_turns < 4:
             max_turns = 20
         env = _child_env()
+        # The child starts in an empty folder the engine made outside its Edit grant, loads user
+        # settings only (no project or local settings) and no MCP server. --bare would also skip
+        # them, but it accepts only API-key auth and would break subscription logins.
         cmd = [claude_bin(), "--model", cfg["model"], "--max-turns", str(max_turns), "--print",
-               "--allowedTools", allowed_tools(instincts_dir)]
-        denied = disallowed_tools(instincts_dir, vault if vault is not None else vault_root())
-        if denied:
-            cmd += ["--disallowedTools", denied]
-        cmd += ["-p", prompt]
-        proc = subprocess.Popen(cmd, cwd=str(instincts_dir), env=env, stdin=subprocess.DEVNULL,
+               "--setting-sources", "user", "--strict-mcp-config",
+               "--allowedTools", allowed_tools(instincts_dir),
+               "--disallowedTools", disallowed_tools(instincts_dir, vault if vault is not None else vault_root()),
+               "-p", prompt]
+        child_cwd = Path(tempfile.mkdtemp(prefix="cwd.", dir=tmp_dir)).resolve()
+        grant = Path(instincts_dir).resolve()
+        if child_cwd == grant or grant in child_cwd.parents or child_cwd in grant.parents:
+            log(f"{label}: refusing to start the analysis: its folder {child_cwd} overlaps its Edit grant "
+                f"{grant}. Fix: keep NEVA_OBSERVATIONS_DIR (or NEVA_DATA_DIR) outside the vault's instincts "
+                f"folder; observations retained")
+            return "cwd overlaps grant"
+        proc = subprocess.Popen(cmd, cwd=str(child_cwd), env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 start_new_session=True)
         try:
@@ -799,6 +824,8 @@ def run_batch(tmp_dir: Path, pid: str, name: str, label: str, batch: list,
             analysis_file.unlink()
         except FileNotFoundError:
             pass
+        if child_cwd is not None:
+            shutil.rmtree(child_cwd, ignore_errors=True)
 
 
 MOVING_PREFIX = ".observations.analyzing-"

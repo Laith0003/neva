@@ -1,8 +1,9 @@
 # Instinct analyzer prompt
 
 The nightly `instinct-analyze` job sends the text between the PROMPT markers to
-`claude --print --allowedTools Read,Edit(//<instincts dir>/**)` (with a deny rule per stated note and
-per config file name, see SKILL.md nightly job step 2), once per project bucket, after
+`claude --print --allowedTools Read,Edit(//<instincts dir>/**)` (with `--disallowedTools` Edit rules for
+config files inside that folder and for every note the add ledger records, run from an empty folder
+outside it; see SKILL.md, nightly job step 2), once per project bucket, after
 substituting the `{{...}}` placeholders. Edit the rules here, not in the script.
 The analysis file is a compact view of one batch, not the raw observations (format: SKILL.md,
 nightly job step 2); the raw lines go to the archive only after the run is accepted.
