@@ -285,7 +285,7 @@ Every block carries: instinct id(s), confidence, evidence count, projects seen i
 | both boxes ticked | error `block <id>: both approve and reject are ticked. Fix: untick one.` |
 
 Rules the applier enforces:
-- It writes exactly the fenced text. The human may edit the fence or the destination row before ticking; the edit wins.
+- It writes exactly the fenced text. The human may edit the fence before ticking; the edit wins. Kind, destination and write mode come from the engine's ledger record, not the table rows. A block proposed before the engine recorded its rendered hash is never applied: it is withdrawn once and re-proposed with its hash, and needs a fresh tick.
 - Destinations must be inside the vault, the user Claude config dir (`~/.claude` or `CLAUDE_CONFIG_DIR`), or a registered project's `.claude/`. Anything else fails with `destination ... is outside ... Fix: edit the 'Proposed destination' row`.
 - `create` never overwrites: an existing different file fails with `destination exists: <path>. Fix: rename or remove it, or edit the 'Proposed destination' row.` An identical file counts as applied.
 - Each resolved block gets a line `Applied YYYY-MM-DD to <destination>.` or `Rejected YYYY-MM-DD.`; failures get `Failed YYYY-MM-DD: <error>` and stay open for retry.
@@ -348,3 +348,15 @@ Skills are probabilistic: they fire when the model judges them relevant, roughly
 - `neva-rules-distill` (opt-in library): distills rules from skills; `rule` proposals here distill them from near-certain instincts.
 - `neva-skill-stocktake`, `neva-config-gc` (opt-in library): audit what evolved skills and rules accumulate into.
 - Homunculus, the community project that inspired the instinct architecture (atomic observations, confidence scoring, evolution pipeline).
+
+## Quality gate thresholds
+
+The restatement check keeps its calibrated defaults and can be tuned in the Neva identity file
+(`NEVA_CONFIG`, default `~/.config/neva/identity.env`), one `KEY="value"` line each:
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `NEVA_GATE_OVERLAP_THRESHOLD` | overlap at or above which a candidate restates what is written down (above 0, at most 1) | 0.6 |
+| `NEVA_GATE_MIN_SHARED` | stems a candidate must share with a text before overlap is measured (integer, 1 or more) | 3 |
+
+A value that does not parse stops the run with an error naming the key; it never falls back silently.

@@ -103,6 +103,79 @@ def _state_root() -> Path:
 LOG_FILE = _state_root() / "instinct-analyze.log"
 
 
+def _instinct_state() -> tuple:
+    """(allowed root, instinct state dir), resolved exactly as instinct-cli.py resolves them."""
+    override = _abs_env("NEVA_INSTINCT_STATE_DIR")
+    if override:
+        return override, override
+    return _state_root(), _state_root() / "instincts"
+
+
+def _note_hashes(instincts_dir: Path) -> dict:
+    out = {}
+    if instincts_dir.is_dir():
+        for f in instincts_dir.glob("*.md"):
+            try:
+                out[f.name] = hashlib.sha256(f.read_bytes()).hexdigest()
+            except OSError:
+                continue
+    return out
+
+
+def _batch_sessions(lines: list) -> dict:
+    """{session id: set of ISO days} in the raw observation lines of one batch."""
+    out = {}
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        session, day = rec.get("session"), str(rec.get("timestamp") or "")[:10]
+        if isinstance(session, str) and session and session != "unknown" and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            out.setdefault(session.lower(), set()).add(day)
+    return out
+
+
+MAX_SESSIONS_CREDITED_PER_BATCH = 3
+_SESSION_ID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+
+
+def record_note_sessions(vault: Path, instincts_dir: Path, before: dict, lines: list) -> None:
+    """After a successful batch, record for every note it created or changed the sessions it cites
+    that appear in that batch's own observation lines, with those lines' days. The quality gate counts only these: sessions the engine fed the
+    model when it wrote the note, never session ids the model wrote into the note."""
+    after = _note_hashes(instincts_dir)
+    changed = [name for name, digest in after.items() if before.get(name) != digest]
+    batch = _batch_sessions(lines)
+    if not changed or not batch:
+        return
+    root, state_dir = _instinct_state()
+    path = state_dir / "note-sessions.json"
+    learning_io.ensure_dir(root, state_dir)
+    data = learning_io.read_json_object(path) if path.exists() else {}
+    base = Path(vault).resolve()
+    for name in changed:
+        # Only sessions the note cites that are in this batch's own lines, at most
+        # MAX_SESSIONS_CREDITED_PER_BATCH: touching a note earns it nothing it does not cite.
+        try:
+            text = (Path(instincts_dir) / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        cited = {m.lower() for m in _SESSION_ID.findall(text)}
+        sessions = {s: d for s, d in sorted(batch.items()) if s in cited}
+        sessions = dict(list(sessions.items())[:MAX_SESSIONS_CREDITED_PER_BATCH])
+        if not sessions:
+            continue
+        ref = "vault:" + (Path(instincts_dir).resolve() / name).relative_to(base).as_posix()
+        row = data.get(ref) if isinstance(data.get(ref), dict) else {}
+        for session, days in sessions.items():
+            row[session] = sorted(set(row.get(session) or []) | days)
+        data[ref] = row
+    learning_io.write_text_atomic(root, path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
 def log(msg: str) -> None:
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
     with learning_io.open_append(_state_root(), LOG_FILE) as f:
@@ -534,6 +607,7 @@ def analyze_bucket(obs_dir: Path, name: str, vault: Path, cfg: dict, dry_run: bo
             label = f"{prefix} batch {number} ({src.name}, {n} lines, {size / 1024:.0f} KB view)"
             tried = n
             seq = state.call()
+            before = _note_hashes(instincts_dir)
             outcome = run_batch(tmp_dir, pid, name, label, remaining[:n], instincts_dir, cfg)
             if outcome != "ok" and n <= min_lines:
                 log(f"{label}: no half-size retry, {n} lines is already at or below the minimum of {min_lines}")
@@ -547,6 +621,7 @@ def analyze_bucket(obs_dir: Path, name: str, vault: Path, cfg: dict, dry_run: bo
                 outcome = run_batch(tmp_dir, pid, name, label, remaining[:tried], instincts_dir, cfg)
             chunk = b"".join(remaining[:tried])
             if outcome == "ok":
+                record_note_sessions(vault, instincts_dir, before, remaining[:tried])
                 state.successes += 1
                 state.last_success = seq
                 ledger.set(key, None)

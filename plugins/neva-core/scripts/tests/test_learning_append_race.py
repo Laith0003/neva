@@ -144,8 +144,13 @@ class AppendRaceCase(unittest.TestCase):
                     errors.append(exc)
 
             logged = []
+            # This test is about losing no line, not about the 0.2 s give-up bound (BoundedAppendCase
+            # covers that). On a loaded machine the tight archive loop can outlast the bound, so the
+            # bound is widened here instead of letting the result depend on the machine's load.
             for patcher in (mock.patch.object(observe.c, "observations_dir", return_value=str(root)),
-                            mock.patch.object(observe.c, "log", side_effect=logged.append)):
+                            mock.patch.object(observe.c, "log", side_effect=logged.append),
+                            mock.patch.object(observe, "LOCK_DEADLINE_S", 10.0),
+                            mock.patch.object(observe, "MAX_REOPENS", 1000)):
                 patcher.start()
                 self.addCleanup(patcher.stop)
             thread = threading.Thread(target=writer)

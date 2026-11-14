@@ -19,10 +19,13 @@ embedding scorer can replace the lexical one later without touching the callers.
 
 A match qualifies on MIN_SHARED shared stems, or on one rare stem: found in RARE_DF or fewer
 instincts corpus-wide AND in at most RARE_SHARE of them. A small corpus therefore has no rare
-stems, and only two stem matches count. Lexical and English only: text in another script yields no tokens.
+stems, and only two stem matches count. Lexical: words in any script are tokens (Arabic diacritics and
+tatweel are dropped so a vowelled word matches itself); only ASCII words are stemmed. A text with no
+word characters (emoji, punctuation) yields no tokens, and no tokens match nothing.
 """
 import math
 import re
+import unicodedata
 from collections import namedtuple
 
 MIN_SHARED = 2
@@ -35,7 +38,11 @@ RARE_DF = 3
 RARE_SHARE = 0.02
 DUPLICATE_JACCARD = 0.6
 
-_WORD = re.compile(r"[a-z0-9]+")
+# Letters and digits of any script; underscore splits words, as it always has.
+_WORD = re.compile(r"[^\W_]+")
+# Arabic harakat, tanwin, shadda, sukun, superscript alef, Quranic marks, and tatweel: none of them
+# change which word it is, so a vowelled or stretched word is the same token as the plain one.
+_ARABIC_MARKS = re.compile("[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed\u0640]")
 
 # Function words, plus words every instinct trigger uses ("when ... needs to ..."), so they never
 # count as a match.
@@ -48,7 +55,32 @@ per please same should so some such than that the their them then there these th
 through to too under until up upon us use used uses using very via was we were what when whenever
 where whether which while who whom why will with within without would yes yet you your
 need needs needed want wants wanted make makes made run runs one two first new way thing things
+\u0641\u064a \u0645\u0646 \u0639\u0644\u0649 \u0625\u0644\u0649 \u0627\u0644\u0649 \u0639\u0646 \u0623\u0646 \u0627\u0646 \u0625\u0646 \u0645\u0627 \u0644\u0627 \u0644\u0645 \u0644\u0646 \u0647\u0630\u0627 \u0647\u0630\u0647 \u0630\u0644\u0643 \u062a\u0644\u0643
+\u0627\u0644\u062a\u064a \u0627\u0644\u0630\u064a \u0643\u0644 \u0645\u0639 \u0623\u0648 \u0627\u0648 \u062b\u0645 \u0639\u0646\u062f \u0643\u0627\u0646 \u0642\u062f \u0647\u0648 \u0647\u064a \u0625\u0630\u0627 \u0627\u0630\u0627
 """.split())
+
+
+_ARABIC_FOLD = str.maketrans({"\u0623": "\u0627", "\u0625": "\u0627", "\u0622": "\u0627", "\u0671": "\u0627",
+                              "\u0629": "\u0647", "\u0649": "\u064a"})
+
+
+def fold_arabic(word):
+    """One spelling for the forms a rewording changes: hamza or madda on alef to bare alef, taa
+    marbuta to haa, alef maqsura to yaa, and a leading article al- dropped when at least three letters
+    remain. Words in other scripts pass unchanged."""
+    w = word.translate(_ARABIC_FOLD)
+    if w.startswith("\u0627\u0644") and len(w) - 2 >= 3:
+        w = w[2:]
+    return w
+
+
+# Stop words in their folded spelling too, so folding never turns one back into a token.
+STOP_WORDS = frozenset(STOP_WORDS | {fold_arabic(w) for w in STOP_WORDS if not w.isascii()})
+
+
+def normalize(text):
+    """Casefolded, NFKC, with Arabic diacritics and tatweel removed."""
+    return _ARABIC_MARKS.sub("", unicodedata.normalize("NFKC", str(text or "")).casefold())
 
 
 def stem(word):
@@ -71,13 +103,13 @@ def stem(word):
 
 
 def tokens(text, stop=STOP_WORDS):
-    """Ordered unique stems of `text`. Lowercase ASCII words of 2 or more characters; pure numbers
-    and stop words dropped. `stop` lets a caller add its own noise words (path parts, say)."""
+    """Ordered unique stems of `text`. Words of 2 or more characters in any script, after normalize();
+    ASCII words are stemmed; pure numbers and stop words dropped. `stop` lets a caller add its own noise words (path parts, say)."""
     out, seen = [], set()
-    for w in _WORD.findall(str(text or "").lower()):
+    for w in _WORD.findall(normalize(text)):
         if len(w) < 2 or w.isdigit() or w in stop:
             continue
-        s = stem(w)
+        s = stem(w) if w.isascii() else fold_arabic(w)
         if s in stop or s in seen:
             continue
         seen.add(s)

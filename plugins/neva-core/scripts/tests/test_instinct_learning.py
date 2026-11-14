@@ -69,6 +69,7 @@ class InstinctSandbox:
                          XDG_DATA_HOME=os.path.join(self.tmp, "data"),
                          XDG_STATE_HOME=os.path.join(self.tmp, "state"),
                          PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
+        self._observed = {}
         self.repos = {}
         for name in ("repoA", "repoB"):
             repo = os.path.join(self.tmp, name)
@@ -88,7 +89,27 @@ class InstinctSandbox:
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         return path
 
+    def _record_engine_sessions(self):
+        if not self._observed:
+            return
+        path = os.path.join(self.tmp, "state", "neva", "instincts", "note-sessions.json")
+        data = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        for pid, records in self._observed.items():
+            folder = os.path.join(self.vault, "06 Memory", "instincts", "project", pid)
+            if not os.path.isdir(folder):
+                continue
+            for name in os.listdir(folder):
+                if not name.endswith(".md"):
+                    continue
+                row = data.setdefault(f"vault:06 Memory/instincts/project/{pid}/{name}", {})
+                for session, day in records:
+                    row[session] = sorted(set(row.get(session, [])) | {str(day)})
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
     def run(self, *args, cwd="repoA", check=True, env=None):
+        self._record_engine_sessions()
         e = dict(self.env)
         e.update(env or {})
         result = subprocess.run([PY, CLI, *args], cwd=self.repos.get(cwd, cwd), env=e,
@@ -129,6 +150,19 @@ class InstinctSandbox:
                 break
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
+
+    def observe(self, pid, records):
+        """Write observation records (session id, ISO day) for one project bucket, the shape the
+        observe hook writes, and stand in for the analysis batches that read them: before each run,
+        every note in that bucket is recorded as written by those sessions (note-sessions.json, what
+        instinct-analyze.py records). The quality gate counts only that record, never the note."""
+        self._observed.setdefault(pid, []).extend(records)
+        d = os.path.join(self.tmp, "data", "neva", "observations", pid)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "observations.jsonl"), "a", encoding="utf-8") as fh:
+            for session, day in records:
+                fh.write(json.dumps({"timestamp": f"{day}T12:00:00Z", "event": "tool_complete",
+                                     "tool": "Edit", "session": session}) + "\n")
 
     def events_path(self):
         return os.path.join(self.tmp, "state", "neva", "instincts", "promotion-events.jsonl")
@@ -273,9 +307,12 @@ class PromotionEventsCase(unittest.TestCase):
     def test_event_log_leaf_symlink_is_refused(self):
         outside, target = self._outside()
         events = self.sb.events_path()
-        os.makedirs(os.path.dirname(events))
+        # `add` records the lesson in the state folder under the ledger lock, so the lessons go in
+        # first and the event log is then swapped for a link, as an attacker would do between runs.
+        self.sb.add("repoA", "prefer-explicit-errors", 0.9)
+        self.sb.add("repoB", "prefer-explicit-errors", 0.85)
         os.symlink(target, events)
-        r = self._propose_one()
+        r = self.sb.run("propose", check=False)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(events, r.stderr)
         self.assertIn("symlink", r.stderr)
@@ -283,12 +320,32 @@ class PromotionEventsCase(unittest.TestCase):
         with open(target, "rb") as fh:
             self.assertEqual(fh.read(), b"owner data\n", "the event was appended outside the state dir")
 
+    def test_add_refuses_a_linked_state_file_and_writes_no_note(self):
+        outside, target = self._outside()
+        events = self.sb.events_path()
+        os.makedirs(os.path.dirname(events))
+        os.symlink(target, events)
+        r = self.sb.run("add", "--id", "prefer-explicit-errors", "--trigger", "when handling errors in services",
+                        "--action", "Apply the prefer explicit errors practice in every change.",
+                        "--domain", "code-style", "--confidence", "0.9", check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(events, r.stderr)
+        self.assertIn("symlink", r.stderr)
+        self.assertIn("NEVA_INSTINCT_STATE_DIR", r.stderr)
+        notes = [f for _, _, files in os.walk(os.path.join(self.sb.vault, "06 Memory")) for f in files
+                 if f == "prefer-explicit-errors.md"]
+        self.assertEqual(notes, [], "a note was written although it could not be recorded as his")
+
     def test_event_log_parent_symlink_is_refused(self):
         outside, target = self._outside()
         instincts = os.path.dirname(self.sb.events_path())
-        os.makedirs(os.path.dirname(instincts))
+        # `add` writes its own ledger in the state folder, so the lessons go in first and the folder
+        # is then swapped for a link, as an attacker would do between runs.
+        self.sb.add("repoA", "prefer-explicit-errors", 0.9)
+        self.sb.add("repoB", "prefer-explicit-errors", 0.85)
+        shutil.rmtree(instincts)
         os.symlink(outside, instincts)
-        r = self._propose_one()
+        r = self.sb.run("propose", check=False)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(instincts, r.stderr)
         self.assertIn("symlink", r.stderr)

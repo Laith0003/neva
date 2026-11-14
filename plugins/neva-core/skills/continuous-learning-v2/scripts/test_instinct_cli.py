@@ -1,23 +1,31 @@
 """Tests for the Neva instinct CLI and the proposal contract.
 
-Run: PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider scripts/test_instinct_cli.py
+Run either way; build/verify.sh uses the first, which needs only the standard library:
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s <this folder> -p test_instinct_cli.py
+  PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider scripts/test_instinct_cli.py
 Every test runs in a throwaway HOME, vault and XDG tree; nothing touches the real machine.
 """
 
+import inspect
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError:  # stdlib-only machines run the same tests through StdlibCase below
+    pytest = None
 
 CLI = Path(__file__).resolve().parent / "instinct-cli.py"
 
 
-@pytest.fixture()
-def sandbox(tmp_path):
+def _make_sandbox(tmp_path):
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     (vault / "00 Inbox").mkdir(parents=True)
@@ -45,8 +53,17 @@ def sandbox(tmp_path):
     return {"run": run, "vault": vault, "home": home, "repos": repos, "env": env}
 
 
+if pytest is not None:
+    @pytest.fixture()
+    def sandbox(tmp_path):
+        return _make_sandbox(tmp_path)
+
+
 def _add(run, cwd, iid, conf, domain="code-style", trigger="when handling errors in services"):
-    run("add", "--id", iid, "--trigger", trigger, "--action", "Do the thing.", "--domain", domain,
+    # The action names a behaviour and comes from the id, as the unittest sandbox does: the quality
+    # gate parks a candidate that restates another one, and "Do the thing." restated every other.
+    action = f"Apply the {iid.replace('-', ' ')} practice in every change."
+    run("add", "--id", iid, "--trigger", trigger, "--action", action, "--domain", domain,
         "--confidence", str(conf), cwd=cwd)
 
 
@@ -139,6 +156,12 @@ def test_destination_outside_allowed_roots_is_refused(sandbox):
     text = proposal.read_text()
     text = re.sub(r"(\| Proposed destination \| )`[^`]+`", r"\1`/tmp/elsewhere/x.md`", text, count=1)
     proposal.write_text(text)
+    # Apply takes the destination from the engine's ledger, so the ledger is pointed there too.
+    import json
+    ledger_path = Path(sandbox["env"]["XDG_STATE_HOME"]) / "neva" / "instincts" / "promotions.json"
+    ledger = json.loads(ledger_path.read_text())
+    ledger["promote-global:prefer-explicit-errors"]["destination"] = "`/tmp/elsewhere/x.md`"
+    ledger_path.write_text(json.dumps(ledger))
     result = run("apply-promotions", "--all", check=False)
     assert "is outside the vault" in result.stderr
     assert not Path("/tmp/elsewhere/x.md").exists()
@@ -228,8 +251,8 @@ def test_stats_reports_the_promotion_approve_reject_rate(sandbox):
     _tick(_proposal(sandbox["vault"]), "promote-global:prefer-explicit-errors", "approve")
     run("apply-promotions")
 
-    _add(run, "repoA", "avoid-mocks", 0.9)
-    _add(run, "repoB", "avoid-mocks", 0.85)
+    _add(run, "repoA", "avoid-mocks", 0.9, trigger="when writing tests for a service layer")
+    _add(run, "repoB", "avoid-mocks", 0.85, trigger="when writing tests for a service layer")
     run("propose")
     _tick(_proposal(sandbox["vault"]), "promote-global:avoid-mocks", "reject")
     run("apply-promotions")
@@ -245,3 +268,31 @@ def test_stats_reports_no_rate_before_any_decision(sandbox):
     assert "PROMOTIONS_APPLIED: 0" in out
     assert "PROMOTIONS_REJECTED: 0" in out
     assert "PROMOTIONS_APPROVE_RATE: n/a" in out
+
+
+class StdlibCase(unittest.TestCase):
+    """Runs every test_ function above under unittest, with the same throwaway sandbox, so the suite
+    needs no third-party package and build/verify.sh can discover it."""
+    __test__ = pytest is None  # under pytest the functions run directly; do not run them twice
+
+
+def _bind(fn):
+    params = inspect.signature(fn).parameters
+
+    def method(self):
+        tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="neva-instinct-cli-")))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        kwargs = {}
+        if "sandbox" in params:
+            kwargs["sandbox"] = _make_sandbox(tmp / "sandbox")
+        if "tmp_path" in params:
+            (tmp / "extra").mkdir()
+            kwargs["tmp_path"] = tmp / "extra"
+        fn(**kwargs)
+    method.__name__ = fn.__name__
+    return method
+
+
+for _name, _fn in list(globals().items()):
+    if _name.startswith("test_") and callable(_fn):
+        setattr(StdlibCase, _name, _bind(_fn))

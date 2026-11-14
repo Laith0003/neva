@@ -7,12 +7,20 @@ never shown as a proposal and never deleted. The four checks:
   restates      the lesson is already written down: a paragraph in the rules folder, a line in a
                 memory index file, a skill or command description, a global instinct, or another
                 candidate already accepted in this run
-  vague         it names a tool or a count of tool use, not a behaviour
-  thin          its evidence does not span two sessions on two different days
+  vague         it names a tool or a count of tool use, not a behaviour; a text with no words this
+                check can compare is parked as unreadable instead; a lesson the human stated is exempt
+  thin          its evidence does not span two sessions on two different days, counted from the
+                sessions the engine recorded for the analysis batches that wrote or edited the note
+                (instinct-analyze.py record_note_sessions), with those records' own dates. Session ids
+                in the note are not read. No record means no count, which is thin. A lesson the human stated with `add` (the
+                caller passes those as `stated`) is exempt; the note's `source` field is not trusted
   dormant       none of its projects had any activity in the last ACTIVE_DAYS days
 
 Restatement is token overlap on instinct_match stems: the overlap coefficient (shared stems over
-the smaller set) must reach OVERLAP_THRESHOLD with at least MIN_SHARED stems in common. Calibrated
+the smaller set) must reach OVERLAP_THRESHOLD with at least MIN_SHARED stems in common. When either
+text has fewer than COEFFICIENT_MIN_STEMS stems, and always between two candidates of the same run,
+Jaccard is used instead, so a short text or a broad candidate cannot score 1.0 by size alone. The
+identity file can set NEVA_GATE_OVERLAP_THRESHOLD and NEVA_GATE_MIN_SHARED (load_thresholds). Calibrated
 on a labelled queue of 110 candidates (54 judged already written down, 33 judged empty, 18 judged
 worth asking about, 5 lessons): at 0.6 with 3 shared stems it flags 18 of the 54 already-written
 items and 6 of the 33 empty ones, and none of the items worth keeping, merging or gating. Lower
@@ -29,6 +37,10 @@ import instinct_match
 
 OVERLAP_THRESHOLD = 0.6
 MIN_SHARED = 3
+COEFFICIENT_MIN_STEMS = 6
+# A rules or memory file larger than this is skipped (and named by the caller): the corpus is notes a
+# human wrote, and a file this size is a dump, not a rule.
+MAX_CORPUS_FILE_BYTES = 256 * 1024
 MIN_SESSIONS = 2
 MIN_DAYS = 2
 ACTIVE_DAYS = 30
@@ -81,7 +93,17 @@ def _description(path):
     return m.group(1).strip().strip('"\'') if m else ""
 
 
-def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
+def _too_big(path, skipped):
+    try:
+        big = os.path.getsize(path) > MAX_CORPUS_FILE_BYTES
+    except OSError:
+        return True
+    if big and skipped is not None:
+        skipped.append(path)
+    return big
+
+
+def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=(), skipped=None):
     """[(source label, stems)] for every unit of text that already says something.
 
     rules_dirs   every *.md below, split into paragraphs, headings and bullets
@@ -89,7 +111,8 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
     skill_roots  config folders: skills/*/SKILL.md and commands/**/*.md descriptions, plus the same
                  inside installed plugins (plugins/cache/<market>/<plugin>/<version>/)
     extra        (label, text) pairs, for global instincts
-    Missing folders are skipped: an empty corpus restates nothing."""
+    Missing folders are skipped: an empty corpus restates nothing. A rules or memory file over
+    MAX_CORPUS_FILE_BYTES is not read; its path is appended to `skipped` for the caller to report."""
     units, seen_files = [], set()
 
     def add(label, text):
@@ -106,10 +129,11 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
 
     for root in rules_dirs:
         for path in sorted(glob.glob(os.path.join(root, "**", "*.md"), recursive=True)):
-            if not once(path):
+            if not once(path) or _too_big(path, skipped):
                 continue
             try:
-                text = open(path, encoding="utf-8", errors="replace").read()
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
             except OSError:
                 continue
             for part in _paragraphs(text):
@@ -117,9 +141,11 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
     for root in memory_dirs:
         paths = [os.path.join(root, "MEMORY.md")] + glob.glob(os.path.join(root, "**", "INDEX.md"), recursive=True)
         for path in sorted(paths):
-            if not os.path.isfile(path) or not once(path):
+            if not os.path.isfile(path) or not once(path) or _too_big(path, skipped):
                 continue
-            for line in open(path, encoding="utf-8", errors="replace").read().splitlines():
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+            for line in lines:
                 if line.startswith("- "):
                     add(f"memory index {os.path.relpath(path, root)}", line)
     for root in skill_roots:
@@ -137,29 +163,77 @@ def load_corpus(rules_dirs=(), memory_dirs=(), skill_roots=(), extra=()):
     return units
 
 
-def restates(stems, corpus, skip_labels=()):
-    """(label, score) of the first corpus unit this lesson restates, else None."""
+def _score(stems, unit):
+    """Overlap coefficient when both texts are long enough to say something on their own, else
+    Jaccard. Below COEFFICIENT_MIN_STEMS the coefficient is 1.0 for any short text whose few stems
+    appear in a long paragraph, which says nothing about whether it is the same lesson."""
+    shared = len(stems & unit)
+    if min(len(stems), len(unit)) >= COEFFICIENT_MIN_STEMS:
+        return shared / min(len(stems), len(unit))
+    return shared / len(stems | unit)
+
+
+def restates(stems, corpus, skip_labels=(), peers=(), thresholds=None):
+    """(label, score) of the first corpus unit or peer this lesson restates, else None. `peers` are the
+    other candidates of this run, compared by Jaccard only, so one broad candidate cannot make every
+    later one look like its restatement."""
     if not stems:
         return None
+    t = thresholds or {"overlap": OVERLAP_THRESHOLD, "min_shared": MIN_SHARED}
     best = None
-    for label, unit in corpus:
+    for label, unit, jaccard_only in [(l, u, False) for l, u in corpus] + [(l, u, True) for l, u in peers]:
         if label in skip_labels:
             continue
-        shared = len(stems & unit)
-        if shared < MIN_SHARED:
+        if len(stems & unit) < t["min_shared"]:
             continue
-        score = shared / min(len(stems), len(unit))
-        if score >= OVERLAP_THRESHOLD and (best is None or score > best[1]):
+        score = instinct_match.jaccard(stems, unit) if jaccard_only else _score(stems, unit)
+        if score >= t["overlap"] and (best is None or score > best[1]):
             best = (label, score)
     return best
 
 
+THRESHOLD_KEYS = {"NEVA_GATE_OVERLAP_THRESHOLD": ("overlap", float), "NEVA_GATE_MIN_SHARED": ("min_shared", int)}
+
+
+def load_thresholds(identity_path):
+    """The restatement thresholds: the module defaults, overridden by KEY="value" lines in the Neva
+    identity file. NEVA_GATE_OVERLAP_THRESHOLD (0 to 1, default OVERLAP_THRESHOLD) and
+    NEVA_GATE_MIN_SHARED (an integer >= 1, default MIN_SHARED). A value that does not parse is an
+    error naming the key, never a silent default."""
+    out = {"overlap": OVERLAP_THRESHOLD, "min_shared": MIN_SHARED}
+    try:
+        with open(identity_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return out
+    for key, (name, cast) in THRESHOLD_KEYS.items():
+        m = re.search(rf'^{key}="([^"]*)"\s*$', text, re.M)
+        if not m:
+            continue
+        try:
+            value = cast(m.group(1))
+        except ValueError:
+            value = None
+        if value is None or (name == "overlap" and not 0 < value <= 1) or (name == "min_shared" and value < 1):
+            raise ValueError(f"{identity_path}: {key}={m.group(1)!r} is not valid. Fix: set it to "
+                             f"{'a number above 0 and at most 1' if name == 'overlap' else 'an integer of 1 or more'}, "
+                             f"or remove the line to use the default.")
+        out[name] = value
+    return out
+
+
 # ------------------------------------------------------------------ the other three checks
 
-def vague(members):
-    """A reason when the lesson names a tool or a count instead of a behaviour, else ''."""
+def vague(members, stated=()):
+    """A reason when the lesson names a tool or a count instead of a behaviour, else ''. A lesson the
+    human stated is never parked by this heuristic. A text with no words at all is parked as
+    unreadable, not as a tool name."""
     for inst in members:
+        if inst.get("_source_file") in stated:
+            continue
         action = _action(inst)
+        if not _stems(action):
+            return "its action could not be read: it holds no words this check can compare"
         if _COUNT.search(action):
             return f"its action states a count of tool use ('{_COUNT.search(action).group(0)}'), not a behaviour"
         left = _stems(action) - TOOL_WORDS
@@ -169,30 +243,41 @@ def vague(members):
     return ""
 
 
-def evidence(members):
-    """(sessions, days) across every member: session ids and dates in the Evidence section, plus the
-    note's own date and last_observed."""
-    sessions, days = set(), set()
+def claimed_sessions(inst):
+    """Session ids the note's Evidence section names. A claim only: thin() keeps those the records hold."""
+    content = inst.get("content", "") or ""
+    m = re.search(r"## Evidence\s*\n(.*?)(?:\n## |\Z)", content, re.S)
+    return {s.lower() for s in _SESSION.findall(m.group(1) if m else "")}
+
+
+def evidence(members, observed, stated=(), projects=None):
+    """(sessions, days, any_records) across every member the human did not state. `observed` maps a
+    note's `_source_file` to {session id: days} that the engine itself recorded for the batches that
+    wrote or edited that note. Session ids written in the note are not read: the model could copy
+    real ones from the records it is shown. `projects` is kept for callers and not used here."""
+    sessions, days, any_records = set(), set(), False
     for inst in members:
-        content = inst.get("content", "") or ""
-        m = re.search(r"## Evidence\s*\n(.*?)(?:\n## |\Z)", content, re.S)
-        body = m.group(1) if m else ""
-        sessions |= {s.lower() for s in _SESSION.findall(body)}
-        days |= set(_DAY.findall(body))
-        for key in ("date", "last_observed"):
-            if _DAY.fullmatch(str(inst.get(key, ""))):
-                days.add(str(inst[key]))
-    return sessions, days
+        if inst.get("_source_file") in stated:
+            continue
+        records = (observed or {}).get(inst.get("_source_file")) or {}
+        if records:
+            any_records = True
+        for session, seen in records.items():
+            sessions.add(session)
+            days |= set(seen)
+    return sessions, days, any_records
 
 
-def thin(members):
-    """A reason when the evidence is under two sessions on two days, else ''. A lesson the user
-    stated (`source: user-stated`) is the user's own words and is not held to session counts."""
-    if members and all(str(m.get("source", "")) == "user-stated" for m in members):
+def thin(members, observed=None, stated=(), projects=None):
+    """A reason when the recorded evidence is under two sessions on two days, else ''."""
+    if members and all(m.get("_source_file") in stated for m in members):
         return ""
-    sessions, days = evidence(members)
+    sessions, days, any_records = evidence(members, observed, stated, projects)
+    if not any_records:
+        return ("the engine has no observation records of the batches that wrote it (the session ids in the "
+                "note are not counted), so it is treated as thin")
     if len(sessions) < MIN_SESSIONS or len(days) < MIN_DAYS:
-        return (f"its evidence spans {len(sessions)} session(s) on {len(days)} day(s); "
+        return (f"its evidence spans {len(sessions)} session(s) on {len(days)} day(s) in the observation records; "
                 f"{MIN_SESSIONS} sessions on {MIN_DAYS} different days are needed")
     return ""
 
@@ -220,13 +305,18 @@ def dormant(project_ids, registry, today=None):
     return f"none of its projects ({', '.join(sorted(pids))}) was active in the last {ACTIVE_DAYS} days ({when})"
 
 
-def check(members, project_ids, corpus, registry, today=None, skip_labels=()):
-    """Every failing reason for one candidate, in a fixed order. An empty list means it passes."""
+def check(members, project_ids, corpus, registry, today=None, skip_labels=(), observed=None, stated=(),
+          projects=None, peers=(), thresholds=None):
+    """Every failing reason for one candidate, in a fixed order. An empty list means it passes.
+    `observed` is {project id: {session id: set of days}} from the observation records; `stated` is
+    the set of `_source_file` paths the `add` subcommand wrote and that still say what it wrote;
+    `projects` is {`_source_file`: [project ids]} as evidence() describes."""
     reasons = []
-    hit = restates(_stems(" ".join(lesson_text(m) for m in members)), corpus, skip_labels)
+    hit = restates(_stems(" ".join(lesson_text(m) for m in members)), corpus, skip_labels, peers, thresholds)
     if hit:
-        reasons.append(f"restates {hit[0]} (overlap {hit[1]:.2f} >= {OVERLAP_THRESHOLD})")
-    for reason in (vague(members), thin(members), dormant(project_ids, registry, today)):
+        limit = (thresholds or {}).get("overlap", OVERLAP_THRESHOLD)
+        reasons.append(f"restates {hit[0]} (overlap {hit[1]:.2f} >= {limit})")
+    for reason in (vague(members, stated), thin(members, observed, stated, projects), dormant(project_ids, registry, today)):
         if reason:
             reasons.append(reason)
     return reasons

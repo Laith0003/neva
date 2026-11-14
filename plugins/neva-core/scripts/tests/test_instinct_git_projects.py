@@ -67,6 +67,9 @@ class GitProjectsCase(unittest.TestCase):
 
     def _lesson(self, pid, name, root, iid="explicit-errors", conf=0.9, hint=False):
         self._register(pid, name, root)
+        # The quality gate counts the evidence from the observation records, so record its sessions.
+        self.sb.observe(pid, [("aaaaaaaa-1111-2222-3333-444444444444", "2026-11-01"),
+                              ("bbbbbbbb-1111-2222-3333-444444444444", "2026-11-02")])
         d = os.path.join(self.sb.vault, "06 Memory", "instincts", "project", pid)
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, f"{iid}.md"), "w") as fh:
