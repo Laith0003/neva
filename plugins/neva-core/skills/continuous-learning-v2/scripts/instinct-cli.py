@@ -27,7 +27,9 @@ Storage
 
 Durable memory (a global instinct, a skill, a command, an agent, a rule, or a
 retirement) is written only by apply-promotions, and only for blocks the human
-ticked, or for every open block when the human said "apply instinct promotions".
+ticked. `apply-promotions --all` also applies open blocks of the kinds in NO_TICK_KINDS
+(retire: it archives a note inside the vault and carries no approval); every other kind
+waits for its tick whatever flag is passed.
 
 Commands
   status            Show instincts (project + global)
@@ -39,7 +41,7 @@ Commands
   evolve            Cluster instincts into skill/command/agent candidates
   promote [ID]      Propose project to global promotion (writes proposals)
   propose           Write every qualifying candidate to today's proposal file
-  apply-promotions  Apply ticked blocks (or, with --all, every open block)
+  apply-promotions  Apply ticked blocks (--all adds open retire blocks, nothing else)
   reject ID         Reject a block by id or slug, with --reason; keyed by content too
   list              Open proposal blocks; --rejected for rejections, --parked for the quality gate
   decay             Lower confidence 0.02 per full week without observation
@@ -1976,7 +1978,7 @@ Each block below is a candidate to become durable memory. Nothing in this file h
 - Tick `approve` to accept a block. The next nightly run (or `instinct-cli.py apply-promotions`) writes exactly the text in its fence to its destination.
 - Tick `reject` to decline it. It will not be proposed again.
 - Edit the fenced text before ticking if you want different words. Where and how it is written come from the engine's record, not the table rows: to send it elsewhere, tick reject.
-- Say "apply instinct promotions" to accept every block in this file that is not ticked `reject`.
+- Only a tick applies a block. `apply-promotions --all` adds only open retire blocks, which archive a note inside the vault.
 
 """
 
@@ -2862,17 +2864,14 @@ def cmd_promote(args) -> int:
         blocks = [_promote_block(c) for c in candidates]
     rc = _emit_blocks(blocks, dry_run=args.dry_run, repropose=bool(args.instinct_id))
     if rc == 0 and args.apply and not args.dry_run:
-        # Apply in the file that holds each open block: the ledger names it, and it may be an earlier
-        # day's file than today's.
-        ids = {b['block_id'] for b in blocks}
+        # A promotion becomes a global note the engine trusts as approved, so only the human's tick
+        # in the proposal file applies it. --apply files the block and stops.
         ledger = _load_ledger()
-        files = []
-        for bid in sorted(ids):
+        for bid in sorted(b['block_id'] for b in blocks):
             entry = ledger.get(bid) or {}
-            where = Path(entry['file']) if entry.get('status') == 'proposed' and entry.get('file') else _proposal_path()
-            if not any(_same_file(where, f) for f in files):
-                files.append(where)
-        return _apply_files(files, mode="ids", only_ids=ids)
+            where = entry.get('file') if entry.get('status') == 'proposed' else None
+            print(f"{bid}: filed{f' in {_vault_ref(Path(where))}' if where else ''}, not applied. Fix: tick "
+                  f"approve on that block, then run `instinct-cli.py apply-promotions`.")
     return rc
 
 
@@ -3165,6 +3164,11 @@ def _same_file(a, b) -> bool:
         os.path.realpath(str(b)))
 
 
+# Kinds `apply-promotions --all` may apply without a tick: they write inside the vault and carry no
+# approval with them. Every other kind writes an approval (a global note the engine then trusts, a
+# row in the add ledger) or into the global config folder, and waits for the human's tick.
+NO_TICK_KINDS = ("retire",)
+
 # The one write mode the engine ever proposes for each kind.
 KIND_WRITE_MODE = {'promote-global': 'create', 'evolve-skill': 'create', 'evolve-command': 'create',
                    'evolve-agent': 'create', 'rule': 'append', 'retire': 'set-frontmatter',
@@ -3225,7 +3229,7 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
 def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
     _preflight_state()
     ledger = _load_ledger()
-    applied = rejected = failed = withdrawn = present = 0
+    applied = rejected = failed = withdrawn = present = waiting = 0
     for path in files:
         if not path.exists():
             print(f"{path} does not exist. Fix: pass --file with an existing proposal file.", file=sys.stderr)
@@ -3327,9 +3331,15 @@ def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] 
                                withdrawn_content_key=key)
                 withdrawn += 1  # not a failure: it comes back on the next propose
                 continue
-            go = block['approve'] or mode in ("all", "ids")
-            if not go:
-                continue
+            if not block['approve']:
+                kind = bid.partition(':')[0]
+                if mode == "all" and kind not in NO_TICK_KINDS:
+                    print(f"{path.name}: block {bid} not applied: a {kind} block is applied only when you tick "
+                          f"it; --all applies only {', '.join(NO_TICK_KINDS)} blocks. Fix: tick approve on that "
+                          f"block, then run apply-promotions.", file=sys.stderr)
+                    waiting += 1
+                if not (mode == "all" and kind in NO_TICK_KINDS):
+                    continue
             err = _apply_block(block, ledger.get(bid))
             if err == ALREADY_PRESENT:
                 dest = block['fields'].get('Proposed destination', '')
@@ -3360,7 +3370,8 @@ def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] 
     _save_ledger(ledger)
     print(f"Applied {applied}, rejected {rejected}, failed {failed}."
           + (f" Withdrawn {withdrawn}, to be re-proposed for a fresh tick." if withdrawn else "")
-          + (f" Already present {present}, nothing written." if present else ""))
+          + (f" Already present {present}, nothing written." if present else "")
+          + (f" Waiting for your tick {waiting}." if waiting else ""))
     return 1 if failed else 0
 
 
@@ -3818,7 +3829,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('instinct_id', nargs='?')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--apply', action='store_true',
-                   help='Apply the proposed block now. Only when the human asked for this promotion.')
+                   help='File the block and say where to tick it. Nothing is applied without a tick.')
 
     p = sub.add_parser('propose', help='File every qualifying candidate for human review')
     p.add_argument('--limit', type=int, default=None, metavar='N',
@@ -3828,7 +3839,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser('apply-promotions', help='Apply proposal blocks')
     p.add_argument('--file', help='One proposal file (default: every open one in the inbox)')
     p.add_argument('--all', action='store_true',
-                   help='Apply every open block not ticked reject ("apply instinct promotions")')
+                   help='Also apply open retire blocks without a tick. Every other kind needs its tick.')
 
     p = sub.add_parser('reject', help='Reject a proposal block by id or slug, with a reason')
     p.add_argument('block', help='block id (kind:slug) or slug')

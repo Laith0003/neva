@@ -27,12 +27,12 @@ $NEVA_VAULT/06 Memory/instincts/project/<project-id>/<id>.md         one note pe
 <proposals dir>/Instinct promotions YYYY-MM-DD.md                   one block per candidate, with a checkbox
   + one pointer line under `## Open actions` in the inbox note         surfaced at every session start
       |
-      | human ticks approve, or says "apply instinct promotions"
+      | human ticks approve
       v
 global instinct | skill | command | agent | rule | retirement
 ```
 
-**Iron rule:** nothing leaves project scope, and nothing becomes a skill, command, agent, or rule, until a human ticks its block or says "apply instinct promotions". The analyzer writes project-scoped notes only. The proposal step writes proposals only.
+**Iron rule:** nothing leaves project scope, and nothing becomes a skill, command, agent, or rule, until a human ticks its block. No flag replaces the tick: `apply-promotions --all` adds only open retire blocks, and `promote <id> --apply` files the block and stops. The analyzer writes project-scoped notes only. The proposal step writes proposals only.
 
 **What reaches a session:** session start and prompt recall inject only an approved note: a global note an apply created from a block the human ticked (recorded with its hash in `promoted-notes.json`), or a note `add` wrote or `add --restate` vouched for (recorded with its hash in `user-stated.json`), while the note still matches that hash. The analyzer's own notes are candidates for proposals and are never injected. A new install injects nothing until something is added or approved. The hooks and the CLI read both records with one parser and one hash (`scripts/instinct_trust.py`). Notes `add` recorded in a project folder are denied to the analyzer: its run carries one `Edit(//<note>)` deny rule per recorded note.
 
@@ -280,7 +280,7 @@ Every block carries: instinct id(s), confidence, evidence count, projects seen i
 | Trigger | What is applied |
 |---|---|
 | Nightly job, or `apply-promotions` | only blocks with `- [x] approve` in every open proposal file |
-| Human says "apply instinct promotions" | run `apply-promotions --all`: every open block not ticked `reject`. Report the counts and destinations afterwards. |
+| `apply-promotions --all` | the ticked blocks, plus every open `retire` block (it archives a note inside the vault and carries no approval). Every other kind (promote-global, rule, evolve-skill, evolve-command, evolve-agent, confirm-stated) waits for its tick and is named in a `not applied ... Fix: tick approve` line. |
 | `- [x] reject` | nothing written; the block id is recorded with its content key and never proposed again, and neither is the same lesson under another slug. A `Reason: ...` line inside the block is stored as the reason |
 | `instinct-cli.py reject <block id or slug> --reason "..."` | the same, from the command line: ticks reject in the proposal file and records slug, content key, reason and date. `list --rejected` shows them |
 | both boxes ticked | error `block <id>: both approve and reject are ticked. Fix: untick one.` |
@@ -291,7 +291,7 @@ Rules the applier enforces:
 - `create` never overwrites: an existing different file fails with `destination exists: <path>. Fix: rename or remove it, or edit the 'Proposed destination' row.` An identical file counts as applied.
 - Each resolved block gets a line `Applied YYYY-MM-DD to <destination>.` or `Rejected YYYY-MM-DD.`; failures get `Failed YYYY-MM-DD: <error>` and stay open for retry.
 - When every block is resolved, the file's `status` becomes `done`. Proposal files are never deleted.
-- Agents never tick boxes and never pass `--all` or `promote --apply` on their own. Only the human's tick, the human's words "apply instinct promotions", or the human explicitly asking for one named promotion in the conversation authorizes a write.
+- Only the human's tick in the proposal file authorizes a write that carries approval or reaches the config folder: a global note, a rule, an evolved skill, command or agent, or a confirm-stated record. The code enforces this; no flag and no request in a conversation bypasses it. Agents never tick boxes.
 
 ## Commands
 
@@ -306,9 +306,9 @@ The CLI is Python 3 (stdlib only): `python3 "${CLAUDE_PLUGIN_ROOT}/skills/contin
 | `import <file\|https-url> [--scope] [--min-confidence] [--pending] [--dry-run] [--force]` | One note per instinct, `source: inherited`; keeps the higher confidence on id clashes; https only, public hosts only, 2 MB cap |
 | `export [--scope] [--domain] [--min-confidence] [--format instincts\|claude-md] [-o file]` | Instinct bundle for sharing, or a `## Project Learnings` section for CLAUDE.md |
 | `evolve [--propose] [--limit N] [--dry-run]` | Print skill, command, agent and promotion candidates; `--propose` files them as blocks, only with `NEVA_INSTINCT_EVOLVE=1` |
-| `promote [id] [--dry-run] [--apply]` | File promote-global blocks (all qualifying, or one id on request). `--apply` only when the human asked for that exact promotion |
+| `promote [id] [--dry-run] [--apply]` | File promote-global blocks (all qualifying, or one id on request). `--apply` files the block and stops: it prints where to tick it, and nothing is applied until the human ticks it |
 | `propose [--limit N] [--dry-run]` | Everything in the proposal table above |
-| `apply-promotions [--file PATH] [--all]` | Apply ticked blocks, or all open blocks |
+| `apply-promotions [--file PATH] [--all]` | Apply ticked blocks; `--all` also applies open retire blocks, nothing else |
 | `reject ID --reason TEXT` | Reject a block by id (`kind:slug`) or slug; stored by content as well as by slug |
 | `list [--rejected] [--parked]` | Open proposal blocks, every rejection with its reason, date and content key, or every candidate the quality gate parked |
 | `decay [--dry-run] [--quiet]` | Weekly confidence decay |

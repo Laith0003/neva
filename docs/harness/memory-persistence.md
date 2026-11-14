@@ -48,7 +48,7 @@ Proposal files go to `NEVA_PROPOSALS_DIR` when set, else the inbox note's folder
 Nothing learned becomes durable memory on its own:
 
 1. The nightly job writes project-scoped instinct notes and proposal blocks, nothing else.
-2. You tick `approve` or `reject` in a block, or say "apply instinct promotions" to accept every block you did not reject.
+2. You tick `approve` or `reject` in a block. Only your tick applies a promotion, rule or evolved file; `apply-promotions --all` adds only open retire blocks.
 3. `apply-promotions` (nightly, or when you ask) writes exactly the fenced text to the named destination, which must be inside the vault, `~/.claude`, or a registered project's `.claude/`. A destination that already exists is never overwritten.
 4. A rejected block is recorded in the ledger and never proposed again.
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""`promote <id> --apply` applies the block wherever it is open, not only in today's file.
+"""`promote <id> --apply` files the block and stops (issue 27, B2): it names the file the block is
+open in, which may be an earlier day's file, and applies nothing until the human ticks it there.
 
 Run:  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/neva-core/scripts/tests
 """
@@ -29,17 +30,21 @@ class PromoteApplyCase(unittest.TestCase):
             json.dump(ledger, fh)
         self.promoted = os.path.join(self.sb.vault, "06 Memory", "instincts", "global", "lock-before-write.md")
 
-    def test_apply_finds_the_block_in_an_earlier_file(self):
+    def test_apply_names_the_earlier_file_and_applies_nothing(self):
         r = self.sb.run("promote", "lock-before-write", "--apply", check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("Applied 1", r.stdout)
-        self.assertTrue(os.path.exists(self.promoted))
+        self.assertIn("Instinct promotions 2020-01-01.md", r.stdout)
+        self.assertIn("Fix: tick approve", r.stdout)
+        self.assertFalse(os.path.exists(self.promoted))
 
-    def test_apply_finds_it_when_todays_file_also_exists(self):
+    def test_the_tick_in_the_earlier_file_applies_it(self):
         self.sb.add("repoA", "other-lesson", 0.9, trigger="when naming a database migration")
         self.sb.run("promote", "other-lesson")
         self.assertTrue(os.path.exists(self.sb.proposal_path()))
-        r = self.sb.run("promote", "lock-before-write", "--apply", check=False)
+        self.sb.run("promote", "lock-before-write", "--apply", check=False)
+        self.assertFalse(os.path.exists(self.promoted))
+        self.sb.tick(self.older, BID, "approve")
+        r = self.sb.run("apply-promotions", check=False)
         self.assertIn("Applied 1", r.stdout, r.stdout + r.stderr)
         self.assertTrue(os.path.exists(self.promoted))
 
