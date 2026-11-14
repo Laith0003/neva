@@ -2032,6 +2032,54 @@ def _save_ledger(ledger: dict) -> None:
     _write_text_atomic(PROMOTIONS_LEDGER, json.dumps(ledger, indent=2) + "\n")
 
 
+LEDGER_LOCK_FILE = STATE_DIR / "promotions.lock"
+LEDGER_LOCK_TIMEOUT_SECONDS = 30
+_LOCK_DEPTH = 0
+
+
+@contextmanager
+def _ledger_lock():
+    """One exclusive lock around every read-modify-write of the ledger and the proposal files
+    (propose, apply, reject, park), so a run never rewrites a file from text another run has since
+    changed. Re-entrant within a process. Waits at most LEDGER_LOCK_TIMEOUT_SECONDS (or
+    NEVA_INSTINCT_LOCK_TIMEOUT), then fails naming the lock."""
+    global _LOCK_DEPTH
+    if _LOCK_DEPTH or not _HAS_FCNTL:
+        _LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH -= 1
+        return
+    try:
+        timeout = max(0, int(os.environ.get("NEVA_INSTINCT_LOCK_TIMEOUT") or LEDGER_LOCK_TIMEOUT_SECONDS))
+    except ValueError:
+        timeout = LEDGER_LOCK_TIMEOUT_SECONDS
+    _preflight_state()  # refuses a linked state folder with the relocation hint, before any write
+    fh = learning_io.open_lock(STATE_ROOT, LEDGER_LOCK_FILE)
+    try:
+        deadline = datetime.now().timestamp() + timeout
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if datetime.now().timestamp() >= deadline:
+                    raise learning_io.LearningDataError(
+                        f"another instinct-cli run has held {LEDGER_LOCK_FILE} for over {timeout}s. Fix: let it "
+                        f"finish and run again; nothing was written.") from None
+                import time
+                time.sleep(0.1)
+        _LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH -= 1
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
 PROMOTION_EVENTS_FILE = STATE_DIR / "promotion-events.jsonl"
 PROMOTION_EVENT_KINDS = ("made", "approved", "rejected", "withdrawn")
 
@@ -2669,6 +2717,13 @@ def _not_proposed_section(rows: list) -> str:
 
 
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
+    if dry_run:
+        return _emit_blocks_unlocked(blocks, dry_run=dry_run, repropose=repropose)  # writes nothing
+    with _ledger_lock():
+        return _emit_blocks_unlocked(blocks, dry_run=dry_run, repropose=repropose)
+
+
+def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
     if not dry_run:
         _preflight_state()
     try:
@@ -2922,6 +2977,10 @@ def _allowed_destination(path: Path) -> bool:
     return any(resolved == r or r in resolved.parents for r in roots)
 
 
+# Returned by _apply_block when the destination already holds the text: nothing was written.
+ALREADY_PRESENT = "\x00already present"
+
+
 def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     """Apply one block. Returns '' on success or an error naming the field and the fix."""
     if block['block_id'] in (CONFIRM_STATED_ID, CONFIRM_AGAIN_ID):
@@ -2960,7 +3019,7 @@ def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
     if mode == 'create':
         if dest.exists():
             if dest.read_text(encoding="utf-8") == text:
-                return ''
+                return ALREADY_PRESENT
             return f"block {bid}: destination exists: {dest}. Fix: rename or remove it, or edit the 'Proposed destination' row."
         _write_text_atomic(dest, text)
         created = True
@@ -2968,7 +3027,7 @@ def _apply_block(block: dict, entry: Optional[dict] = None) -> str:
         dest.parent.mkdir(parents=True, exist_ok=True)
         existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
         if text.strip() in existing:
-            return ''
+            return ALREADY_PRESENT
         _write_text_atomic(dest, existing.rstrip("\n") + ("\n\n" if existing else "") + text)
     elif mode == 'set-frontmatter':
         if not dest.exists():
@@ -3149,9 +3208,14 @@ def _provenance_problem(ledger: dict, block: dict, path: Path, copies: int = 1, 
 
 
 def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
+    with _ledger_lock():
+        return _apply_files_unlocked(files, mode=mode, only_ids=only_ids)
+
+
+def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] = None) -> int:
     _preflight_state()
     ledger = _load_ledger()
-    applied = rejected = failed = withdrawn = 0
+    applied = rejected = failed = withdrawn = present = 0
     for path in files:
         if not path.exists():
             print(f"{path} does not exist. Fix: pass --file with an existing proposal file.", file=sys.stderr)
@@ -3246,6 +3310,15 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             if not go:
                 continue
             err = _apply_block(block, ledger.get(bid))
+            if err == ALREADY_PRESENT:
+                dest = block['fields'].get('Proposed destination', '')
+                text = _mark_block(text, block, f"Applied {_today()}: already present, nothing written ({dest}).",
+                                   not block['approve'])
+                _ledger_record(ledger, bid, status='applied', file=str(path), date=_today(),
+                               **_recorded_content(ledger.get(bid)))
+                print(f"{bid}: already present, nothing written ({dest}).")
+                present += 1
+                continue
             if err:
                 print(err, file=sys.stderr)
                 text = _mark_block(text, block, f"Failed {_today()}: {err}", False)
@@ -3265,7 +3338,8 @@ def _apply_files(files: list[Path], mode: str, only_ids: Optional[set] = None) -
             _inbox_pointer(path, done=True)
     _save_ledger(ledger)
     print(f"Applied {applied}, rejected {rejected}, failed {failed}."
-          + (f" Withdrawn {withdrawn}, to be re-proposed for a fresh tick." if withdrawn else ""))
+          + (f" Withdrawn {withdrawn}, to be re-proposed for a fresh tick." if withdrawn else "")
+          + (f" Already present {present}, nothing written." if present else ""))
     return 1 if failed else 0
 
 
@@ -3292,6 +3366,11 @@ def _resolve_block_ref(ref: str, ledger: dict) -> list[str]:
 
 
 def cmd_reject(args) -> int:
+    with _ledger_lock():
+        return cmd_reject_unlocked(args)
+
+
+def cmd_reject_unlocked(args) -> int:
     """Record a rejection by block id or slug, with a reason. The block is ticked reject in its
     proposal file when it is still open there, and the ledger keeps the slug, the content key, the
     reason and the date, so the same lesson under another slug is never proposed again."""
