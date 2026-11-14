@@ -101,6 +101,7 @@ Bodies must use `***` or `___` for horizontal rules. A line of `---` is always a
 | Failure counter | `<state dir>/instinct-analyze-failures.json` (per file: hash of its first line, the batch size to try next, runs failed at the minimum size); a missing or corrupt file is treated as empty | nightly job |
 | Project registry | `<data dir>/observations/projects.json` | hook and CLI |
 | Proposal ledger | `<state dir>/instincts/promotions.json` | `propose`, `apply-promotions` |
+| Parked candidates | `<state dir>/instincts/parked.json` (block id, reasons, first parked, last checked, cleared); never pruned | `propose` (quality gate) |
 | Ledger binding | `<state dir>/instincts/vault-binding.json` and `$NEVA_VAULT/06 Memory/instincts/.ledger-id`, one id in both | `propose` (written on the first run, checked on every run) |
 | Job log | `<state dir>/instinct-analyze.log` | nightly job |
 | Proposals for the human | `<proposals dir>/Instinct promotions YYYY-MM-DD.md` | `propose` |
@@ -119,6 +120,8 @@ Resolution, shared with the hook runtime so both sides agree:
 Never hardcode a home path. With no vault, every command exits 2 with `NEVA_VAULT is not set (or not absolute) and the identity file has no VAULT_PATH. Fix: export NEVA_VAULT=/absolute/path/to/your/vault`. `CLAUDE_CONFIG_DIR` sets where user-level skills, commands, agents, rules land. From a hook context, `hooks/instincts.py [--cwd DIR] <command>` is a thin shim that fills in the vault and project directory and calls these scripts (`analyze` runs the nightly job).
 
 The ledger and the registry are bound to the vault. `propose`, `promote` and `evolve --propose` exit 2, write nothing, and name the variable to fix when: the state folder holds no ledger id or another vault's (fix `NEVA_STATE_DIR`); the ledger is empty while the vault already holds proposal blocks (fix `NEVA_STATE_DIR`, or set `NEVA_INSTINCT_NEW_LEDGER=1` once when the ledger is truly lost); or the registry knows none of the vault's project buckets (fix `NEVA_DATA_DIR`). A decision is kept by content as well as by slug: each ledger entry holds a content key (the sorted, stemmed, stop-word-free tokens of the trigger and action of every instinct the block carries, hashed), and a candidate whose tokens equal or near-duplicate (Jaccard 0.6, the recall threshold) a rejected block of any kind but `retire`, or an applied block of the same kind, is skipped with a line naming the earlier decision. Rejections recorded before content keys existed get theirs from the block still in its proposal file. Whatever the ledger says, a block id already open in any proposal file, or already applied or rejected there, is never written again, and a project block whose project root the registry does not know is skipped with a warning instead of being sent to the global config folder.
+
+Every candidate except `retire` passes a quality gate (`scripts/quality_gate.py`, no model) before it is written. It is parked, with every failing reason, when: it restates something already written down (overlap coefficient of instinct_match stems >= 0.6 with 3+ shared stems against a paragraph of the rules folder, a line of a memory index file, a skill or command description, a global instinct, or a candidate already accepted in the same run); its action names a tool or a count of tool use instead of a behaviour; its evidence spans fewer than 2 sessions on 2 different days (a `user-stated` lesson is exempt); or none of its projects was seen in the last 30 days. Folders read: `NEVA_RULES_DIR` (else `<config dir>/rules`), `NEVA_MEMORY_DIR` (else every `<config dir>/projects/*/memory`, `MEMORY.md` and `INDEX.md`), the config dir's `skills/` and `commands/` plus installed plugins, and `NEVA_SKILL_DIRS`; each is a path list. A parked candidate is checked again on every run and proposed once it passes; its record stays, marked cleared. `list --parked` shows them. `promote <id>`, an explicit request, is not gated.
 
 Sessions outside any project use the bucket id `unscoped` (observations and project instincts alike), so the analyzer never writes to `global/`.
 
@@ -305,7 +308,7 @@ The CLI is Python 3 (stdlib only): `python3 "${CLAUDE_PLUGIN_ROOT}/skills/contin
 | `propose [--limit N] [--dry-run]` | Everything in the proposal table above |
 | `apply-promotions [--file PATH] [--all]` | Apply ticked blocks, or all open blocks |
 | `reject ID --reason TEXT` | Reject a block by id (`kind:slug`) or slug; stored by content as well as by slug |
-| `list [--rejected]` | Open proposal blocks, or every rejection with its reason, date and content key |
+| `list [--rejected] [--parked]` | Open proposal blocks, every rejection with its reason, date and content key, or every candidate the quality gate parked |
 | `decay [--dry-run] [--quiet]` | Weekly confidence decay |
 | `projects [delete <id> \| merge <from> <into> \| gc] [--dry-run] [--force]` | Registry maintenance. Delete removes observations only and leaves the vault notes for the human; merge moves notes and appends observations |
 | `prune [--max-age 30] [--dry-run] [--quiet]` | Delete pending instincts past their TTL |

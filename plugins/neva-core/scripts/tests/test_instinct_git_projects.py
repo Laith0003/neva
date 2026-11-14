@@ -14,6 +14,7 @@ import json
 import os
 import re
 import unittest
+from datetime import datetime, timezone
 
 from test_instinct_learning import InstinctSandbox
 
@@ -57,7 +58,9 @@ class GitProjectsCase(unittest.TestCase):
             with open(self.registry_path) as fh:
                 reg = json.load(fh)
         reg[pid] = {"id": pid, "name": name, "root": root, "remote": "",
-                    "created_at": "2026-11-01T00:00:00Z", "last_seen": "2026-11-02T00:00:00Z"}
+                    "created_at": "2026-11-01T00:00:00Z",
+                    # Recent, so the quality gate's 30-day activity check never parks these lessons.
+                    "last_seen": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
         os.makedirs(os.path.dirname(self.registry_path), exist_ok=True)
         with open(self.registry_path, "w") as fh:
             json.dump(reg, fh)

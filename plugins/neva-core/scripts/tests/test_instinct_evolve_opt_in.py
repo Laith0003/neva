@@ -27,10 +27,24 @@ class EvolveOptInCase(unittest.TestCase):
         os.makedirs(self.config)
         self.env = {"CLAUDE_CONFIG_DIR": self.config}
 
+    HABITS = [
+        ("when opening a pull request", "Link the issue and list the manual checks performed."),
+        ("when rotating staging secrets", "Revoke the previous credential after the new one verifies."),
+        ("when a migration drops a column", "Ship the reader change one release before removing it."),
+        ("when bumping a dependency", "Read its changelog entries between both versions first."),
+        ("when tagging a release", "Confirm the changelog heading matches the version number."),
+        ("when a flaky assertion appears", "Quarantine that case and file an owner with a deadline."),
+        ("when adding a cron schedule", "State the timezone explicitly beside the expression."),
+        ("when renaming a public function", "Keep a deprecated alias for one minor version."),
+        ("when touching payment rounding", "Compute in integer cents and round only at display."),
+        ("when writing a shell installer", "Abort on unset variables and print each failing step."),
+    ]
+
     def _workflow_instincts(self, scope="project", n=10):
-        for i in range(n):
-            self.sb.run("add", "--id", f"habit-{i}", "--trigger", f"when step {i} of the release checklist runs",
-                        "--action", "Do the thing.", "--domain", "workflow", "--confidence", "0.9",
+        # Ten unrelated habits, each a real behaviour, so the quality gate passes every one.
+        for i, (trigger, action) in enumerate(self.HABITS[:n]):
+            self.sb.run("add", "--id", f"habit-{i}", "--trigger", trigger,
+                        "--action", action, "--domain", "workflow", "--confidence", "0.9",
                         "--scope", scope, env=self.env)
 
     def _ids(self):
