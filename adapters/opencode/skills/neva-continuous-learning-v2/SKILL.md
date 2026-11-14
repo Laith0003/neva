@@ -102,6 +102,7 @@ Bodies must use `***` or `___` for horizontal rules. A line of `---` is always a
 | Failure counter | `<state dir>/instinct-analyze-failures.json` (per file: hash of its first line, the batch size to try next, runs failed at the minimum size); a missing or corrupt file is treated as empty | nightly job |
 | Project registry | `<data dir>/observations/projects.json` | hook and CLI |
 | Proposal ledger | `<state dir>/instincts/promotions.json` | `propose`, `apply-promotions` |
+| Ledger binding | `<state dir>/instincts/vault-binding.json` and `$NEVA_VAULT/06 Memory/instincts/.ledger-id`, one id in both | `propose` (written on the first run, checked on every run) |
 | Job log | `<state dir>/instinct-analyze.log` | nightly job |
 | Proposals for the human | `<proposals dir>/Instinct promotions YYYY-MM-DD.md` | `propose` |
 | Pointer for the human | one `- [ ] Review instinct proposals: [[...]]` line under `## Open actions` in the inbox note; ticked when the file is done | `propose`, `apply-promotions` |
@@ -117,6 +118,8 @@ Resolution, shared with the hook runtime so both sides agree:
 | proposals dir | `NEVA_PROPOSALS_DIR` (absolute or vault-relative); else the inbox note's folder; else, for a root inbox, `06 Memory/instincts/proposals` |
 
 Never hardcode a home path. With no vault, every command exits 2 with `NEVA_VAULT is not set (or not absolute) and the identity file has no VAULT_PATH. Fix: export NEVA_VAULT=/absolute/path/to/your/vault`. `CLAUDE_CONFIG_DIR` sets where user-level skills, commands, agents, rules land. From a hook context, `hooks/instincts.py [--cwd DIR] <command>` is a thin shim that fills in the vault and project directory and calls these scripts (`analyze` runs the nightly job).
+
+The ledger and the registry are bound to the vault. `propose`, `promote` and `evolve --propose` exit 2, write nothing, and name the variable to fix when: the state folder holds no ledger id or another vault's (fix `NEVA_STATE_DIR`); the ledger is empty while the vault already holds proposal blocks (fix `NEVA_STATE_DIR`, or set `NEVA_INSTINCT_NEW_LEDGER=1` once when the ledger is truly lost); or the registry knows none of the vault's project buckets (fix `NEVA_DATA_DIR`). Whatever the ledger says, a block id already open in any proposal file, or already applied or rejected there, is never written again, and a project block whose project root the registry does not know is skipped with a warning instead of being sent to the global config folder.
 
 Sessions outside any project use the bucket id `unscoped` (observations and project instincts alike), so the analyzer never writes to `global/`.
 

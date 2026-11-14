@@ -1346,9 +1346,23 @@ def _cluster_destination(project: dict, kind: str, name: str, cluster: list[dict
     registry = load_registry()
     pids = {i.get('project_id') for i in cluster if i.get('scope', 'project') == 'project'}
     all_project = all(i.get('scope', 'project') == 'project' for i in cluster)
-    root = registry.get(next(iter(pids)), {}).get('root') if (all_project and len(pids) == 1) else None
     rel = {"skill": f"skills/{name}/SKILL.md", "command": f"commands/{name}.md", "agent": f"agents/{name}.md"}[kind]
-    return str(Path(root) / ".claude" / rel) if root else f"{CLAUDE_DIR_REF}/{rel}"
+    if all_project and pids:
+        # A project block goes to that project's .claude, or nowhere. It never falls back to the
+        # global config folder, where it would load in every project.
+        pid = next(iter(pids)) if len(pids) == 1 else None
+        root = registry.get(pid, {}).get('root') if pid else None
+        if not root:
+            raise UnknownProjectRoot(
+                f"{kind} '{name}' skipped: project {', '.join(sorted(str(p) for p in pids))} has no root in the "
+                f"project registry at {REGISTRY_FILE}, so its destination is unknown. Fix: open a session in that "
+                f"project once so the hooks register it, or point NEVA_DATA_DIR at the data folder the hooks use.")
+        return str(Path(root) / ".claude" / rel)
+    return f"{CLAUDE_DIR_REF}/{rel}"
+
+
+class UnknownProjectRoot(Exception):
+    """A project-scoped cluster whose project root the registry does not know."""
 
 
 def _evolved_description(trigger: str, instincts: list, kind: str) -> str:
@@ -1398,7 +1412,11 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
         content += f"## When to Apply\n\nTrigger: {trigger}\n\n## Actions\n\n"
         for inst in cand['instincts']:
             content += f"- {_action_of(inst)}\n"
-        dest = _cluster_destination(project, "skill", name, cand['instincts'])
+        try:
+            dest = _cluster_destination(project, "skill", name, cand['instincts'])
+        except UnknownProjectRoot as exc:
+            print(f"Warning: {exc}", file=sys.stderr)
+            continue
         blocks.append(_block("evolve-skill", name, _cluster_fields(
             "skill", name, cand['instincts'], dest,
             f"{len(cand['instincts'])} instincts share trigger keywords '{trigger}'"), content))
@@ -1413,7 +1431,11 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
         content += f"# {cmd_name}\n\nEvolved from instinct: {inst.get('id', 'unnamed')}\n"
         content += f"Confidence: {inst.get('confidence', 0.5):.0%}\n\n"
         content += inst.get('content', '')
-        dest = _cluster_destination(project, "command", cmd_name, [inst])
+        try:
+            dest = _cluster_destination(project, "command", cmd_name, [inst])
+        except UnknownProjectRoot as exc:
+            print(f"Warning: {exc}", file=sys.stderr)
+            continue
         blocks.append(_block("evolve-command", cmd_name, _cluster_fields(
             "command", cmd_name, [inst], dest,
             f"workflow instinct with confidence {inst.get('confidence', 0.5):.2f} >= 0.70"), content))
@@ -1431,7 +1453,11 @@ def _evolve_blocks(project: dict, skill_candidates, workflow_instincts, agent_ca
         content += "## Source Instincts\n\n"
         for inst in cand['instincts']:
             content += f"- {inst.get('id', 'unnamed')}: {_action_of(inst).splitlines()[0]}\n"
-        dest = _cluster_destination(project, "agent", agent_name, cand['instincts'])
+        try:
+            dest = _cluster_destination(project, "agent", agent_name, cand['instincts'])
+        except UnknownProjectRoot as exc:
+            print(f"Warning: {exc}", file=sys.stderr)
+            continue
         blocks.append(_block("evolve-agent", agent_name, _cluster_fields(
             "agent", agent_name, cand['instincts'], dest,
             f"{len(cand['instincts'])} instincts, average confidence {cand['avg_confidence']:.2f} >= 0.75"), content))
@@ -1540,10 +1566,131 @@ def _preflight_state() -> None:
         learning_io.ensure_dir(STATE_ROOT, STATE_DIR)
         learning_io.check(STATE_ROOT, PROMOTIONS_LEDGER)
         learning_io.check(STATE_ROOT, PROMOTION_EVENTS_FILE)
+        learning_io.check(STATE_ROOT, STATE_BINDING_FILE)
     except learning_io.ManagedPathError as exc:
         raise learning_io.ManagedPathError(
             f"{exc} To keep instinct state somewhere else, set NEVA_INSTINCT_STATE_DIR to that "
             f"absolute directory instead of linking to it. Nothing was written.") from None
+
+
+STATE_BINDING_FILE = STATE_DIR / "vault-binding.json"
+# The registry as it was before this command ran: detecting the current project registers it,
+# which would make a foreign, empty registry look populated.
+_REGISTRY_AT_START: Optional[dict] = None
+VAULT_BINDING_NAME = ".ledger-id"
+_STATE_FIX = ("Fix: point this run at the state folder this vault was used with by setting NEVA_STATE_DIR "
+              "(or NEVA_INSTINCT_STATE_DIR, or XDG_STATE_HOME) to it.")
+
+
+class StateBindingError(Exception):
+    """The ledger or the registry this run would read does not belong to the vault it writes."""
+
+
+def _vault_binding_file() -> Path:
+    return INSTINCTS_ROOT / VAULT_BINDING_NAME
+
+
+def _proposal_files() -> list[Path]:
+    if INBOX_DIR is None or not INBOX_DIR.is_dir():
+        return []
+    return sorted(INBOX_DIR.glob("Instinct promotions *.md"))
+
+
+def _vault_block_states() -> dict:
+    """block id -> 'open' or 'resolved', read from every proposal file in the vault, whatever its
+    status. The vault is the record the human edits, so it is consulted even when the ledger
+    agrees: a block that is still open, or was applied or rejected, is never written twice."""
+    states = {}
+    for path in _proposal_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for block in _parse_blocks(text):
+            if block['resolved']:
+                states[block['block_id']] = 'resolved'
+            else:
+                states.setdefault(block['block_id'], 'open')
+        for bid in BLOCK_MARKER.findall(text):
+            states.setdefault(bid, 'open')
+    return states
+
+
+def _project_buckets_with_notes() -> list[str]:
+    out = []
+    for pdir in _all_project_dirs():
+        if pdir.name == UNSCOPED_ID:
+            continue
+        if any(f.suffix.lower() in ALLOWED_INSTINCT_EXTENSIONS for f in pdir.iterdir() if f.is_file()):
+            out.append(pdir.name)
+    return out
+
+
+def _check_state_binding(write: bool) -> None:
+    """Refuse to propose unless the ledger and the registry belong to this vault.
+
+    The vault, the ledger and the registry are resolved from three separate variables. A run with
+    one of them pointing somewhere else (a temporary state folder, a fresh data folder) would
+    propose again everything the human already decided and send project blocks to the global
+    config folder. The binding is one id, stored in the state folder beside the ledger and in the
+    vault's instincts folder; both must agree. An existing install is bound on its first run."""
+    vault_real = os.path.realpath(VAULT)
+    vault_file = _vault_binding_file()
+    vault_id = None
+    if vault_file.is_file():
+        vault_id = vault_file.read_text(encoding="utf-8").strip() or None
+    state = learning_io.read_json_object(STATE_BINDING_FILE) if STATE_BINDING_FILE.exists() else {}
+    state_id, state_vault = state.get("ledger_id"), state.get("vault")
+    ledger = _load_ledger()
+
+    if state_id and state_vault and os.path.realpath(state_vault) != vault_real:
+        raise StateBindingError(
+            f"the promotion ledger at {PROMOTIONS_LEDGER} belongs to the vault at {state_vault}, but NEVA_VAULT "
+            f"points this run at {VAULT}. Fix: set NEVA_VAULT to the vault this ledger was used with, or give "
+            f"this vault its own state folder with NEVA_STATE_DIR. Nothing was written.")
+    new_ledger = os.environ.get("NEVA_INSTINCT_NEW_LEDGER") == "1"
+    if vault_id and not state_id and not ledger and new_ledger:
+        state_id = None  # adopted below: a lost ledger replaced on purpose, bound to this vault
+    elif vault_id and state_id != vault_id:
+        found = f"ledger id {state_id}" if state_id else "no ledger id"
+        raise StateBindingError(
+            f"the vault at {VAULT} is bound to ledger id {vault_id}, but the state folder {STATE_DIR} holds "
+            f"{found}, so this run would ignore every block already applied, rejected or open. "
+            f"{_STATE_FIX} Nothing was written.")
+    if not vault_id and not state_id:
+        history = list(_vault_block_states())
+        if ledger and history and not _ledger_covers(ledger, history):
+            raise StateBindingError(
+                f"the state folder {STATE_DIR} holds a ledger that knows none of the {len(history)} proposal "
+                f"block(s) in the vault at {VAULT}, so it belongs to another vault. {_STATE_FIX} Nothing was written.")
+        if not ledger and history and not new_ledger:
+            raise StateBindingError(
+                f"the promotion ledger at {PROMOTIONS_LEDGER} is empty, but the vault at {VAULT} already holds "
+                f"{len(history)} proposal block(s); a run without its ledger would propose them again. "
+                f"{_STATE_FIX} If the ledger is lost for good, set NEVA_INSTINCT_NEW_LEDGER=1 once to start a new "
+                f"one; blocks already in the vault are still never proposed twice. Nothing was written.")
+
+    registry = _REGISTRY_AT_START if _REGISTRY_AT_START is not None else load_registry()
+    buckets = _project_buckets_with_notes()
+    if buckets and not any(b in registry for b in buckets):
+        raise StateBindingError(
+            f"the project registry at {REGISTRY_FILE} knows none of the {len(buckets)} project(s) the vault "
+            f"holds instincts for, so it is not the registry this vault was built with. Fix: point this run at the "
+            f"data folder the hooks write to by setting NEVA_DATA_DIR (or NEVA_OBSERVATIONS_DIR, or XDG_DATA_HOME). "
+            f"Nothing was written.")
+
+    if write and not (vault_id and state_id == vault_id):
+        new_id = state_id or vault_id or hashlib.sha256(
+            f"{vault_real}|{_now_iso()}|{os.getpid()}".encode("utf-8")).hexdigest()[:16]
+        learning_io.write_text_atomic(STATE_ROOT, STATE_BINDING_FILE,
+                                      json.dumps({"ledger_id": new_id, "vault": vault_real}, indent=2) + "\n")
+        _write_text_atomic(vault_file, new_id + "\n")
+
+
+def _ledger_covers(ledger: dict, history: list) -> bool:
+    """An unbound ledger that already knows at least one block in the vault is taken as this vault's
+    own (an install from before the binding existed). One that knows none of them is foreign."""
+    return any(bid in ledger for bid in history)
 
 
 def _log_promotion_event(event: str, block_id: str) -> None:
@@ -1613,10 +1760,19 @@ def _event_week_key(ts: str) -> str:
 def _emit_blocks(blocks: list[dict], dry_run: bool = False, repropose: bool = False) -> int:
     if not dry_run:
         _preflight_state()
+    try:
+        _check_state_binding(write=not dry_run)
+    except StateBindingError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     ledger = _load_ledger()
+    in_vault = _vault_block_states()
     fresh = []
     for block in blocks:
-        prior = ledger.get(block['block_id'])
+        bid = block['block_id']
+        if in_vault.get(bid) == 'open' or (in_vault.get(bid) == 'resolved' and not repropose):
+            continue
+        prior = ledger.get(bid)
         if prior and not repropose:
             if prior.get('status') in ('applied', 'rejected'):
                 continue
@@ -2328,7 +2484,9 @@ def main(argv: Optional[list] = None) -> int:
         parser.print_help()
         return 1
     _require_vault()
+    global _REGISTRY_AT_START
     try:
+        _REGISTRY_AT_START = load_registry()
         return handler(args)
     except (learning_io.ManagedPathError, learning_io.LearningDataError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
