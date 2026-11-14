@@ -12,6 +12,7 @@ the same parse_instinct_file and note_hash, so a note cannot pass one and fail t
 
 Stdlib only. Read-only: nothing here writes a file.
 """
+import functools
 import hashlib
 import json
 import os
@@ -93,16 +94,36 @@ def action_text(inst: dict) -> str:
     return m.group(1).strip() if m else ''
 
 
+@functools.lru_cache(maxsize=256)
+def _real_dir(directory: str) -> str:
+    return os.path.realpath(directory)
+
+
+def _realpath(path: str) -> str:
+    """os.path.realpath, with each folder resolved once per process: the hooks resolve thousands of
+    notes in a few folders. A leaf that is itself a symlink is resolved in full."""
+    head, tail = os.path.split(os.path.abspath(path))
+    if not tail or os.path.islink(path):
+        return os.path.realpath(path)
+    return os.path.join(_real_dir(head), tail)
+
+
 def vault_ref(path, vault):
     """`vault:<relative path>` for a path inside the vault, else None. Both sides are resolved, so a
     symlinked vault path and its real path give the same reference."""
     if not vault or not path:
         return None
     try:
-        rel = Path(path).resolve().relative_to(Path(vault).resolve())
-    except (ValueError, OSError, RuntimeError):
+        v = _real_dir(os.path.expanduser(os.fspath(vault))).rstrip(os.sep) or os.sep
+        p = _realpath(os.fspath(path))
+    except (OSError, ValueError, TypeError):
         return None
-    return f"vault:{rel.as_posix()}"
+    if p == v:
+        return "vault:."
+    prefix = v if v.endswith(os.sep) else v + os.sep
+    if not p.startswith(prefix):
+        return None
+    return "vault:" + p[len(prefix):].replace(os.sep, "/")
 
 
 def _abs(environ, name):
