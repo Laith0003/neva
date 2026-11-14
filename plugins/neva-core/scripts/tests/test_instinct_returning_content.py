@@ -13,6 +13,7 @@ import os
 import unittest
 
 import test_instinct_ledger_authority as la
+from test_instinct_learning import InstinctSandbox
 
 BID = la.BID
 OTHER = "promote-global:pin-tool-versions"
@@ -138,6 +139,73 @@ class ReturningContentCase(la.LedgerAuthorityCase):
     def test_the_withdrawal_records_the_content_it_withdrew(self):
         self._withdraw_and_reject_other()
         self.assertTrue(self._ledger()[BID].get("withdrawn_content_key"), self._ledger()[BID])
+
+
+RULE_BID = "rule:explicit-errors"
+RULE_TRIGGER = "when handling errors in services"
+RULE_ACTION = "Return a typed error naming the field and the fix."
+LEGACY_KEYS = ("rendered_sha256", "ticked_at_propose", "destination", "sources", "content_key", "content_tokens")
+
+
+class ReturningRuleBlockCase(unittest.TestCase):
+    """A rule block's fence holds the rule text, not the instinct note. The promise made at withdrawal
+    covers it too: an unchanged legacy rule block is keyed and comes back without the gate."""
+
+    def setUp(self):
+        self.sb = InstinctSandbox()
+        self.addCleanup(self.sb.close)
+        self.config = os.path.join(self.sb.tmp, "claude-config")
+        os.makedirs(self.config)
+        self.env = {"CLAUDE_CONFIG_DIR": self.config}
+        self.state = os.path.join(self.sb.tmp, "state", "neva", "instincts")
+        self.sb.run("add", "--id", "explicit-errors", "--trigger", RULE_TRIGGER, "--action", RULE_ACTION,
+                    "--domain", "code-style", "--confidence", "0.95", "--scope", "global", env=self.env)
+        self.sb.run("propose", env=self.env)
+        ledger = self._ledger()
+        self.assertEqual(ledger[RULE_BID]["status"], "proposed", ledger)
+        self.key_at_propose = ledger[RULE_BID]["content_key"]
+        for key in LEGACY_KEYS:
+            ledger[RULE_BID].pop(key, None)
+        self._write("promotions.json", ledger)
+
+    def _ledger(self):
+        with open(os.path.join(self.state, "promotions.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _write(self, name, data):
+        with open(os.path.join(self.state, name), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def _rewrite_note(self):
+        notes = glob.glob(os.path.join(self.sb.vault, "06 Memory", "instincts", "**", "explicit-errors.md"),
+                          recursive=True)
+        self.assertEqual(len(notes), 1, notes)
+        with open(notes[0], encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn(RULE_ACTION, text)
+        with open(notes[0], "w", encoding="utf-8") as fh:
+            fh.write(text.replace(RULE_ACTION, OTHER_ACTION).replace(RULE_TRIGGER, OTHER_TRIGGER))
+
+    def test_an_unchanged_legacy_rule_block_is_keyed_at_withdrawal(self):
+        self.sb.run("apply-promotions", check=False, env=self.env)
+        entry = self._ledger()[RULE_BID]
+        self.assertEqual(entry["status"], "withdrawn", entry)
+        self.assertEqual(entry.get("withdrawn_content_key"), self.key_at_propose, entry)
+
+    def test_an_unchanged_legacy_rule_block_comes_back_without_the_gate(self):
+        self.sb.run("apply-promotions", check=False, env=self.env)
+        # Proposed under the old rules: no record that these were his own words, so the gate alone
+        # would park it as thin. The promise made at withdrawal is what brings it back.
+        self._write("user-stated.json", {})
+        r = self.sb.run("propose", check=False, env=self.env)
+        self.assertEqual(self._ledger()[RULE_BID]["status"], "proposed", r.stdout + r.stderr)
+
+    def test_a_rule_note_rewritten_before_the_withdrawal_does_not_carry_the_promise(self):
+        self._rewrite_note()
+        self.sb.run("apply-promotions", check=False, env=self.env)
+        entry = self._ledger()[RULE_BID]
+        self.assertEqual(entry["status"], "withdrawn", entry)
+        self.assertFalse(entry.get("withdrawn_content_key"), entry)
 
 
 if __name__ == "__main__":

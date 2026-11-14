@@ -2416,6 +2416,26 @@ def _block_content(block: dict) -> dict:
     return _content_from_fields(dict(block['fields']), block.get('text'))
 
 
+# Share of the notes' words that a rendered fence (a rule, a skill) must hold for the notes to count
+# as still saying what the block shows. The fence adds a title and a source line around them.
+FENCE_HOLDS_NOTES = 0.9
+
+
+def _notes_still_say_the_fence(block: dict, now: dict) -> bool:
+    """Whether the notes behind a block (`now`, from _block_content) still say what its own fence
+    shows. A fence that is an instinct note is compared by content key. Any other fence is text the
+    engine rendered from the notes, so it never has the notes' key: the notes' words must be in it."""
+    fence = block.get('text') or ""
+    if not now.get('content_key') or not fence.strip():
+        return False
+    if fence.lstrip().startswith("---") and any(i.get('trigger') for i in parse_instinct_file(fence)):
+        return _content_from_fields({}, fence).get('content_key') == now['content_key']
+    words = set(now.get('content_tokens') or ())
+    if not words:
+        return False
+    return len(words & set(_content_tokens(fence))) / len(words) >= FENCE_HOLDS_NOTES
+
+
 def _ledger_record(ledger: dict, bid: str, **updates) -> dict:
     """Update one ledger entry in place, keeping what it already holds (slug, content key, reason)."""
     entry = dict(ledger.get(bid) or {})
@@ -3345,9 +3365,8 @@ def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] 
                 # while its content still has the recorded key.
                 key = entry.get('content_key')
                 if not key:
-                    shown = _content_from_fields({}, block.get('text')).get('content_key')
-                    now = _block_content(block).get('content_key')
-                    key = now if now and now == shown else None
+                    now = _block_content(block)
+                    key = now.get('content_key') if _notes_still_say_the_fence(block, now) else None
                 entry.pop('withdrawn_content_key', None)
                 _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy,
                                withdrawn_content_key=key)
