@@ -281,6 +281,24 @@ def _config_destination_problem(dest: Path, root: Path, allowed: tuple, label: s
             f"reject, or edit the 'Proposed destination' row to one of those")
 
 
+def _linked_component(dest: Path, base: Path) -> Optional[str]:
+    """The first symlink among `base` and the folders between it and `dest`, when `dest` is spelled
+    under `base`; else None. A repository can commit `.claude` (or a folder in it) as a link into
+    another tool's global folder."""
+    literal = os.path.abspath(os.path.expanduser(str(dest)))
+    base_lit = os.path.abspath(os.path.expanduser(str(base)))
+    rel = _rel_under(literal, base_lit)
+    if rel is None:
+        return None
+    cur = base_lit
+    parts = [""] + list(Path(literal).relative_to(base_lit).parts[:-1]) if rel else [""]
+    for part in parts:
+        cur = os.path.join(cur, part) if part else cur
+        if os.path.islink(cur):
+            return cur
+    return None
+
+
 def _destination_problem(dest: Path) -> str:
     """'' when apply may write `dest`, else an error body naming the fix."""
     evolve = _evolve_allowed()
@@ -289,6 +307,10 @@ def _destination_problem(dest: Path) -> str:
     if problem is None:
         for info in load_registry().values():
             if info.get('root'):
+                linked = _linked_component(dest, Path(info['root']) / ".claude")
+                if linked:
+                    return (f"{dest} is under the project folder {info['root']}, whose {linked} is a link (to "
+                            f"{os.path.realpath(linked)}); a repo can commit that link. Fix: tick reject")
                 problem = _config_destination_problem(dest, Path(info['root']) / ".claude", EVOLVED_ALLOWED,
                                                       "a project's .claude folder")
                 if problem is not None:

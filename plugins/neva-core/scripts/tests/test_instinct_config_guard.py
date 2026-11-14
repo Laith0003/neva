@@ -136,6 +136,26 @@ class ResolvedDestinationCase(ConfigGuardCase):
         r = self._apply()
         self.assertTrue(os.path.isfile(os.path.join(self.project, ".claude", "commands", "ok.md")), r.stdout + r.stderr)
 
+    def test_a_repo_whose_claude_folder_is_a_link_is_refused(self):
+        # A cloned repo can commit .claude as a symlink; with evolve on, a write there would land in
+        # another tool's global folder.
+        elsewhere = os.path.join(self.sb.home, ".config", "othertool")
+        os.makedirs(os.path.join(elsewhere, "agents"))
+        os.symlink(elsewhere, os.path.join(self.project, ".claude"))
+        self._redirect(os.path.join(self.project, ".claude", "agents", "helper.md"))
+        r = self._apply(flag=True)
+        self.assertEqual(self._written(elsewhere), [], r.stdout + r.stderr)
+        self.assertIn("link", r.stderr)
+
+    def test_a_link_between_the_repo_claude_folder_and_the_file_is_refused(self):
+        elsewhere = os.path.join(self.sb.home, ".config", "othertool")
+        os.makedirs(elsewhere)
+        os.makedirs(os.path.join(self.project, ".claude"))
+        os.symlink(elsewhere, os.path.join(self.project, ".claude", "agents"))
+        self._redirect(os.path.join(self.project, ".claude", "agents", "helper.md"))
+        r = self._apply(flag=True)
+        self.assertEqual(self._written(elsewhere), [], r.stdout + r.stderr)
+
     def test_a_destination_whose_folder_does_not_exist_yet_is_created_when_its_shape_is_allowed(self):
         # Decided: the existing part of the path is resolved and checked; the missing folders are
         # created as real folders, so a first skill or command in a project needs no setup.
