@@ -304,18 +304,22 @@ def _destination_problem(dest: Path) -> str:
     """'' when apply may write `dest`, else an error body naming the fix."""
     evolve = _evolve_allowed()
     allowed = GLOBAL_ALLOWED + (EVOLVED_ALLOWED if evolve else ())
+    # A repository can commit `.claude`, or a folder inside it, as a link. It is looked for first:
+    # a link into the user's own config folder resolves to an allowed global shape, so the global
+    # check alone would let a project block write a file that loads in every project.
+    registry_roots = [info['root'] for info in load_registry().values() if info.get('root')]
+    for root in registry_roots:
+        linked = _linked_component(dest, Path(root) / ".claude")
+        if linked:
+            return (f"{dest} is under the project folder {root}, whose {linked} is a link (to "
+                    f"{os.path.realpath(linked)}); a repo can commit that link. Fix: tick reject")
     problem = _config_destination_problem(dest, Path(CLAUDE_DIR_REF), allowed, "the global config folder")
     if problem is None:
-        for info in load_registry().values():
-            if info.get('root'):
-                linked = _linked_component(dest, Path(info['root']) / ".claude")
-                if linked:
-                    return (f"{dest} is under the project folder {info['root']}, whose {linked} is a link (to "
-                            f"{os.path.realpath(linked)}); a repo can commit that link. Fix: tick reject")
-                problem = _config_destination_problem(dest, Path(info['root']) / ".claude", EVOLVED_ALLOWED,
-                                                      "a project's .claude folder")
-                if problem is not None:
-                    break
+        for root in registry_roots:
+            problem = _config_destination_problem(dest, Path(root) / ".claude", EVOLVED_ALLOWED,
+                                                  "a project's .claude folder")
+            if problem is not None:
+                break
     if problem and not evolve and any(p.fullmatch(_rel_under(os.path.realpath(str(dest)), os.path.realpath(
             os.path.expanduser(CLAUDE_DIR_REF))) or "") for p in EVOLVED_ALLOWED):
         problem += (f"; it writes a skill, command or agent into the global config folder, and automatic "
@@ -2533,9 +2537,12 @@ def _save_state_json(path: Path, data: dict) -> None:
 
 
 def _record_user_stated(note: Path, sha: str) -> None:
-    stated = _load_user_stated()
-    stated[_vault_ref(note)] = {"date": _today(), "sha": sha}
-    _save_state_json(USER_STATED_FILE, stated)
+    # Under the ledger lock, like every other writer of this file: an unlocked read-modify-write
+    # lost rows when two `add` runs overlapped, and a lesson with no row is parked as thin.
+    with _ledger_lock():
+        stated = _load_user_stated()
+        stated[_vault_ref(note)] = {"date": _today(), "sha": sha}
+        _save_state_json(USER_STATED_FILE, stated)
 
 
 def _stated_now(stated: dict, inst: dict) -> bool:
@@ -2781,7 +2788,7 @@ def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: 
         block['content'] = _block_content(block)
         # The promise made at withdrawal covers the lesson that was withdrawn, not the id: a block is
         # returning only while its content is the content recorded then. Notes rewritten since make it
-        # a new candidate, which meets earlier decisions and the gate like any other.
+        # a new candidate. Returning skips the quality gate only; his earlier decisions still apply.
         block['returning'] = (bool(prior) and prior.get('status') == 'withdrawn'
                               and bool(prior.get('withdrawn_content_key'))
                               and prior.get('withdrawn_content_key') == block['content'].get('content_key'))
@@ -2789,7 +2796,7 @@ def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: 
         # same content, never by one that merely means something close.
         block['stated'] = bool(block.get('members')) and all(
             _stated_now(user_stated, m) or _approved_now(promoted_now, m) for m in block['members'])
-        if not repropose and not block['returning'] and block['kind'] != 'confirm-stated':
+        if not repropose and block['kind'] != 'confirm-stated':
             match = _matching_decision(ledger, block, block['content'], exact_only=block['stated'])
             if match:
                 print(f"Skipped {bid}: says the same as {match[0]}, {match[1].get('status')} "
@@ -2800,7 +2807,8 @@ def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: 
         fresh.append(block)
     if not repropose:
         # A withdrawn block was proposed once under the old rules and was promised back for a fresh
-        # tick: it returns without the gate, as `promote <id>` does.
+        # tick: it returns without the gate, as `promote <id>` does. It has already met the earlier
+        # decisions above.
         gated = set(id(b) for b in _gate([b for b in fresh if not b['returning']], dry_run, report=not_proposed))
         fresh = [b for b in fresh if b['returning'] or id(b) in gated]
     if not fresh:
@@ -3332,11 +3340,18 @@ def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] 
                                     f"it must be re-proposed.\n", 1)
                 text = text.replace(block['body'], body, 1)
                 # What was withdrawn is recorded by content: the key taken at propose when the ledger
-                # holds one, otherwise the key of the notes as they read now. Propose lets the id back
-                # without the gate only while its content still has this key.
+                # holds one. An old entry has none, so the notes vouch for it only while they still
+                # say what the block's own fence shows; rewritten notes record no key, and the id
+                # then comes back as a new candidate. Propose lets an id back without the gate only
+                # while its content still has the recorded key.
+                key = entry.get('content_key')
+                if not key:
+                    shown = _content_from_fields({}, block.get('text')).get('content_key')
+                    now = _block_content(block).get('content_key')
+                    key = now if now and now == shown else None
+                entry.pop('withdrawn_content_key', None)
                 _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy,
-                               withdrawn_content_key=(entry.get('content_key')
-                                                      or _block_content(block).get('content_key')))
+                               withdrawn_content_key=key)
                 withdrawn += 1  # not a failure: it comes back on the next propose
                 continue
             go = block['approve'] or mode in ("all", "ids")

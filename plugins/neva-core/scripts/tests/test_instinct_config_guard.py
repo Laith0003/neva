@@ -147,6 +147,25 @@ class ResolvedDestinationCase(ConfigGuardCase):
         self.assertEqual(self._written(elsewhere), [], r.stdout + r.stderr)
         self.assertIn("link", r.stderr)
 
+    def test_a_repo_claude_folder_linked_to_the_global_config_folder_is_refused(self):
+        # The link points at the user's own config folder: the destination then resolves inside the
+        # global folder with an allowed shape, and the repo-link check must still run first.
+        os.makedirs(os.path.join(self.config, "agents"))
+        os.symlink(self.config, os.path.join(self.project, ".claude"))
+        self._redirect(os.path.join(self.project, ".claude", "agents", "helper.md"))
+        r = self._apply(flag=True)
+        self.assertFalse(os.path.exists(os.path.join(self.config, "agents", "helper.md")), r.stdout + r.stderr)
+        self.assertIn("link", r.stderr)
+
+    def test_a_repo_folder_linked_into_the_global_config_folder_is_refused(self):
+        os.makedirs(os.path.join(self.config, "agents"))
+        os.makedirs(os.path.join(self.project, ".claude"))
+        os.symlink(os.path.join(self.config, "agents"), os.path.join(self.project, ".claude", "agents"))
+        self._redirect(os.path.join(self.project, ".claude", "agents", "helper.md"))
+        r = self._apply(flag=True)
+        self.assertFalse(os.path.exists(os.path.join(self.config, "agents", "helper.md")), r.stdout + r.stderr)
+        self.assertIn("link", r.stderr)
+
     def test_a_link_between_the_repo_claude_folder_and_the_file_is_refused(self):
         elsewhere = os.path.join(self.sb.home, ".config", "othertool")
         os.makedirs(elsewhere)

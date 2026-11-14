@@ -307,15 +307,34 @@ class PromotionEventsCase(unittest.TestCase):
     def test_event_log_leaf_symlink_is_refused(self):
         outside, target = self._outside()
         events = self.sb.events_path()
-        os.makedirs(os.path.dirname(events))
+        # `add` records the lesson in the state folder under the ledger lock, so the lessons go in
+        # first and the event log is then swapped for a link, as an attacker would do between runs.
+        self.sb.add("repoA", "prefer-explicit-errors", 0.9)
+        self.sb.add("repoB", "prefer-explicit-errors", 0.85)
         os.symlink(target, events)
-        r = self._propose_one()
+        r = self.sb.run("propose", check=False)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(events, r.stderr)
         self.assertIn("symlink", r.stderr)
         self.assertIn("Fix:", r.stderr)
         with open(target, "rb") as fh:
             self.assertEqual(fh.read(), b"owner data\n", "the event was appended outside the state dir")
+
+    def test_add_refuses_a_linked_state_file_and_writes_no_note(self):
+        outside, target = self._outside()
+        events = self.sb.events_path()
+        os.makedirs(os.path.dirname(events))
+        os.symlink(target, events)
+        r = self.sb.run("add", "--id", "prefer-explicit-errors", "--trigger", "when handling errors in services",
+                        "--action", "Apply the prefer explicit errors practice in every change.",
+                        "--domain", "code-style", "--confidence", "0.9", check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(events, r.stderr)
+        self.assertIn("symlink", r.stderr)
+        self.assertIn("NEVA_INSTINCT_STATE_DIR", r.stderr)
+        notes = [f for _, _, files in os.walk(os.path.join(self.sb.vault, "06 Memory")) for f in files
+                 if f == "prefer-explicit-errors.md"]
+        self.assertEqual(notes, [], "a note was written although it could not be recorded as his")
 
     def test_event_log_parent_symlink_is_refused(self):
         outside, target = self._outside()

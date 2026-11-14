@@ -98,6 +98,43 @@ class ReturningContentCase(la.LedgerAuthorityCase):
         r = self.sb.run("propose", check=False)
         self.assertNotEqual(self._ledger()[BID]["status"], "proposed", r.stdout + r.stderr)
 
+    def test_a_returning_block_still_meets_a_rejection_of_the_same_content(self):
+        # He rejected this very lesson under another id while the legacy block was open. The legacy
+        # block is withdrawn and comes back unchanged: it skips the gate, never his decision.
+        for repo in ("repoA", "repoB"):
+            self.sb.run("add", "--id", "lock-first-then-append", "--trigger", OLD_TRIGGER, "--action", la.ACTION,
+                        "--domain", "code-style", "--confidence", "0.9", cwd=repo)
+        self.sb.run("promote", "lock-first-then-append")
+        twin = "promote-global:lock-first-then-append"
+        self.assertEqual(self._ledger()[twin]["status"], "proposed", self._ledger().get(twin))
+        ledger = self._ledger()
+        for key in ("rendered_sha256", "ticked_at_propose", "destination", "sources", "content_key", "content_tokens"):
+            ledger[BID].pop(key, None)
+        with open(self.ledger_path, "w", encoding="utf-8") as fh:
+            json.dump(ledger, fh)
+        self.sb.tick(self.sb.proposal_path(), twin, "reject")
+        self.sb.run("apply-promotions", check=False)
+        ledger = self._ledger()
+        self.assertEqual(ledger[twin]["status"], "rejected", ledger[twin])
+        self.assertEqual(ledger[BID]["status"], "withdrawn", ledger[BID])
+        r = self.sb.run("propose", check=False)
+        self.assertNotEqual(self._ledger()[BID]["status"], "proposed",
+                            "a withdrawn block came back past a rejection of the same content\n" + r.stdout + r.stderr)
+
+    def test_notes_rewritten_before_the_withdrawal_do_not_carry_the_promise(self):
+        # An old entry holds no key from propose. If its notes no longer say what the block shows when
+        # it is withdrawn, nothing vouches for the new text: it is a new candidate.
+        ledger = self._ledger()
+        for key in ("rendered_sha256", "ticked_at_propose", "destination", "sources", "content_key", "content_tokens"):
+            ledger[BID].pop(key, None)
+        with open(self.ledger_path, "w", encoding="utf-8") as fh:
+            json.dump(ledger, fh)
+        self._rewrite_notes()
+        self.sb.run("apply-promotions", check=False)
+        entry = self._ledger()[BID]
+        self.assertEqual(entry["status"], "withdrawn", entry)
+        self.assertFalse(entry.get("withdrawn_content_key"), entry)
+
     def test_the_withdrawal_records_the_content_it_withdrew(self):
         self._withdraw_and_reject_other()
         self.assertTrue(self._ledger()[BID].get("withdrawn_content_key"), self._ledger()[BID])
