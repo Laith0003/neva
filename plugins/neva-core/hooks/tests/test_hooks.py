@@ -1042,7 +1042,10 @@ class TestProjectIdentity(HookTest):
         self.assertEqual(self.hook_id(wt), self.s.pid)
         self.assertEqual(self.cli_id(wt), self.s.pid)
 
-    def test_outside_git_is_unscoped_unless_project_dir_is_explicit(self):
+    def test_outside_git_is_unscoped_even_when_project_dir_is_explicit(self):
+        """A project is a git work tree. A folder outside git (the home folder, a scratch or temp
+        folder) is unscoped even when Claude Code names it in CLAUDE_PROJECT_DIR, so it can never
+        be counted as a project for promotion."""
         plain = os.path.join(self.s.tmp, "plain")
         os.makedirs(plain)
         self.assertEqual(self.hook_id(plain), "unscoped")
@@ -1050,9 +1053,16 @@ class TestProjectIdentity(HookTest):
         p = subprocess.run([PY, cli, "stats"], cwd=plain, env=self.s.env(), capture_output=True, text=True)
         self.assertIn("Project: unscoped (unscoped)", p.stdout, p.stderr)
         # Claude Code sets CLAUDE_PROJECT_DIR for hooks; the shim's --cwd sets it the same way
-        want = hashlib.sha256(plain.encode()).hexdigest()[:12]
-        self.assertEqual(self.hook_id(plain, CLAUDE_PROJECT_DIR=plain), want)
-        self.assertEqual(self.cli_id(plain), want)
+        self.assertEqual(self.hook_id(plain, CLAUDE_PROJECT_DIR=plain), "unscoped")
+        self.assertEqual(self.cli_id(plain), "unscoped")
+        p = subprocess.run([PY, cli, "stats"], cwd=plain, env=dict(self.s.env(), CLAUDE_PROJECT_DIR=plain),
+                           capture_output=True, text=True)
+        self.assertIn("Project: unscoped (unscoped)", p.stdout, p.stderr)
+
+    def test_project_dir_inside_a_repo_still_uses_the_repo(self):
+        sub = os.path.join(self.s.work, "pkg")
+        os.makedirs(sub)
+        self.assertEqual(self.hook_id(sub, CLAUDE_PROJECT_DIR=sub), self.s.pid)
 
 
 # ---------------------------------------------------------------- ck SessionStart
@@ -1446,9 +1456,34 @@ class TestInstinctRoundTrip(HookTest):
         with open(path, "w") as fh:
             fh.write(text[:i] + f"- [x] {box}" + text[i + len(f"- [ ] {box}"):])
 
+    def second_project_with_the_same_lesson(self):
+        """Global needs the same lesson in two git projects; the analyzer's scope_hint alone no
+        longer promotes. A second registered git repo already holds the lesson."""
+        other = os.path.join(self.s.tmp, "other-repo")
+        os.makedirs(other)
+        subprocess.run(["git", "init", "-q", other], check=True)
+        pid = "0000000000b2"
+        reg_p = os.path.join(self.s.data, "observations", "projects.json")
+        reg = json.loads(self.s.read(reg_p))
+        reg[pid] = {"id": pid, "name": "other", "root": other, "remote": "",
+                    "created_at": "2026-01-01T00:00:00Z", "last_seen": "2026-01-01T00:00:00Z"}
+        with open(reg_p, "w") as fh:
+            json.dump(reg, fh)
+        d = os.path.join(self.root, "project", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "read-before-edit.md"), "w") as fh:
+            fh.write("---\nid: read-before-edit\ntrigger: \"when changing a file\"\nconfidence: 0.85\n"
+                     "domain: workflow\nsource: session-observation\nscope: project\nproject_id: " + pid + "\n"
+                     "project_name: \"other\"\nevidence_count: 11\ndate: 2026-01-01\nlast_observed: "
+                     + datetime.date.today().isoformat() + "\n"
+                     "decay_weeks_applied: 0\nstatus: active\ntags: [instinct, workflow]\n---\n\n"
+                     "# Read before edit\n\n## Action\nRead the whole file before editing it.\n\n"
+                     "## Evidence\n- Observed 11 times\n")
+
     def run_round_trip(self, inbox_note, proposals_dir, **env):
         self.observe_session()
         self.assertEqual(len(self.s.obs_lines()), 22)
+        self.second_project_with_the_same_lesson()
         code, out = self.s.cli("analyze", FAKE_LOG_DIR=self.s.tmp, **env)
         self.assertEqual(code, 0, out)
         call = json.loads(self.s.read(os.path.join(self.s.tmp, "claude-calls.log")).splitlines()[0])

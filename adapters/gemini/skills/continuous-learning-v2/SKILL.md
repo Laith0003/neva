@@ -83,7 +83,7 @@ Use functional patterns over classes when appropriate.
 - **Confidence-weighted:** 0.3 tentative to 0.9 near-certain.
 - **Domain-tagged:** code-style, testing, git, debugging, workflow, file-patterns, security.
 - **Evidence-backed:** `evidence_count` plus Evidence bullets. Never code snippets, only patterns.
-- **Scope-aware:** `project` (default) or `global`. `scope_hint: global` marks a project instinct the analyzer thinks is universal; it is a promotion candidate, not a global instinct.
+- **Scope-aware:** `project` (default) or `global`. `scope_hint: global` records that the analyzer thinks a project instinct is universal; it is informational only and promotes nothing.
 - **Status:** `active`; `promoted` (a global copy exists, see `promoted_to`); `archived` (retired). Only `active` instincts load.
 - Optional `files: [path, ...]` for instincts tied to specific files (checked by prune).
 
@@ -127,7 +127,7 @@ Sessions outside any project use the bucket id `unscoped` (observations and proj
 
 Same algorithm in the hook and the CLI, so ids agree:
 
-1. `CLAUDE_PROJECT_DIR` if set and a directory: its git toplevel, else its real path (explicit override, honored even outside git).
+1. `CLAUDE_PROJECT_DIR` if set and a directory: its git toplevel. A folder outside git is never a project, even when named here.
 2. `git rev-parse --show-toplevel` from the session cwd.
 3. None: bucket `unscoped`. `NEVA_NO_PROJECT=1` forces this.
 
@@ -212,7 +212,7 @@ Confidence rises when a pattern is observed again, the user does not correct it,
 | Tool workflow preferences | **global** | "Grep before Edit", "Read before Write" |
 | Git practices | **global** | "Conventional commits", "Small focused commits" |
 
-**When in doubt, stay project-scoped.** It is safer to promote later than to contaminate global scope. In Neva "global" rows mean `scope_hint: global` on a project note; the move itself is a proposal.
+**When in doubt, stay project-scoped.** It is safer to promote later than to contaminate global scope. In Neva a lesson goes global only when the same instinct is active in two git projects; the move itself is a proposal.
 
 ## Promotion: the Proposal Contract
 
@@ -220,7 +220,7 @@ Confidence rises when a pattern is observed again, the user does not correct it,
 
 | Kind | Candidate when | Proposed destination | Write mode |
 |---|---|---|---|
-| `promote-global` | same instinct id active in **2+ projects** with **average confidence >= 0.8**, or one project note with `scope_hint: global` and confidence >= 0.7; not already global | `vault:06 Memory/instincts/global/<id>.md`; then source notes get `status: promoted` and `promoted_to` | create |
+| `promote-global` | same instinct id active in **2+ git projects** (buckets whose registered root is a git work tree today; never `unscoped`, never a plain folder) with **average confidence >= 0.8**; not already global. `scope_hint` is not used | `vault:06 Memory/instincts/global/<id>.md`; then source notes get `status: promoted` and `promoted_to` | create |
 | `evolve-skill` | 2+ instincts in one scope whose triggers share 2+ keywords with overlap coefficient >= 0.5 | `<project root>/.claude/skills/<name>/SKILL.md` when every member is from one registered project, else the user config dir (`$HOME/.claude` or `CLAUDE_CONFIG_DIR`) `skills/<name>/SKILL.md` | create |
 | `evolve-command` | `workflow` instinct with confidence >= 0.7 | `.../.claude/commands/<name>.md` (same rule) | create |
 | `evolve-agent` | skill cluster with 3+ instincts and average confidence >= 0.75 | `.../.claude/agents/<name>.md` (same rule) | create |

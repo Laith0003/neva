@@ -194,7 +194,7 @@ The id is the first 12 hex characters of SHA-256 over the normalized `origin` re
 | tool workflow such as read before write | global |
 | git practices | global |
 
-Promotion to global: the same instinct id active in 2 or more projects with average confidence of 0.8 or higher, or one project instinct the analyzer marked `scope_hint: global` at 0.7 or higher. Both are proposals you approve.
+Promotion to global: the same instinct id active in 2 or more git projects with average confidence of 0.8 or higher. A folder outside git is never a project, and the analyzer's `scope_hint: global` promotes nothing on its own. It is a proposal you approve.
 
 Layout under `$NEVA_VAULT/06 Memory/instincts/`:
 
