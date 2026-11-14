@@ -137,14 +137,18 @@ def _batch_sessions(lines: list) -> dict:
     return out
 
 
+MAX_SESSIONS_CREDITED_PER_BATCH = 3
+_SESSION_ID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+
+
 def record_note_sessions(vault: Path, instincts_dir: Path, before: dict, lines: list) -> None:
-    """After a successful batch, record for every note it created or changed the sessions and days of
-    that batch's own observation lines. The quality gate counts only these: sessions the engine fed the
+    """After a successful batch, record for every note it created or changed the sessions it cites
+    that appear in that batch's own observation lines, with those lines' days. The quality gate counts only these: sessions the engine fed the
     model when it wrote the note, never session ids the model wrote into the note."""
     after = _note_hashes(instincts_dir)
     changed = [name for name, digest in after.items() if before.get(name) != digest]
-    sessions = _batch_sessions(lines)
-    if not changed or not sessions:
+    batch = _batch_sessions(lines)
+    if not changed or not batch:
         return
     root, state_dir = _instinct_state()
     path = state_dir / "note-sessions.json"
@@ -152,6 +156,17 @@ def record_note_sessions(vault: Path, instincts_dir: Path, before: dict, lines: 
     data = learning_io.read_json_object(path) if path.exists() else {}
     base = Path(vault).resolve()
     for name in changed:
+        # Only sessions the note cites that are in this batch's own lines, at most
+        # MAX_SESSIONS_CREDITED_PER_BATCH: touching a note earns it nothing it does not cite.
+        try:
+            text = (Path(instincts_dir) / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        cited = {m.lower() for m in _SESSION_ID.findall(text)}
+        sessions = {s: d for s, d in sorted(batch.items()) if s in cited}
+        sessions = dict(list(sessions.items())[:MAX_SESSIONS_CREDITED_PER_BATCH])
+        if not sessions:
+            continue
         ref = "vault:" + (Path(instincts_dir).resolve() / name).relative_to(base).as_posix()
         row = data.get(ref) if isinstance(data.get(ref), dict) else {}
         for session, days in sessions.items():
