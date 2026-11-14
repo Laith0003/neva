@@ -1,7 +1,8 @@
 # Instinct analyzer prompt
 
 The nightly `instinct-analyze` job sends the text between the PROMPT markers to
-`claude --print --allowedTools Read,Edit(//<instincts dir>/**)`, once per project bucket, after
+`claude --print --allowedTools Read,Edit(//<instincts dir>/**)` (with a deny rule per stated note and
+per config file name, see SKILL.md nightly job step 2), once per project bucket, after
 substituting the `{{...}}` placeholders. Edit the rules here, not in the script.
 The analysis file is a compact view of one batch, not the raw observations (format: SKILL.md,
 nightly job step 2); the raw lines go to the archive only after the run is accepted.
@@ -77,6 +78,7 @@ Rules:
   - contradicting observations (the user corrected the behavior the instinct recommends): subtract 0.1 per contradiction;
   - add the new count to evidence_count, set last_observed to {{TODAY}}, set decay_weeks_applied to 0, append one Evidence bullet;
   - never change id, date, or status, and never edit a file whose status is promoted or archived.
+- Never edit a note the owner stated with `add` (source: user-stated). The job denies Edit on every note the add ledger records; if an edit is refused, leave that note as it is and write nothing in its place.
 - The frontmatter (between the --- markers) with the id field is MANDATORY.
 - If a pattern seems universal (not specific to this project), keep scope: project and add scope_hint: global. Examples of universal patterns: always validate user input, prefer explicit error handling. Examples of project patterns: use React functional components, follow Django REST framework conventions.
 - When in doubt, omit scope_hint. It is safer to stay project-specific.

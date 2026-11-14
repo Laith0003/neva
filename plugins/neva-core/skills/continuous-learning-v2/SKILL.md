@@ -34,6 +34,8 @@ global instinct | skill | command | agent | rule | retirement
 
 **Iron rule:** nothing leaves project scope, and nothing becomes a skill, command, agent, or rule, until a human ticks its block or says "apply instinct promotions". The analyzer writes project-scoped notes only. The proposal step writes proposals only.
 
+**What reaches a session:** session start and prompt recall inject only an approved note: a global note an apply created from a block the human ticked (recorded with its hash in `promoted-notes.json`), or a note `add` wrote or `add --restate` vouched for (recorded with its hash in `user-stated.json`), while the note still matches that hash. The analyzer's own notes are candidates for proposals and are never injected. A new install injects nothing until something is added or approved. The hooks and the CLI read both records with one parser and one hash (`scripts/instinct_trust.py`). Notes `add` recorded in a project folder are denied to the analyzer: its run carries one `Edit(//<note>)` deny rule per recorded note.
+
 ## When to Activate
 
 - Setting up or checking automatic learning from sessions

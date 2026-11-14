@@ -2,7 +2,9 @@
 """UserPromptSubmit: instincts matched to the first real prompt of a session.
 
 Once per session. The first prompt that is not system text (starts with `<`) or a slash command
-(starts with `/`) is scored against each instinct's trigger, id and tags by instinct_match.py.
+(starts with `/`) is scored against each approved instinct's trigger, id and tags by
+instinct_match.py. Approved, as at session start: a global note an apply made from a ticked
+promotion, or a note `add` recorded, while it still matches that record (common.approved_only).
 Up to NEVA_INSTINCT_PROMPT_MAX (default 3) qualifying instincts are injected, skipping any id the
 session start block already showed and any near-duplicate of one. Rarity is judged over the
 whole instinct corpus (common.corpus_idf, cached in the state dir). Nothing qualifies: nothing is

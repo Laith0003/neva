@@ -65,6 +65,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import learning_io  # noqa: E402  managed writes refuse symlinks below their root
+import instinct_trust  # noqa: E402  the add ledger, read with the CLI's own reader
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 CLI = SKILL_DIR / "scripts" / "instinct-cli.py"
@@ -607,7 +608,7 @@ def analyze_bucket(obs_dir: Path, name: str, vault: Path, cfg: dict, dry_run: bo
             tried = n
             seq = state.call()
             before = _note_hashes(instincts_dir)
-            outcome = run_batch(tmp_dir, pid, name, label, remaining[:n], instincts_dir, cfg)
+            outcome = run_batch(tmp_dir, pid, name, label, remaining[:n], instincts_dir, cfg, vault)
             if outcome != "ok" and n <= min_lines:
                 log(f"{label}: no half-size retry, {n} lines is already at or below the minimum of {min_lines}")
             elif outcome != "ok" and budget > 0:
@@ -617,7 +618,7 @@ def analyze_bucket(obs_dir: Path, name: str, vault: Path, cfg: dict, dry_run: bo
                 label = f"{prefix} batch {number} ({src.name}, retry at half size, {tried} lines)"
                 log(f"{label}: retrying the head of {src.name} at half size")
                 seq = state.call()
-                outcome = run_batch(tmp_dir, pid, name, label, remaining[:tried], instincts_dir, cfg)
+                outcome = run_batch(tmp_dir, pid, name, label, remaining[:tried], instincts_dir, cfg, vault)
             chunk = b"".join(remaining[:tried])
             if outcome == "ok":
                 record_note_sessions(vault, instincts_dir, before, remaining[:tried])
@@ -711,14 +712,39 @@ def allowed_tools(instincts_dir) -> str:
     return "Read,Edit(//" + str(root).lstrip("/") + "/**)"
 
 
+def stated_denials(instincts_dir, vault) -> list:
+    """One deny rule per note in this bucket that the add ledger (user-stated.json) records:
+    Edit(//<absolute note path>). The child's Edit grant covers the whole bucket, where project
+    `add` notes live; Claude Code applies deny rules before allow rules, so these notes, the
+    owner's own words, are out of the analyzer's reach. A missing or unreadable ledger, or no
+    vault, gives no rule here (and then no note in the bucket is approved, so none is injected)."""
+    if not vault:
+        return []
+    stated, _ = instinct_trust.load_records(_instinct_state()[1])
+    root = Path(instincts_dir).resolve()
+    out = []
+    for ref in sorted(stated):
+        if not (isinstance(ref, str) and ref.startswith("vault:")):
+            continue
+        note = (Path(vault) / ref[len("vault:"):]).resolve()
+        if note.parent == root:
+            out.append("Edit(//" + str(note).lstrip("/") + ")")
+    return out
+
+
+def disallowed_tools(instincts_dir, vault) -> str:
+    """The child's deny list, comma-separated like its grant."""
+    return ",".join(stated_denials(instincts_dir, vault))
+
+
 def analyze_batch(tmp_dir: Path, pid: str, name: str, label: str, batch: list,
-                  instincts_dir: Path, cfg: dict) -> bool:
+                  instincts_dir: Path, cfg: dict, vault=None) -> bool:
     """True only on an exact completion record. See run_batch."""
-    return run_batch(tmp_dir, pid, name, label, batch, instincts_dir, cfg) == "ok"
+    return run_batch(tmp_dir, pid, name, label, batch, instincts_dir, cfg, vault) == "ok"
 
 
 def run_batch(tmp_dir: Path, pid: str, name: str, label: str, batch: list,
-              instincts_dir: Path, cfg: dict) -> str:
+              instincts_dir: Path, cfg: dict, vault=None) -> str:
     """Run the analysis child on one batch of raw lines. The child reads the batch's compact view
     (compact_view), never the raw lines. Returns "ok" only on an exact completion record, else
     "timeout", "exit <code>" or "no completion record" (exit 0 without a record carrying this
@@ -736,7 +762,11 @@ def run_batch(tmp_dir: Path, pid: str, name: str, label: str, batch: list,
             max_turns = 20
         env = _child_env()
         cmd = [claude_bin(), "--model", cfg["model"], "--max-turns", str(max_turns), "--print",
-               "--allowedTools", allowed_tools(instincts_dir), "-p", prompt]
+               "--allowedTools", allowed_tools(instincts_dir)]
+        denied = disallowed_tools(instincts_dir, vault if vault is not None else vault_root())
+        if denied:
+            cmd += ["--disallowedTools", denied]
+        cmd += ["-p", prompt]
         proc = subprocess.Popen(cmd, cwd=str(instincts_dir), env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 start_new_session=True)

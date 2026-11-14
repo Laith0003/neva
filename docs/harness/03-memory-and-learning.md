@@ -52,7 +52,7 @@ Bounds on what SessionStart injects:
 | `NEVA_SESSION_START_MAX_CHARS` | 8000 | injected context is truncated past this, with a marker saying so; `0` disables injection |
 | `NEVA_SESSION_START_CONTEXT` | on | `off` disables injected context |
 | `NEVA_SESSION_RETENTION_DAYS` | 30 | session files older than this are deleted at session start; `off` keeps them |
-| `NEVA_INSTINCT_MIN_CONFIDENCE` | 0.7 | only strong instincts are injected |
+| `NEVA_INSTINCT_MIN_CONFIDENCE` | 0.7 | only strong approved instincts are injected (approved: see Confidence below) |
 | `NEVA_INSTINCT_MAX` | 3 | at most this many, and only instincts that match the session; project instincts first on ties |
 
 On `startup` everything above is injected. On `clear` and `compact` the prior-session summary is left out (the current work is still in context). On `resume` nothing is injected: the resumed transcript already holds it.
@@ -166,8 +166,10 @@ exactly what it was before: no `ANTHROPIC_*` override.
 |-------|---------|-----------|
 | 0.3 | tentative | suggested, not enforced |
 | 0.5 | moderate | applied when relevant |
-| 0.7 | strong | injected at session start |
+| 0.7 | strong | injected at session start, when approved |
 | 0.9 | near certain | core behaviour, candidate for a rule |
+
+Confidence alone never injects a note. Session start and prompt recall inject only a note with an engine record of approval that still matches it: a global note an apply created from a promotion the owner ticked (`promoted-notes.json`), or a note recorded by `add` or `add --restate` (`user-stated.json`). The nightly analyzer's own notes are candidates: they feed proposals, never sessions. A fresh install with no state files injects nothing until something is added or approved. The hooks and the CLI check this with one module, `instinct_trust.py`.
 
 Initial confidence by observations: 3 to 5 gives 0.5, 6 to 10 gives 0.7, 11 or more gives 0.85. Goes up 0.05 per confirming observation (cap 0.9), down 0.1 per correction, down 0.02 per week unobserved. Below 0.3 it is proposed for retirement.
 

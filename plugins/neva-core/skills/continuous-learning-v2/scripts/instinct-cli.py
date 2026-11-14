@@ -85,6 +85,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import learning_io  # noqa: E402  managed writes refuse symlinks below their root
 import instinct_match  # noqa: E402  the repo's one tokenizer and near-duplicate test
 import quality_gate  # noqa: E402  deterministic checks before anything is proposed
+import instinct_trust  # noqa: E402  the one parser, hash and approval check, shared with the hooks
 
 
 # ---------------------------------------------------------------------------
@@ -347,13 +348,12 @@ def _now_iso() -> str:
 
 def _vault_ref(path: Path) -> str:
     """Render a vault path as vault:<relative>, anything else as-is."""
-    try:
-        rel = Path(path).resolve().relative_to(VAULT.resolve())
-        return f"vault:{rel.as_posix()}"
-    except (ValueError, AttributeError):
-        home = str(Path.home())
-        s = str(path)
-        return "~" + s[len(home):] if s.startswith(home + os.sep) else s
+    ref = instinct_trust.vault_ref(path, VAULT)
+    if ref:
+        return ref
+    home = str(Path.home())
+    s = str(path)
+    return "~" + s[len(home):] if s.startswith(home + os.sep) else s
 
 
 def _resolve_ref(ref: str) -> Path:
@@ -642,57 +642,9 @@ def _write_registry(registry: dict) -> None:
 # Instinct parsing, loading, writing
 # ---------------------------------------------------------------------------
 
-INT_FIELDS = {"evidence_count", "decay_weeks_applied"}
-
-
-def parse_instinct_file(content: str) -> list[dict]:
-    """Parse instinct markdown (or multi-block import files).
-
-    Each instinct is delimited by a pair of ``---`` markers. Instinct bodies
-    must use ``***`` or ``___`` for horizontal rules.
-    """
-    instincts = []
-    current = {}
-    in_frontmatter = False
-    content_lines = []
-    for line in content.split('\n'):
-        if line.strip() == '---':
-            if in_frontmatter:
-                in_frontmatter = False
-            else:
-                in_frontmatter = True
-                if current:
-                    current['content'] = '\n'.join(content_lines).strip()
-                    instincts.append(current)
-                current = {}
-                content_lines = []
-        elif in_frontmatter:
-            if ':' in line:
-                key, value = line.split(':', 1)
-                key = key.strip()
-                value = value.strip()
-                if value.startswith('"') and value.endswith('"') and len(value) >= 2:
-                    value = value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
-                elif value.startswith("'") and value.endswith("'") and len(value) >= 2:
-                    value = value[1:-1].replace("''", "'")
-                if key == 'confidence':
-                    try:
-                        current[key] = float(value)
-                    except ValueError:
-                        current[key] = 0.5
-                elif key in INT_FIELDS:
-                    try:
-                        current[key] = int(value)
-                    except ValueError:
-                        current[key] = 0
-                else:
-                    current[key] = value
-        else:
-            content_lines.append(line)
-    if current:
-        current['content'] = '\n'.join(content_lines).strip()
-        instincts.append(current)
-    return [i for i in instincts if i.get('id')]
+INT_FIELDS = instinct_trust.INT_FIELDS
+# One parser for the CLI and the hooks: a note cannot parse one way here and another way there.
+parse_instinct_file = instinct_trust.parse_instinct_file
 
 
 def _load_instincts_from_dir(directory: Optional[Path], scope_label: str,
@@ -749,8 +701,7 @@ def _evidence_count(inst: dict) -> int:
 
 
 def _action_of(inst: dict) -> str:
-    m = re.search(r'## Action\s*\n\s*(.+?)(?:\n\n|\n##|$)', inst.get('content', ''), re.DOTALL)
-    return m.group(1).strip() if m else inst.get('id', 'unnamed')
+    return instinct_trust.action_text(inst) or inst.get('id', 'unnamed')
 
 
 def _title_of(inst: dict) -> str:
@@ -2540,17 +2491,12 @@ def _engine_sessions(inst: dict, note_sessions: dict, promoted: dict) -> dict:
     return {s: list(d) for s, d in row.items() if isinstance(d, list)} if isinstance(row, dict) else {}
 
 
-TRUST_FIELDS = ("trigger", "domain", "scope", "source")
+TRUST_FIELDS = instinct_trust.TRUST_FIELDS
 
 
 def _note_hash(inst: dict, scoped: bool = True) -> str:
-    """The whole note as trust sees it: the fields that matter for trust (TRUST_FIELDS) and the full
-    body, whitespace-collapsed. An edit anywhere in the body, or to one of those fields, changes it.
-    scoped=False leaves out scope and source, which a promotion changes on purpose, to compare a
-    promoted note with the notes it came from."""
-    keys = TRUST_FIELDS if scoped else ("trigger", "domain")
-    parts = [f"{k}={inst.get(k, '')}" for k in keys] + [str(inst.get('content', ''))]
-    return hashlib.sha256(" ".join("\n".join(parts).split()).encode("utf-8")).hexdigest()
+    """The shared note hash (instinct_trust.note_hash): the hooks check approval with the same one."""
+    return instinct_trust.note_hash(inst, scoped)
 
 
 def _load_user_stated() -> dict:
@@ -2577,8 +2523,7 @@ def _record_user_stated(note: Path, sha: str) -> None:
 
 def _stated_now(stated: dict, inst: dict) -> bool:
     """True while the note still teaches exactly what `add` recorded for it."""
-    row = stated.get(_vault_ref(Path(inst.get('_source_file', ''))))
-    return isinstance(row, dict) and bool(row.get('sha')) and row['sha'] == _note_hash(inst)
+    return instinct_trust.stated_now(stated, _vault_ref(Path(inst.get('_source_file', ''))), inst)
 
 
 def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
@@ -2607,8 +2552,7 @@ def _mark_stale_stated(stated: dict, notes: list, write: bool) -> None:
 
 def _approved_now(promoted: dict, inst: dict) -> bool:
     """True for a global note an apply created after the human ticked it, while it still says the same."""
-    row = promoted.get(_vault_ref(Path(inst.get('_source_file', ''))))
-    return isinstance(row, dict) and bool(row.get('approved')) and row.get('sha') == _note_hash(inst)
+    return instinct_trust.approved_now(promoted, _vault_ref(Path(inst.get('_source_file', ''))), inst)
 
 
 def _backfill_promoted_notes(ledger: dict, write: bool) -> dict:
