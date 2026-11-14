@@ -20,7 +20,7 @@ The vault comes from `NEVA_VAULT`, else `VAULT_PATH` in `~/.config/neva/identity
 
 ```
 /evolve                   # print skill, command, agent and promotion candidates; write nothing
-/evolve --propose         # also file every candidate as a proposal block
+/evolve --propose         # also file every candidate as a proposal block (needs NEVA_INSTINCT_EVOLVE=1)
 /evolve --propose --limit 3
 /evolve --propose --dry-run   # print the blocks that would be filed
 ```
@@ -34,7 +34,7 @@ The vault comes from `NEVA_VAULT`, else `VAULT_PATH` in `~/.config/neva/identity
    - agent: a skill cluster of 3 or more instincts at average confidence 0.75 or more
    - promotion to global: see `/promote`
 3. Print them. Without `--propose`, nothing is written.
-4. With `--propose`, append one block per candidate to `Instinct promotions YYYY-MM-DD.md` in the proposals folder (default `00 Inbox/`, see the continuous-learning-v2 skill) and add one pointer under `## Open actions` in the inbox note. Each block carries the destination (`<project>/.claude/...` when every member comes from one project, else `~/.claude/...`), the write mode and the exact file text. Candidates already applied or rejected are never filed again.
+4. `--propose` is off unless `NEVA_INSTINCT_EVOLVE=1` is set: without it the CLI exits 2 and says so, and `apply-promotions` also refuses to write an evolved skill, command or agent into `~/.claude`. With it, append one block per candidate to `Instinct promotions YYYY-MM-DD.md` in the proposals folder (default `00 Inbox/`, see the continuous-learning-v2 skill) and add one pointer under `## Open actions` in the inbox note. Each block carries the destination (`<project>/.claude/...` when every member comes from one project, else `~/.claude/...`), the write mode and the exact file text. Candidates already applied or rejected are never filed again.
 
 ## Applying
 

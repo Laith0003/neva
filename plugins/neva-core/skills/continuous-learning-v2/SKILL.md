@@ -226,7 +226,7 @@ Confidence rises when a pattern is observed again, the user does not correct it,
 | `rule` | global instinct with confidence >= 0.9 (near-certain, core behavior) | `~/.claude/rules/instincts-<domain>.md` | append |
 | `retire` | any active instinct whose confidence is below 0.3 (after decay or contradiction) | the instinct note itself | set-frontmatter (`status: archived`) |
 
-The nightly run proposes at most 5 evolve candidates per kind per scope and prints how many it held back; run `instinct-cli.py evolve --propose --limit 0` for all.
+The three `evolve-*` kinds are off by default: `propose` files none of them and `evolve --propose` exits 2 unless `NEVA_INSTINCT_EVOLVE=1`, and `apply-promotions` refuses to write a skill, command or agent into the user config dir without that flag (the block is marked failed, nothing is written). Left on, every workflow instinct became a command and keyword overlap made skills that restated rules. `evolve` without `--propose` still previews them. With the flag set, the nightly run proposes at most 5 evolve candidates per kind per scope and prints how many it held back; run `instinct-cli.py evolve --propose --limit 0` for all.
 
 **File format** (exact; `apply-promotions` parses it):
 
@@ -300,7 +300,7 @@ The CLI is Python 3 (stdlib only): `python3 "${CLAUDE_PLUGIN_ROOT}/skills/contin
 | `add --id --trigger --action [--domain] [--confidence 0.1-1 or 1-10] [--scope] [--files ...]` | Record a user-stated instinct (`source: user-stated`). The human asking is the approval, so `--scope global` is allowed here |
 | `import <file\|https-url> [--scope] [--min-confidence] [--pending] [--dry-run] [--force]` | One note per instinct, `source: inherited`; keeps the higher confidence on id clashes; https only, public hosts only, 2 MB cap |
 | `export [--scope] [--domain] [--min-confidence] [--format instincts\|claude-md] [-o file]` | Instinct bundle for sharing, or a `## Project Learnings` section for CLAUDE.md |
-| `evolve [--propose] [--limit N] [--dry-run]` | Print skill, command, agent and promotion candidates; `--propose` files them as blocks |
+| `evolve [--propose] [--limit N] [--dry-run]` | Print skill, command, agent and promotion candidates; `--propose` files them as blocks, only with `NEVA_INSTINCT_EVOLVE=1` |
 | `promote [id] [--dry-run] [--apply]` | File promote-global blocks (all qualifying, or one id on request). `--apply` only when the human asked for that exact promotion |
 | `propose [--limit N] [--dry-run]` | Everything in the proposal table above |
 | `apply-promotions [--file PATH] [--all]` | Apply ticked blocks, or all open blocks |
