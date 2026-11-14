@@ -2771,7 +2771,6 @@ def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: 
                 continue
             if prior.get('status') == 'proposed' and Path(prior.get('file', '')).exists():
                 continue
-        block['returning'] = bool(prior) and prior.get('status') == 'withdrawn'
         unsafe = _unsafe_reason(block)
         if unsafe:
             print(f"Refused {bid}: {unsafe}. It was not proposed. Fix: edit the instinct note so its text holds "
@@ -2780,6 +2779,12 @@ def _emit_blocks_unlocked(blocks: list[dict], dry_run: bool = False, repropose: 
             not_proposed.append((bid, f"refused: {unsafe}"))
             continue
         block['content'] = _block_content(block)
+        # The promise made at withdrawal covers the lesson that was withdrawn, not the id: a block is
+        # returning only while its content is the content recorded then. Notes rewritten since make it
+        # a new candidate, which meets earlier decisions and the gate like any other.
+        block['returning'] = (bool(prior) and prior.get('status') == 'withdrawn'
+                              and bool(prior.get('withdrawn_content_key'))
+                              and prior.get('withdrawn_content_key') == block['content'].get('content_key'))
         # A lesson the human stated, still as he wrote it, is buried only by a rejection of the very
         # same content, never by one that merely means something close.
         block['stated'] = bool(block.get('members')) and all(
@@ -3326,7 +3331,12 @@ def _apply_files_unlocked(files: list[Path], mode: str, only_ids: Optional[set] 
                 body = body.replace("- [ ] reject\n", f"- [ ] reject\n\nWithdrawn {_today()}: {legacy}; "
                                     f"it must be re-proposed.\n", 1)
                 text = text.replace(block['body'], body, 1)
-                _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy)
+                # What was withdrawn is recorded by content: the key taken at propose when the ledger
+                # holds one, otherwise the key of the notes as they read now. Propose lets the id back
+                # without the gate only while its content still has this key.
+                _ledger_record(ledger, bid, status='withdrawn', date=_today(), reason=legacy,
+                               withdrawn_content_key=(entry.get('content_key')
+                                                      or _block_content(block).get('content_key')))
                 withdrawn += 1  # not a failure: it comes back on the next propose
                 continue
             go = block['approve'] or mode in ("all", "ids")
